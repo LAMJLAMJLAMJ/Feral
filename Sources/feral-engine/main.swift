@@ -10,7 +10,7 @@
 import FeralScene
 import Foundation
 
-let version = "0.1 (milestone 1: engine skeleton)"
+let version = "0.2 (milestone 2: renderers)"
 
 func log(_ message: String) {
     let stamp = ISO8601DateFormatter.string(from: Date(), timeZone: .current,

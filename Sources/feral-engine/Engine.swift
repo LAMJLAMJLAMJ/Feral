@@ -15,6 +15,9 @@ final class Engine {
     private var timers: [DispatchSourceTimer] = []
     private var signalSources: [DispatchSourceSignal] = []
     private var activity: NSObjectProtocol?
+    private var spatial: SpatialRenderer?
+    private var motionTimer: DispatchSourceTimer?
+    private var motionStarted = Date()
     private var lastReport = (late: UInt64(0), overloads: 0, skipped: UInt64(0))
 
     init(options: Options, config: EngineConfig) {
@@ -30,7 +33,7 @@ final class Engine {
             activity = ProcessInfo.processInfo.beginActivity(
                 options: [.userInitiated, .latencyCritical], reason: "Feral engine is rendering live audio")
             checkMicrophoneAccess()
-            do { try publishRouting() } catch { log("error: \(error); playing silence until the routing is fixed") }
+            do { try publishRouting(fadeFrames: 0) } catch { log("error: \(error); playing silence until the settings are fixed") }
             applyTestSignal()
             io = AudioEngineIO(core: core, config: config, queue: queue, log: log)
             io.start()
@@ -43,12 +46,45 @@ final class Engine {
         }
     }
 
-    private func publishRouting() throws {
-        let routing = try Routing(routes: config.routes, inputs: config.inputs, outputs: config.outputs)
-        core.publish(routing)
-        let routed = routing.gains.filter { $0 != 0 }.count
-        log("routing: \(config.inputs) in by \(config.outputs) out, \(routed) gain(s) set"
-            + (config.routes.isEmpty ? " (passthrough)" : " from \(config.routes.count) route(s)"))
+    /// Publishes the spatial layout (or, without groups, the fixed routing) as the next render state.
+    private func publishRouting(fadeFrames: Int) throws {
+        motionTimer?.cancel()
+        motionTimer = nil
+        guard config.isSpatial else {
+            spatial = nil
+            let routing = try Routing(routes: config.routes, inputs: config.inputs, outputs: config.outputs)
+            core.publish(routing)
+            let routed = routing.gains.filter { $0 != 0 }.count
+            log("routing: \(config.inputs) in by \(config.outputs) out, \(routed) gain(s) set"
+                + (config.routes.isEmpty ? " (passthrough)" : " from \(config.routes.count) route(s)"))
+            return
+        }
+        let renderer = try SpatialRenderer(config: config)
+        let state = renderer.makeState()
+        let taps = state.tapCount
+        try core.publish(state, fadeFrames: fadeFrames)
+        spatial = renderer
+        log("spatial: \(config.speakers.count) speaker(s), \(config.sources.count) source(s), \(taps) tap(s)"
+            + (config.routes.isEmpty ? "" : ", plus \(config.routes.count) fixed route(s)")
+            + (fadeFrames > 0 ? "; crossfading over \(Int(config.groupCrossfadeMS)) ms" : ""))
+        for line in renderer.groupSummaries { log("  group \(line)") }
+        if let motion = config.testMotion, let index = renderer.sourceIndex(input: motion.source) {
+            log("test motion: source \(config.sources[index].label) moves on a \(motion.shape.rawValue), "
+                + "\(motion.seconds) s per round")
+            motionStarted = Date()
+            let timer = DispatchSource.makeTimerSource(queue: queue)
+            timer.schedule(deadline: .now(), repeating: .milliseconds(20), leeway: .milliseconds(2))
+            timer.setEventHandler { [weak self] in self?.stepMotion(motion, index: index) }
+            timer.resume()
+            motionTimer = timer
+        }
+    }
+
+    /// Moves the test motion's source to where it should be now and publishes the new state.
+    private func stepMotion(_ motion: TestMotion, index: Int) {
+        guard let spatial else { return }
+        spatial.move(source: index, to: motion.position(at: Date().timeIntervalSince(motionStarted)))
+        try? core.publish(spatial.makeState())
     }
 
     private func applyTestSignal() {
@@ -69,18 +105,14 @@ final class Engine {
         }
         let old = config
         config = newConfig
-        var deviceSettings = old
-        deviceSettings.routes = newConfig.routes
-        deviceSettings.testSignal = newConfig.testSignal
-        deviceSettings.testSignalDB = newConfig.testSignalDB
-        deviceSettings.testSignalHz = newConfig.testSignalHz
-        if deviceSettings != newConfig {
+        if !old.sameDeviceSettings(as: newConfig) {
             if newConfig.sampleRate != old.sampleRate {
                 log("reload: sampleRate changed; load figures use the old rate until the engine restarts")
             }
             io.reconfigure(newConfig)
         }
-        do { try publishRouting() } catch { log("reload: \(error)") }
+        // A layout change crossfades, so sources changing groups or renderers move over smoothly.
+        do { try publishRouting(fadeFrames: newConfig.groupCrossfadeFrames) } catch { log("reload: \(error)") }
         if old.testSignal != .off && newConfig.testSignal == .off { log("test signal: off") }
         applyTestSignal()
     }
@@ -104,7 +136,7 @@ final class Engine {
         lastReport = (s.lateBuffers, overloads, skipped)
         let line = "buffers \(s.buffers), peak load \(Int((s.maxLoad * 100).rounded())) %, "
             + "late \(s.lateBuffers), overloads \(overloads), skipped \(skipped), "
-            + "state #\(s.currentState) (\(core.liveStates) held), faults \(io.faults), audio \(io.state)"
+            + "state #\(s.currentState) (\(core.liveStates) held), \(s.activeTaps) taps, faults \(io.faults), audio \(io.state)"
         if late > 0 || newOverloads > 0 || newSkipped > 0 {
             log("WARNING: in the last 10 s \(late) late, \(newOverloads) overload(s), \(newSkipped) skipped; \(line)")
         } else if force {
