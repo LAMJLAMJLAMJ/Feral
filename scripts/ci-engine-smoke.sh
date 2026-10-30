@@ -10,7 +10,7 @@ PORT=9177
 cp -R examples/stage-test.feralshow "$DIR/"
 sed -e 's|"MADIface XT"|"no such device"|' -e "s|\"show\"|\"controlPort\": $PORT, \"show\"|" examples/stage-test.json > "$DIR/engine.json"
 cat "$DIR/engine.json"
-CLI=("$BIN/feral-cli" --config "$DIR/engine.json")
+cli() { "$BIN/feral-cli" "$@" --config "$DIR/engine.json"; }
 
 start_engine() {
     "$BIN/feral-engine" run --config "$DIR/engine.json" >>"$DIR/engine.log" 2>&1 &
@@ -23,12 +23,12 @@ start_engine() {
 }
 
 start_engine
-"${CLI[@]}" status
-"${CLI[@]}" go
-"${CLI[@]}" move 1 -6 10
-"${CLI[@]}" store "CI spot" --fade 0
-"${CLI[@]}" cue 9 5 --name "CI cue"
-"${CLI[@]}" go 9
+cli status
+cli go
+cli move 1 -6 10
+cli store "CI spot" --fade 0
+cli cue 9 5 --name "CI cue"
+cli go 9
 sleep 0.5   # let the journal flush (every 0.1 s)
 
 # A crash: no chance to save or flush anything more.
@@ -37,13 +37,13 @@ wait "$ENGINE" 2>/dev/null || true
 grep -c . "$DIR/stage-test.feralshow/journal/journal.jsonl"
 
 start_engine
-"${CLI[@]}" status | tee "$DIR/status.txt"
+cli status | tee "$DIR/status.txt"
 grep -q "unsaved change" "$DIR/status.txt"
-"${CLI[@]}" show info --show "$DIR/stage-test.feralshow" | tee "$DIR/info.txt"
+cli show info --show "$DIR/stage-test.feralshow" | tee "$DIR/info.txt"
 grep -q "CI spot" "$DIR/info.txt"
 grep -q "9 CI cue" "$DIR/info.txt"
 grep -q "at \[-6.0, 10.0, 1.6\]" "$DIR/info.txt"
-"${CLI[@]}" save
+cli save
 test ! -s "$DIR/stage-test.feralshow/journal/journal.jsonl"
 grep -q "CI spot" "$DIR/stage-test.feralshow/show.json"
 kill "$ENGINE"
