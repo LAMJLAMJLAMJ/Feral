@@ -32,9 +32,15 @@ while !args.isEmpty {
     }
     switch arg {
     case "--config": configURL = URL(fileURLWithPath: value())
-    case "--source": source = Int(value()) ?? fail("--source needs an input number")
-    case "--seconds": seconds = Double(value()) ?? fail("--seconds needs a number")
-    case "--tail": tail = Double(value()) ?? fail("--tail needs a number")
+    case "--source":
+        guard let n = Int(value()) else { fail("--source needs an input number") }
+        source = n
+    case "--seconds":
+        guard let n = Double(value()) else { fail("--seconds needs a number") }
+        seconds = n
+    case "--tail":
+        guard let n = Double(value()) else { fail("--tail needs a number") }
+        tail = n
     default:
         if arg.hasPrefix("--") { fail("unknown option \(arg); try feral-cli help") }
         files.append(arg)
