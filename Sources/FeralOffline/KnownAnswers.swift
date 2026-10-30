@@ -119,7 +119,8 @@ public enum KnownAnswers {
     }
 
     /// A delay moved from 480 to 490 samples glides at 0.5 %: after n samples it is
-    /// 480 + 0.005 (n + 1), reaching 490 after 2000. A ramp input (x[n] = n / 1000) shows the delay
+    /// 480 + 0.005 (n + 1). It moves a whole buffer's step at a time, so the last 0.08 samples take
+    /// the 32nd buffer and it reaches 490 on sample 2048. A ramp input (x[n] = n / 1000) shows the delay
     /// on every sample exactly, since the interpolation is exact for straight lines.
     static func delayGlide() -> Result {
         let core = RenderCore(sampleRate: rate)
@@ -131,7 +132,8 @@ public enum KnownAnswers {
         func delay(at n: Int) -> Double { Double(n) - Double(y[n]) * 1000 }
         return check("Delay glide (0.5 % pitch limit)", [
             ("delay before", delay(at: moveAt - 1), 480), ("after 100", delay(at: moveAt + 99), 480.5),
-            ("after 1000", delay(at: moveAt + 999), 485), ("after 2000", delay(at: moveAt + 1999), 490),
+            ("after 1000", delay(at: moveAt + 999), 485), ("after 1984", delay(at: moveAt + 1983), 489.92),
+            ("after 2048", delay(at: moveAt + 2047), 490),
             ("after 3000", delay(at: moveAt + 2999), 490),
         ], tolerance: 0.05)
     }
