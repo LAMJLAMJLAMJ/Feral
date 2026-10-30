@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <cmath>
 #include <mutex>
 
 namespace feral {
@@ -62,6 +63,16 @@ struct feral_core {
     std::vector<RenderState *> published; // oldest first, the newest last
     std::atomic<size_t> liveStates{0};
 
+    // The test signal. The control side sets the targets; the generator's state is the audio thread's.
+    std::atomic<int> testKind{FERAL_TEST_OFF};
+    std::atomic<float> testGain{0};
+    std::atomic<float> testHz{1000};
+    std::vector<float> testBuffer = std::vector<float>(FERAL_TEST_MAX_FRAMES);
+    float testLastGain = 0;
+    uint32_t testRandom = 0x9E3779B9u;
+    float pink[7] = {};
+    double testPhase = 0;
+
     // Counters written by the audio thread.
     std::atomic<uint64_t> buffers{0};
     std::atomic<uint64_t> lateBuffers{0};
@@ -119,6 +130,58 @@ void feral_core_audio_detached(feral_core *core) {
     core->acknowledged.store(newest ? newest->sequence : 0, std::memory_order_release);
 }
 
+void feral_core_set_test_signal(feral_core *core, int kind, float level_db, float sine_hz) {
+    core->testGain.store(std::pow(10.0f, level_db / 20.0f), std::memory_order_relaxed);
+    core->testHz.store(sine_hz > 0 ? sine_hz : 1000, std::memory_order_relaxed);
+    core->testKind.store(kind, std::memory_order_relaxed);
+}
+
+namespace {
+
+/// Fills the core's test buffer with the generated signal. Audio thread only.
+const float *generateTestSignal(feral_core *core, int frames) {
+    const int kind = core->testKind.load(std::memory_order_relaxed);
+    if (kind == FERAL_TEST_OFF || frames > FERAL_TEST_MAX_FRAMES) {
+        core->testLastGain = 0;
+        return nullptr;
+    }
+    float *y = core->testBuffer.data();
+    if (kind == FERAL_TEST_SINE) {
+        // RMS of a sine is its peak over sqrt 2.
+        const double step = 2 * M_PI * core->testHz.load(std::memory_order_relaxed) / core->sampleRate;
+        for (int n = 0; n < frames; ++n) {
+            y[n] = static_cast<float>(std::sqrt(2.0) * std::sin(core->testPhase));
+            core->testPhase += step;
+        }
+        core->testPhase = std::fmod(core->testPhase, 2 * M_PI);
+    } else {
+        // White noise (xorshift32) through Paul Kellet's pink filter, scaled to an RMS of 1.
+        float *b = core->pink;
+        uint32_t r = core->testRandom;
+        for (int n = 0; n < frames; ++n) {
+            r ^= r << 13; r ^= r >> 17; r ^= r << 5;
+            const float w = static_cast<float>(r) * (2.0f / 4294967296.0f) - 1.0f;
+            b[0] = 0.99886f * b[0] + w * 0.0555179f;
+            b[1] = 0.99332f * b[1] + w * 0.0750759f;
+            b[2] = 0.96900f * b[2] + w * 0.1538520f;
+            b[3] = 0.86650f * b[3] + w * 0.3104856f;
+            b[4] = 0.55000f * b[4] + w * 0.5329522f;
+            b[5] = -0.7616f * b[5] - w * 0.0168980f;
+            y[n] = (b[0] + b[1] + b[2] + b[3] + b[4] + b[5] + b[6] + w * 0.5362f) * 0.5667f;
+            b[6] = w * 0.115926f;
+        }
+        core->testRandom = r;
+    }
+    // Ramp from the last buffer's level, so switching on or changing level does not click.
+    const float g0 = core->testLastGain, g1 = core->testGain.load(std::memory_order_relaxed);
+    const float step = (g1 - g0) / static_cast<float>(frames);
+    for (int n = 0; n < frames; ++n) y[n] *= g0 + step * static_cast<float>(n + 1);
+    core->testLastGain = g1;
+    return y;
+}
+
+}
+
 void feral_core_render(feral_core *core, const float *const *inputs, int num_inputs,
                        float *const *outputs, int num_outputs, int frames) {
     using clock = std::chrono::steady_clock;
@@ -129,7 +192,11 @@ void feral_core_render(feral_core *core, const float *const *inputs, int num_inp
     RenderState *next = core->latest.load(std::memory_order_acquire);
     const bool swapping = next != previous;
 
-    auto input = [&](int in) -> const float * { return in < num_inputs ? inputs[in] : nullptr; };
+    const float *test = generateTestSignal(core, frames);
+    auto input = [&](int in) -> const float * {
+        if (in == 0 && test) return test;
+        return in < num_inputs ? inputs[in] : nullptr;
+    };
 
     for (int out = 0; out < num_outputs; ++out) {
         float *y = outputs[out];

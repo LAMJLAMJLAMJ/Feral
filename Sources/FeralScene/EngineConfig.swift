@@ -22,10 +22,17 @@ public struct EngineConfig: Codable, Equatable {
     public var routes: [Route]
     /// Refuse aggregate devices, which drift or resample between clocks. Turn off only for tests.
     public var refuseAggregateDevices: Bool
+    /// A generated signal in place of input 1, for checking outputs with nothing plugged in.
+    public var testSignal: TestSignal
+    /// The test signal's RMS level in dB re full scale (a sine's peak is 3 dB higher).
+    public var testSignalDB: Double
+    /// The sine's frequency.
+    public var testSignalHz: Double
 
     public init(device: String? = nil, sampleRate: Double = 48_000, bufferFrames: Int = 64,
                 inputs: Int = 128, outputs: Int = 128, firstInputChannel: Int = 1, firstOutputChannel: Int = 1,
-                routes: [Route] = [], refuseAggregateDevices: Bool = true) {
+                routes: [Route] = [], refuseAggregateDevices: Bool = true,
+                testSignal: TestSignal = .off, testSignalDB: Double = -20, testSignalHz: Double = 1000) {
         self.device = device
         self.sampleRate = sampleRate
         self.bufferFrames = bufferFrames
@@ -35,11 +42,14 @@ public struct EngineConfig: Codable, Equatable {
         self.firstOutputChannel = firstOutputChannel
         self.routes = routes
         self.refuseAggregateDevices = refuseAggregateDevices
+        self.testSignal = testSignal
+        self.testSignalDB = testSignalDB
+        self.testSignalHz = testSignalHz
     }
 
     enum CodingKeys: String, CodingKey {
         case device, sampleRate, bufferFrames, inputs, outputs, firstInputChannel, firstOutputChannel, routes,
-             refuseAggregateDevices
+             refuseAggregateDevices, testSignal, testSignalDB, testSignalHz
     }
 
     /// Every key is optional in the file; missing ones take the defaults above.
@@ -55,6 +65,9 @@ public struct EngineConfig: Codable, Equatable {
         firstOutputChannel = try c.decodeIfPresent(Int.self, forKey: .firstOutputChannel) ?? d.firstOutputChannel
         routes = try c.decodeIfPresent([Route].self, forKey: .routes) ?? d.routes
         refuseAggregateDevices = try c.decodeIfPresent(Bool.self, forKey: .refuseAggregateDevices) ?? d.refuseAggregateDevices
+        testSignal = try c.decodeIfPresent(TestSignal.self, forKey: .testSignal) ?? d.testSignal
+        testSignalDB = try c.decodeIfPresent(Double.self, forKey: .testSignalDB) ?? d.testSignalDB
+        testSignalHz = try c.decodeIfPresent(Double.self, forKey: .testSignalHz) ?? d.testSignalHz
     }
 
     /// Where the engine looks for its settings: ~/Library/Application Support/Feral/engine.json.
@@ -86,8 +99,16 @@ public struct EngineConfig: Codable, Equatable {
         guard firstInputChannel >= 1, firstOutputChannel >= 1 else {
             throw ConfigError("firstInputChannel and firstOutputChannel count from 1")
         }
+        guard testSignalDB <= 0 else { throw ConfigError("testSignalDB must be 0 or below") }
+        guard testSignalHz >= 10, testSignalHz <= 20_000 else { throw ConfigError("testSignalHz must be from 10 to 20000") }
+        if testSignal != .off && inputs < 1 { throw ConfigError("the test signal replaces input 1, so inputs must be 1 or more") }
         _ = try Routing(routes: routes, inputs: inputs, outputs: outputs)
     }
+}
+
+/// A generated signal the engine can play in place of input 1.
+public enum TestSignal: String, Codable, Equatable {
+    case off, pink, sine
 }
 
 public struct ConfigError: Error, CustomStringConvertible, Equatable {

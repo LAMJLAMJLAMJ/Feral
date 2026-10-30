@@ -56,12 +56,14 @@ This builds `FeralEngine.app` (the engine inside a minimal app bundle, so macOS 
 | `firstInputChannel`, `firstOutputChannel` | 1, 1 | The device channel (from 1) that engine channel 1 uses; the rest follow in order |
 | `routes` | passthrough | The fixed gain matrix: a list of `{ "inputs": "1-64", "outputs": "65-128", "gainDB": -3 }`. Equal-sized ranges pair up in order, one input to many outputs feeds them all, many inputs to one output sum. No routes means input n to output n |
 | `refuseAggregateDevices` | true | Aggregate devices drift or resample between clocks, so the engine refuses them |
+| `testSignal` | `"off"` | `"pink"` or `"sine"` plays a generated signal in place of input 1, to check outputs with nothing plugged in |
+| `testSignalDB`, `testSignalHz` | -20, 1000 | The test signal's RMS level in dB re full scale (a sine peaks 3 dB higher), and the sine's frequency |
 
 The engine refuses aggregate devices and needs 32-bit float streams (every pro interface we use presents them). The device must be clocked from the house clock or the network; the engine follows it and logs any sample rate change as a fault.
 
 ### Testing 128 outputs on an RME MADIface XT
 
-At 48 kHz each MADI port carries 64 channels, so 128 outputs need two of the XT's MADI ports; `feral-engine devices` shows how many channels the driver presents, and `firstOutputChannel` picks where the engine's outputs start. To feed one test signal on input 1 to every output at -20 dB:
+At 48 kHz each MADI port carries 64 channels, so 128 outputs need two of the XT's MADI ports; `feral-engine devices` shows how many channels the driver presents, and `firstOutputChannel` picks where the engine's outputs start. To play pink noise at -20 dB RMS on every output, with nothing plugged in:
 
 ```json
 {
@@ -69,9 +71,12 @@ At 48 kHz each MADI port carries 64 channels, so 128 outputs need two of the XT'
   "bufferFrames": 64,
   "inputs": 1,
   "outputs": 128,
-  "routes": [ { "inputs": 1, "outputs": "1-128", "gainDB": -20 } ]
+  "routes": [ { "inputs": 1, "outputs": "1-128" } ],
+  "testSignal": "pink"
 }
 ```
+
+Watch the outputs on TotalMix's meters. Set `"testSignal": "off"` and reload to use a real source on the input instead (`firstInputChannel` picks which device input).
 
 For a straight 128-channel passthrough, leave out `inputs`, `outputs` and `routes`. The log line at start says how many engine channels found a device channel, the buffer size the device accepted and the latency it reports; every 10 seconds the engine logs a warning if any buffer ran late (over 80 % of its time), Core Audio reported an overload, or a buffer was skipped, and every 5 minutes it logs a status line.
 

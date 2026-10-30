@@ -224,3 +224,66 @@ final class ManagedAtomicFlag: @unchecked Sendable {
     func set() { lock.lock(); value = true; lock.unlock() }
     var isSet: Bool { lock.lock(); defer { lock.unlock() }; return value }
 }
+
+final class TestSignalTests: XCTestCase {
+    func rmsDB(_ x: [Float]) -> Double {
+        10 * log10(x.reduce(0) { $0 + Double($1) * Double($1) } / Double(x.count))
+    }
+
+    /// Renders `buffers` buffers of the test signal through input 1 to output 1 and returns output 1.
+    func play(_ kind: TestSignal, levelDB: Double, hz: Double = 1000, buffers: Int) -> [Float] {
+        let core = RenderCore(sampleRate: 48_000)
+        core.publish(try! Routing(routes: [Route(inputs: "1", outputs: "1-2")], inputs: 1, outputs: 2))
+        core.setTestSignal(kind, levelDB: levelDB, sineHz: hz)
+        let input = TestBuffers(channels: 1, frames: 256) { _, _ in 0.9 } // must be replaced
+        let output = TestBuffers(channels: 2, frames: 256)
+        render(core.pointer, input, output) // fade-in
+        var out: [Float] = []
+        for _ in 0..<buffers {
+            render(core.pointer, input, output)
+            XCTAssertEqual(output[0], output[1], "input 1 feeds both outputs")
+            out += output[0]
+        }
+        return out
+    }
+
+    func testPinkNoiseLevel() {
+        let x = play(.pink, levelDB: -20, buffers: 2000) // about 10 s
+        XCTAssertEqual(rmsDB(x), -20, accuracy: 0.5)
+        XCTAssertLessThan(x.map(abs).max()!, 1, "no clipping at -20 dB")
+    }
+
+    func testSineLevelAndFrequency() {
+        let x = play(.sine, levelDB: -12, hz: 1000, buffers: 375) // 2 s
+        XCTAssertEqual(rmsDB(x), -12, accuracy: 0.05)
+        XCTAssertEqual(Double(x.map(abs).max()!), pow(10, -12.0 / 20) * 2.0.squareRoot(), accuracy: 1e-3)
+        // 1 kHz crosses zero upwards 1000 times a second.
+        let ups = zip(x, x.dropFirst()).filter { $0 < 0 && $1 >= 0 }.count
+        XCTAssertEqual(ups, 2000, accuracy: 1)
+    }
+
+    func testOffGivesInput1Back() {
+        let core = RenderCore(sampleRate: 48_000)
+        core.publish(try! Routing(routes: [], inputs: 1, outputs: 1))
+        let input = TestBuffers(channels: 1, frames: 64) { _, _ in 0.5 }
+        let output = TestBuffers(channels: 1, frames: 64)
+        core.setTestSignal(.pink, levelDB: -20)
+        render(core.pointer, input, output)
+        render(core.pointer, input, output)
+        XCTAssertNotEqual(output[0], input[0])
+        core.setTestSignal(.off, levelDB: -20)
+        render(core.pointer, input, output)
+        XCTAssertEqual(output[0], input[0])
+    }
+
+    func testSwitchingOnRampsUp() {
+        let core = RenderCore(sampleRate: 48_000)
+        core.publish(try! Routing(routes: [], inputs: 1, outputs: 1))
+        let input = TestBuffers(channels: 1, frames: 64)
+        let output = TestBuffers(channels: 1, frames: 64)
+        render(core.pointer, input, output)
+        core.setTestSignal(.sine, levelDB: 0, sineHz: 375) // 128 samples a cycle: sample 32 is the peak
+        render(core.pointer, input, output)
+        XCTAssertEqual(Double(output[0][31]), 2.0.squareRoot() * 32 / 64, accuracy: 1e-3, "half-way up the ramp")
+    }
+}

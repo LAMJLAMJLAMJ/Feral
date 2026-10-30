@@ -48,6 +48,21 @@ void feral_core_audio_detached(feral_core *core);
 void feral_core_render(feral_core *core, const float *const *inputs, int num_inputs,
                        float *const *outputs, int num_outputs, int frames);
 
+/// Generated signals for testing outputs with nothing plugged in.
+enum {
+    FERAL_TEST_OFF = 0,
+    FERAL_TEST_PINK = 1, ///< pink noise
+    FERAL_TEST_SINE = 2, ///< a sine at sine_hz
+};
+
+/// The longest buffer the test signal is generated for, in frames.
+#define FERAL_TEST_MAX_FRAMES 4096
+
+/// Replaces engine input 1 with a generated signal at level_db RMS re full scale (a sine's peak is
+/// 3 dB higher), or puts input 1 back with FERAL_TEST_OFF. Level changes ramp over one buffer.
+/// Any thread.
+void feral_core_set_test_signal(feral_core *core, int kind, float level_db, float sine_hz);
+
 typedef struct feral_core_stats {
     /// Buffers rendered.
     uint64_t buffers;

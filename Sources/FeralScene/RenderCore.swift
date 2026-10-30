@@ -28,6 +28,17 @@ public final class RenderCore {
     /// Call once the audio thread has stopped (after AudioDeviceStop returns).
     public func audioDetached() { feral_core_audio_detached(pointer) }
 
+    /// Replaces input 1 with a generated test signal, or puts it back with `.off`.
+    public func setTestSignal(_ kind: TestSignal, levelDB: Double, sineHz: Double = 1000) {
+        let code: Int32
+        switch kind {
+        case .off: code = Int32(FERAL_TEST_OFF)
+        case .pink: code = Int32(FERAL_TEST_PINK)
+        case .sine: code = Int32(FERAL_TEST_SINE)
+        }
+        feral_core_set_test_signal(pointer, code, Float(levelDB), Float(sineHz))
+    }
+
     public struct Stats: Equatable {
         public var buffers: UInt64
         public var lateBuffers: UInt64

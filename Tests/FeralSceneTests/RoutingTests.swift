@@ -84,6 +84,18 @@ final class EngineConfigTests: XCTestCase {
         XCTAssertEqual(r.gains.filter { $0 != 0 }.count, 128)
     }
 
+    func testTestSignalSettings() throws {
+        let json = #"{ "inputs": 1, "outputs": 128, "routes": [ { "inputs": 1, "outputs": "1-128" } ], "testSignal": "pink" }"#
+        let c = try JSONDecoder().decode(EngineConfig.self, from: Data(json.utf8))
+        XCTAssertEqual(c.testSignal, .pink)
+        XCTAssertEqual(c.testSignalDB, -20)
+        XCTAssertNoThrow(try c.validate())
+        XCTAssertEqual(EngineConfig().testSignal, .off)
+        XCTAssertThrowsError(try JSONDecoder().decode(EngineConfig.self, from: Data(#"{"testSignal": "loud"}"#.utf8)))
+        XCTAssertThrowsError(try EngineConfig(testSignal: .sine, testSignalDB: 3).validate())
+        XCTAssertThrowsError(try EngineConfig(inputs: 0, testSignal: .pink).validate())
+    }
+
     func testSaveAndLoad() throws {
         let url = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString).appendingPathComponent("engine.json")

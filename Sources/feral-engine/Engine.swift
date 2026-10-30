@@ -31,6 +31,7 @@ final class Engine {
                 options: [.userInitiated, .latencyCritical], reason: "Feral engine is rendering live audio")
             checkMicrophoneAccess()
             do { try publishRouting() } catch { log("error: \(error); playing silence until the routing is fixed") }
+            applyTestSignal()
             io = AudioEngineIO(core: core, config: config, queue: queue, log: log)
             io.start()
             every(0.05) { [self] in core.collect() }
@@ -50,6 +51,15 @@ final class Engine {
             + (config.routes.isEmpty ? " (passthrough)" : " from \(config.routes.count) route(s)"))
     }
 
+    private func applyTestSignal() {
+        core.setTestSignal(config.testSignal, levelDB: config.testSignalDB, sineHz: config.testSignalHz)
+        switch config.testSignal {
+        case .off: break
+        case .pink: log("test signal: pink noise at \(config.testSignalDB) dB RMS in place of input 1")
+        case .sine: log("test signal: \(Int(config.testSignalHz)) Hz sine at \(config.testSignalDB) dB RMS in place of input 1")
+        }
+    }
+
     /// Re-reads engine.json. A routing change ramps in over one buffer; device changes reopen it.
     private func reload() {
         let newConfig: EngineConfig
@@ -61,6 +71,9 @@ final class Engine {
         config = newConfig
         var deviceSettings = old
         deviceSettings.routes = newConfig.routes
+        deviceSettings.testSignal = newConfig.testSignal
+        deviceSettings.testSignalDB = newConfig.testSignalDB
+        deviceSettings.testSignalHz = newConfig.testSignalHz
         if deviceSettings != newConfig {
             if newConfig.sampleRate != old.sampleRate {
                 log("reload: sampleRate changed; load figures use the old rate until the engine restarts")
@@ -68,6 +81,8 @@ final class Engine {
             io.reconfigure(newConfig)
         }
         do { try publishRouting() } catch { log("reload: \(error)") }
+        if old.testSignal != .off && newConfig.testSignal == .off { log("test signal: off") }
+        applyTestSignal()
     }
 
     private func shutdown(_ signal: String) {
