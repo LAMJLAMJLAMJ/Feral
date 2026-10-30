@@ -37,15 +37,16 @@ public final class SpatialRenderer {
         let gain: Double
 
         init(_ config: GroupConfig, speakers: [SpeakerConfig], outputs: [Int]) throws {
+            let points = speakers.map { $0.position.c }
             self.config = config
             self.outputs = outputs
-            points = speakers.map { $0.position.c }
+            self.points = points
             weights = speakers.map { pow(10, (config.weightsDB[String($0.output)] ?? 0) / 20) }
             gain = pow(10, config.gainDB / 20)
             if config.renderer == .vbap {
                 let reference = (config.reference ?? Group.defaultReference(speakers)).c
                 let dims = Int32(config.dimensions ?? 0)
-                guard let v = points.withUnsafeBufferPointer({ feral_vbap_create($0.baseAddress, Int32(points.count), reference, dims) }) else {
+                guard let v = points.withUnsafeBufferPointer({ feral_vbap_create($0.baseAddress, Int32($0.count), reference, dims) }) else {
                     throw ConfigError("group \(config.name): VBAP needs at least 2 speakers, and in 3D speakers around the reference on more than one side")
                 }
                 vbap = v
