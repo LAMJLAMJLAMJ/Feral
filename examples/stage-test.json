@@ -5,42 +5,5 @@
   "outputs": 26,
   "testSignal": "pink",
   "testSignalDB": -20,
-  "speakers": [
-    { "output": 1, "name": "Main 1", "position": [-10.5, 0, 5], "limiterDB": -1 },
-    { "output": 2, "name": "Main 2", "position": [-7.5, 0, 5], "limiterDB": -1 },
-    { "output": 3, "name": "Main 3", "position": [-4.5, 0, 5], "limiterDB": -1 },
-    { "output": 4, "name": "Main 4", "position": [-1.5, 0, 5], "limiterDB": -1 },
-    { "output": 5, "name": "Main 5", "position": [1.5, 0, 5], "limiterDB": -1 },
-    { "output": 6, "name": "Main 6", "position": [4.5, 0, 5], "limiterDB": -1 },
-    { "output": 7, "name": "Main 7", "position": [7.5, 0, 5], "limiterDB": -1 },
-    { "output": 8, "name": "Main 8", "position": [10.5, 0, 5], "limiterDB": -1 },
-    { "output": 9, "name": "Front fill 1", "position": [-6, 1, 0.5], "trimDB": -6, "eq": [{"type": "highPass", "hz": 120}], "limiterDB": -1 },
-    { "output": 10, "name": "Front fill 2", "position": [-2, 1, 0.5], "trimDB": -6, "eq": [{"type": "highPass", "hz": 120}], "limiterDB": -1 },
-    { "output": 11, "name": "Front fill 3", "position": [2, 1, 0.5], "trimDB": -6, "eq": [{"type": "highPass", "hz": 120}], "limiterDB": -1 },
-    { "output": 12, "name": "Front fill 4", "position": [6, 1, 0.5], "trimDB": -6, "eq": [{"type": "highPass", "hz": 120}], "limiterDB": -1 },
-    { "output": 13, "name": "Delay 1", "position": [-9, 20, 5], "limiterDB": -1 },
-    { "output": 14, "name": "Delay 2", "position": [-3, 20, 5], "limiterDB": -1 },
-    { "output": 15, "name": "Delay 3", "position": [3, 20, 5], "limiterDB": -1 },
-    { "output": 16, "name": "Delay 4", "position": [9, 20, 5], "limiterDB": -1 },
-    { "output": 17, "name": "Overhead 1", "position": [0.0, 4.0, 8] },
-    { "output": 18, "name": "Overhead 2", "position": [5.657, 6.343, 8] },
-    { "output": 19, "name": "Overhead 3", "position": [8.0, 12.0, 8] },
-    { "output": 20, "name": "Overhead 4", "position": [5.657, 17.657, 8] },
-    { "output": 21, "name": "Overhead 5", "position": [0.0, 20.0, 8] },
-    { "output": 22, "name": "Overhead 6", "position": [-5.657, 17.657, 8] },
-    { "output": 23, "name": "Overhead 7", "position": [-8.0, 12.0, 8] },
-    { "output": 24, "name": "Overhead 8", "position": [-5.657, 6.343, 8] },
-    { "output": 25, "name": "Sub L", "position": [-4, 0, 0] },
-    { "output": 26, "name": "Sub R", "position": [4, 0, 0] }
-  ],
-  "groups": [
-    { "name": "Main", "renderer": "delay", "speakers": "1-16", "precedenceMS": 10 },
-    { "name": "Overheads", "renderer": "vbap", "speakers": "17-24", "reference": [0, 12, 1.2] }
-  ],
-  "lfeOutputs": "25-26",
-  "sources": [
-    { "input": 1, "name": "Test", "position": [0, 2, 1.6], "groups": {"Main": 0, "Overheads": -6}, "lfeDB": -10 },
-    { "input": 2, "name": "Vox", "position": [-3, 1, 1.6], "groups": ["Main"] }
-  ],
-  "testMotion": { "source": 1, "shape": "circle", "center": [0, 6, 1.6], "radius": 6, "seconds": 20 }
+  "show": "stage-test.feralshow"
 }

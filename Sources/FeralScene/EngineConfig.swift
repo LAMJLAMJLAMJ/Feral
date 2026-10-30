@@ -1,7 +1,9 @@
 import Foundation
 
-/// The engine's settings, read from engine.json: one audio device, a fixed routing, and the spatial
-/// layout (speakers, groups, sources). The show file takes over the layout in milestone 3.
+/// The engine's settings, read from engine.json: one audio device, a fixed routing, the show file to
+/// play, and how the app reaches the engine. The show file holds the spatial layout (speakers, groups,
+/// sources); engine.json's own `speakers`, `groups` and `sources` are only read to make a first show
+/// from (see ShowFile.open).
 public struct EngineConfig: Codable, Equatable {
     /// The audio device: its UID (best, from `feral-engine devices`), or part of its name.
     public var device: String?
@@ -47,6 +49,14 @@ public struct EngineConfig: Codable, Equatable {
     public var groupCrossfadeMS: Double
     /// Moves one source by itself, to hear the renderers move with only the test signal.
     public var testMotion: TestMotion?
+    /// The show package to play: a path to a .feralshow folder, absolute, from ~, or relative to
+    /// engine.json's folder. None: Shows/Default.feralshow next to engine.json.
+    public var show: String?
+    /// The address the app's control link listens on: 127.0.0.1 (this Mac only) or 0.0.0.0 (any
+    /// network, so an app on another Mac can connect).
+    public var controlAddress: String
+    /// The control link's TCP port.
+    public var controlPort: Int
 
     public init(device: String? = nil, sampleRate: Double = 48_000, bufferFrames: Int = 64,
                 inputs: Int = 128, outputs: Int = 128, firstInputChannel: Int = 1, firstOutputChannel: Int = 1,
@@ -55,7 +65,8 @@ public struct EngineConfig: Codable, Equatable {
                 speakers: [SpeakerConfig] = [], groups: [GroupConfig] = [], sources: [SourceConfig] = [],
                 lfeOutputs: String? = nil, airTemperatureC: Double = 20, delayGlidePercent: Double = 0.5,
                 delayJumpMS: Double = 5, delayCrossfadeMS: Double = 30, groupCrossfadeMS: Double = 50,
-                testMotion: TestMotion? = nil) {
+                testMotion: TestMotion? = nil, show: String? = nil, controlAddress: String = "127.0.0.1",
+                controlPort: Int = 9100) {
         self.device = device
         self.sampleRate = sampleRate
         self.bufferFrames = bufferFrames
@@ -78,12 +89,16 @@ public struct EngineConfig: Codable, Equatable {
         self.delayCrossfadeMS = delayCrossfadeMS
         self.groupCrossfadeMS = groupCrossfadeMS
         self.testMotion = testMotion
+        self.show = show
+        self.controlAddress = controlAddress
+        self.controlPort = controlPort
     }
 
     enum CodingKeys: String, CodingKey {
         case device, sampleRate, bufferFrames, inputs, outputs, firstInputChannel, firstOutputChannel, routes,
              refuseAggregateDevices, testSignal, testSignalDB, testSignalHz, speakers, groups, sources, lfeOutputs,
-             airTemperatureC, delayGlidePercent, delayJumpMS, delayCrossfadeMS, groupCrossfadeMS, testMotion
+             airTemperatureC, delayGlidePercent, delayJumpMS, delayCrossfadeMS, groupCrossfadeMS, testMotion, show,
+             controlAddress, controlPort
     }
 
     /// Every key is optional in the file; missing ones take the defaults above.
@@ -112,6 +127,9 @@ public struct EngineConfig: Codable, Equatable {
         delayCrossfadeMS = try c.decodeIfPresent(Double.self, forKey: .delayCrossfadeMS) ?? d.delayCrossfadeMS
         groupCrossfadeMS = try c.decodeIfPresent(Double.self, forKey: .groupCrossfadeMS) ?? d.groupCrossfadeMS
         testMotion = try c.decodeIfPresent(TestMotion.self, forKey: .testMotion)
+        show = try c.decodeIfPresent(String.self, forKey: .show)
+        controlAddress = try c.decodeIfPresent(String.self, forKey: .controlAddress) ?? d.controlAddress
+        controlPort = try c.decodeIfPresent(Int.self, forKey: .controlPort) ?? d.controlPort
     }
 
     /// True when sources are rendered to speaker groups, rather than only the fixed routing played.
@@ -164,6 +182,8 @@ public struct EngineConfig: Codable, Equatable {
         }
         guard testSignalDB <= 0 else { throw ConfigError("testSignalDB must be 0 or below") }
         guard testSignalHz >= 10, testSignalHz <= 20_000 else { throw ConfigError("testSignalHz must be from 10 to 20000") }
+        guard (1...65_535).contains(controlPort) else { throw ConfigError("controlPort must be from 1 to 65535") }
+        guard !controlAddress.isEmpty else { throw ConfigError("controlAddress must be an IP address such as 127.0.0.1") }
         if testSignal != .off && inputs < 1 { throw ConfigError("the test signal replaces input 1, so inputs must be 1 or more") }
         _ = try Routing(routes: routes, inputs: inputs, outputs: outputs)
         try validateSpatial()

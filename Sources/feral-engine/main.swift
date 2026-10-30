@@ -6,11 +6,13 @@
 //   feral-engine [run] [--config PATH]         run the engine (the default)
 //
 // While running: SIGHUP reloads engine.json (a new routing ramps in without a click; device changes
-// reopen the device), SIGTERM or SIGINT stops cleanly with exit status 0, which launchd does not restart.
+// reopen the device; a different show is opened), SIGTERM or SIGINT stops cleanly with exit status 0,
+// which launchd does not restart. The show (a .feralshow package) is changed through the control
+// link on port 9100: the Feral app and feral-cli.
 import FeralScene
 import Foundation
 
-let version = "0.2 (milestone 2: renderers)"
+let version = "0.3 (milestone 3: show file and app)"
 
 func log(_ message: String) {
     let stamp = ISO8601DateFormatter.string(from: Date(), timeZone: .current,
