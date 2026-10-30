@@ -141,7 +141,7 @@ struct DelayLine {
 
     /// y[m] += g(m) * x[m - d(m)], with the gain going linearly from g0 to g1 and the delay from d0
     /// to d1 over the block (each reaching its end value on the last sample).
-    void accumulate(uint32_t block, int frames, double d0, double d1, float g0, float g1, float *y) const {
+    void accumulate(uint32_t block, int frames, double d0, double d1, float g0, float g1, float *__restrict y) const {
         const float gstep = (g1 - g0) / static_cast<float>(frames);
         if (d0 != d1) {
             const double dstep = (d1 - d0) / frames;
@@ -158,7 +158,7 @@ struct DelayLine {
             for (int m = 0; m < frames; ++m) y[m] += (g0 + gstep * static_cast<float>(m + 1)) * read(block, m, d0);
             return;
         }
-        const float *x = data + oldest + 2; // x[m] here is the input k samples before block sample m
+        const float *__restrict x = data + oldest + 2; // x[m] here is the input k samples before block sample m
         if (f == 0) {
             if (g0 == g1) for (int m = 0; m < frames; ++m) y[m] += g1 * x[m];
             else for (int m = 0; m < frames; ++m) y[m] += (g0 + gstep * static_cast<float>(m + 1)) * x[m];
@@ -564,22 +564,19 @@ void processOutput(feral_core *core, int out, const feral_output_params &p, floa
         line.accumulate(block, frames, plan, 1, 1, y);
     }
 
-    // EQ: transposed direct form II, coefficients interpolated over the buffer when they change.
+    // EQ: transposed direct form II. A band whose coefficients change is run on its own, with them
+    // interpolated over the buffer; the steady bands then run together sample by sample, which lets
+    // the processor overlap them (each band alone is one long chain of dependent multiplies). Bands
+    // in series commute, so the order does not change the result.
+    feral_biquad steady[FERAL_EQ_BANDS];
+    float s1[FERAL_EQ_BANDS], s2[FERAL_EQ_BANDS];
+    int steadyBand[FERAL_EQ_BANDS];
+    int steadyCount = 0;
     for (int b = 0; b < FERAL_EQ_BANDS; ++b) {
         feral_biquad c = r.eq[b];
         const feral_biquad &t = p.eq[b];
-        const bool changing = c != t;
-        if (!changing && isFlat(c)) continue;
-        float z1 = r.z1[b], z2 = r.z2[b];
-        if (!changing) {
-            for (int n = 0; n < frames; ++n) {
-                const float x = y[n];
-                const float v = c.b0 * x + z1;
-                z1 = c.b1 * x - c.a1 * v + z2;
-                z2 = c.b2 * x - c.a2 * v;
-                y[n] = v;
-            }
-        } else {
+        if (c != t) {
+            float z1 = r.z1[b], z2 = r.z2[b];
             const feral_biquad d = {(t.b0 - c.b0) * inv, (t.b1 - c.b1) * inv, (t.b2 - c.b2) * inv,
                                     (t.a1 - c.a1) * inv, (t.a2 - c.a2) * inv};
             for (int n = 0; n < frames; ++n) {
@@ -591,9 +588,31 @@ void processOutput(feral_core *core, int out, const feral_output_params &p, floa
                 y[n] = v;
             }
             r.eq[b] = t;
+            r.z1[b] = flushTiny(z1);
+            r.z2[b] = flushTiny(z2);
+        } else if (!isFlat(c)) {
+            steady[steadyCount] = c;
+            s1[steadyCount] = r.z1[b];
+            s2[steadyCount] = r.z2[b];
+            steadyBand[steadyCount++] = b;
         }
-        r.z1[b] = flushTiny(z1);
-        r.z2[b] = flushTiny(z2);
+    }
+    if (steadyCount > 0) {
+        for (int n = 0; n < frames; ++n) {
+            float x = y[n];
+            for (int k = 0; k < steadyCount; ++k) {
+                const feral_biquad &c = steady[k];
+                const float v = c.b0 * x + s1[k];
+                s1[k] = c.b1 * x - c.a1 * v + s2[k];
+                s2[k] = c.b2 * x - c.a2 * v;
+                x = v;
+            }
+            y[n] = x;
+        }
+        for (int k = 0; k < steadyCount; ++k) {
+            r.z1[steadyBand[k]] = flushTiny(s1[k]);
+            r.z2[steadyBand[k]] = flushTiny(s2[k]);
+        }
     }
 
     // Trim and polarity.

@@ -117,9 +117,13 @@ final class DelayTapTests: XCTestCase {
         let input = TestBuffers(channels: 128, frames: 64) { c, n in Float(c + n) * 1e-4 }
         let output = TestBuffers(channels: 128, frames: 64)
         for _ in 0..<500 { render(core.pointer, input, output) }
-        let started = Date()
-        for _ in 0..<2000 { render(core.pointer, input, output) }
-        let average = Date().timeIntervalSince(started) / 2000
+        // The best of several batches, so another job sharing the machine doesn't count against us.
+        var average = Double.infinity
+        for _ in 0..<5 {
+            let started = Date()
+            for _ in 0..<400 { render(core.pointer, input, output) }
+            average = min(average, Date().timeIntervalSince(started) / 400)
+        }
         print("128 sources x 32 delayed speakers + output processing, 64 frames: "
               + "\(String(format: "%.1f", average * 1e6)) µs per buffer of 1333 µs")
         XCTAssertEqual(core.stats().activeTaps, 4096)
