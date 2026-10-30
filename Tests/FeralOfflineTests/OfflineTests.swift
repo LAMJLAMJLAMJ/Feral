@@ -47,10 +47,16 @@ final class OfflineRendererTests: XCTestCase {
             .deletingLastPathComponent().appendingPathComponent("examples/stage-test.json")
     }
 
+    /// The example's engine settings with its show's layout, as the engine plays them.
+    static func exampleConfig() throws -> EngineConfig {
+        let config = try EngineConfig.load(from: example)
+        return try ShowFile.open(for: config, configURL: example).state.engineConfig(base: config)
+    }
+
     /// The example layout loads, and an impulse on the test source reaches the front line, fills,
     /// delays, overheads and subs, with the nearest main speaker after the 10 ms precedence only.
     func testExampleLayoutImpulse() throws {
-        var config = try EngineConfig.load(from: Self.example)
+        var config = try Self.exampleConfig()
         config.testSignal = .off
         config.testMotion = nil
         let renderer = try OfflineRenderer(config: config)
@@ -67,10 +73,10 @@ final class OfflineRendererTests: XCTestCase {
         XCTAssertEqual(fill.levelDB, -6, accuracy: 0.3, "the level is the energy, so its 120 Hz high-pass barely counts")
     }
 
-    /// The test motion moves the source while rendering, and the delays follow without a jump in level.
+    /// A test motion moves the source while rendering, and the delays follow without a jump in level.
     func testExampleWithMotionRenders() throws {
-        var config = try EngineConfig.load(from: Self.example)
-        config.testMotion?.seconds = 2
+        var config = try Self.exampleConfig()
+        config.testMotion = TestMotion(source: 1, center: Position(0, 6, 1.6), radius: 6, seconds: 2)
         let renderer = try OfflineRenderer(config: config)
         let y = renderer.render(length: 48_000, input: [])
         XCTAssertEqual(y.count, 26)

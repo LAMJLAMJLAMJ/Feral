@@ -195,7 +195,7 @@ public final class Journal {
 
     private func openHandle() throws -> FileHandle {
         if let handle { return handle }
-        if !FileManager.default.fileExists(atPath: url.path) { FileManager.default.createFile(atPath: url.path, contents: nil) }
+        if !FileManager.default.fileExists(atPath: url.path) { _ = FileManager.default.createFile(atPath: url.path, contents: nil) }
         let h = try FileHandle(forWritingTo: url)
         handle = h
         return h
