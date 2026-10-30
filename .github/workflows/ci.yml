@@ -1,0 +1,40 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  macos:
+    name: Build and test (macOS, Core Audio)
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build
+        run: swift build -c release
+      - name: Test
+        run: swift test -c release
+      - name: Bundle the engine
+        run: ./scripts/build-engine-app.sh
+      - name: Check the launchd agent file
+        run: |
+          sed -e "s|@ENGINE@|/tmp/feral-engine|" -e "s|@LOGS@|/tmp|" launchd/local.feral.engine.plist > /tmp/agent.plist
+          plutil -lint /tmp/agent.plist
+      - name: Run the engine's commands
+        run: |
+          build/FeralEngine.app/Contents/MacOS/feral-engine --version
+          build/FeralEngine.app/Contents/MacOS/feral-engine devices
+
+  linux:
+    name: Build and test (Linux, render core only)
+    runs-on: ubuntu-latest
+    container: swift:6.1-noble
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build
+        run: swift build -c release
+      - name: Test
+        run: swift test -c release
+      - name: Test the render-state swap under the thread sanitizer
+        run: swift test --sanitize=thread --filter RenderCoreTests
