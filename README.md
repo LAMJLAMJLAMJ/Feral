@@ -124,11 +124,12 @@ For a straight 128-channel passthrough, leave out `inputs`, `outputs` and `route
 `examples/stage-test.json` is a test layout on the XT's first 26 outputs: a Delay group of 8 mains, 4 front fills and 4 delays, a VBAP ring of 8 overheads, and 2 subs on the LFE send. Its test source plays pink noise and walks a 12 m circle from the stage lip into the house every 20 s, so you hear the delays glide and crossfade and the levels move:
 
 ```sh
+cp ~/Library/Application\ Support/Feral/engine.json ~/Desktop/engine-backup.json   # keep yours
 cp examples/stage-test.json ~/Library/Application\ Support/Feral/engine.json
 ./scripts/engine.sh reload
 ```
 
-On TotalMix's meters the level walks across the mains as the source circles, the front fills lead when it is near the lip, the delays take over when it is deep in the house, and the overhead nearest the source is loudest. Solo two neighbouring outputs on the XT's phones to hear the movement: a gliding delay is a slight pitch bend, never a click. `./scripts/engine.sh log` shows the groups (the overheads as a 2D VBAP ring) and the tap count; `feral-cli taps` and `impulse` give the same layout's numbers offline. Put your own engine.json back afterwards (or edit the device and outputs in the copy).
+On TotalMix's meters the level walks across the mains as the source circles, the front fills lead when it is near the lip, the delays take over when it is deep in the house, and the overhead nearest the source is loudest. Solo two neighbouring outputs on the XT's phones to hear the movement: a gliding delay is a slight pitch bend, never a click. `./scripts/engine.sh log` shows the groups (the overheads as a 2D VBAP ring) and the tap count; `feral-cli taps` and `impulse` give the same layout's numbers offline. Copy `~/Desktop/engine-backup.json` back and reload to return to your own settings.
 
 ## Checking the renderers offline: feral-cli
 
