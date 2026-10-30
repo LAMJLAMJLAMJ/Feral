@@ -64,6 +64,7 @@ final class OfflineRendererTests: XCTestCase {
         // Front fill 2 at [-2, 1, 0.5] is nearest the source at [0, 2, 1.6]: 6 dB trim, so -6 dB.
         let fill = try XCTUnwrap(arrivals.first { $0.output == 10 })
         XCTAssertEqual(fill.milliseconds, 10, accuracy: 0.05)
+        XCTAssertEqual(fill.levelDB, -6, accuracy: 0.3, "the level is the energy, so its 120 Hz high-pass barely counts")
     }
 
     /// The test motion moves the source while rendering, and the delays follow without a jump in level.

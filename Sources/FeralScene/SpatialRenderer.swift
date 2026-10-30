@@ -174,7 +174,8 @@ public final class SpatialRenderer {
                 feral_vbap_render(g.vbap, p, source.width, g.config.rolloff, g.config.referenceDistance ?? 0, &gains)
                 for k in 0..<n { gains[k] *= Float(g.weights[k]) }
             }
-            for k in 0..<n where gains[k] != 0 {
+            // Below -120 dB a feed is rounding left over from VBAP, not a speaker that plays.
+            for k in 0..<n where abs(gains[k]) > 1e-6 {
                 result.append(Tap(output: g.outputs[k], group: g.config.name, delayed: g.config.renderer == .delay,
                                   gain: gains[k] * Float(scale), delay: delays[k]))
             }

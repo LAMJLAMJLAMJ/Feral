@@ -75,11 +75,14 @@ public final class OfflineRenderer {
         return result
     }
 
-    /// Where an impulse on one input arrives at each output: the loudest sample's time and level.
+    /// Where an impulse on one input arrives at each output: the loudest sample's time, and the
+    /// response's level from its energy (so a fractional delay, which spreads the impulse over a
+    /// few samples, or an output EQ doesn't read as a drop in level the way the peak would).
     public struct Arrival: Equatable {
         /// Engine output, from 1.
         public var output: Int
         public var milliseconds: Double
+        /// 10·log10 of the sum of the squared samples: 0 dB for a unit impulse.
         public var levelDB: Double
         /// True when the loudest sample is negative (polarity flipped).
         public var inverted: Bool
@@ -94,8 +97,9 @@ public final class OfflineRenderer {
         var result: [Arrival] = []
         for (o, channel) in y.enumerated() {
             guard let peak = channel.indices.max(by: { abs(channel[$0]) < abs(channel[$1]) }), abs(channel[peak]) > 1e-6 else { continue }
+            let energy = channel.reduce(0) { $0 + Double($1) * Double($1) }
             result.append(Arrival(output: o + 1, milliseconds: Double(peak) / config.sampleRate * 1000,
-                                  levelDB: 20 * log10(Double(abs(channel[peak]))), inverted: channel[peak] < 0))
+                                  levelDB: 10 * log10(energy), inverted: channel[peak] < 0))
         }
         return result
     }

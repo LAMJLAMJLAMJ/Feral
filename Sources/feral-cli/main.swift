@@ -98,7 +98,7 @@ case "impulse":
         let renderer = try OfflineRenderer(config: config)
         let arrivals = renderer.impulse(input: input, seconds: 1.2)
         let names = Dictionary(config.speakers.map { ($0.output, $0.label) }, uniquingKeysWith: { a, _ in a })
-        print("impulse into input \(input): \(arrivals.count) output(s) reached (arrival is the loudest sample)")
+        print("impulse into input \(input): \(arrivals.count) output(s) reached (arrival is the loudest sample; level is the energy)")
         for a in arrivals.sorted(by: { $0.milliseconds != $1.milliseconds ? $0.milliseconds < $1.milliseconds : $0.output < $1.output }) {
             let name = names[a.output] ?? "output \(a.output)"
             print("  \(pad(name, 28)) " + String(format: "%8.2f ms  %+6.1f dB", a.milliseconds, a.levelDB)
