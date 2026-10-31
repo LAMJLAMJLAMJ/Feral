@@ -74,6 +74,11 @@ func printStatus(_ s: EngineStatus?, _ state: ShowState) {
           + (s.unsaved == 0 ? "saved" : "\(s.unsaved) unsaved change(s), kept in the journal"))
     print("cue:    current \(current), next \(next)" + (s.fading.isEmpty ? "" : "; fading \(s.fading.count) source(s)"))
     print("audio:  \(s.audio)")
+    print("osc:    \(s.osc.isEmpty ? "off" : s.osc)")
+    print("midi:   \(s.midi.isEmpty ? "off" : s.midi)")
+    for (id, owner) in s.owners.sorted(by: { (state.source($0.key)?.number ?? 0) < (state.source($1.key)?.number ?? 0) }) {
+        print("live:   source \(state.source(id)?.label ?? id.uuidString) position from \(owner.label)")
+    }
     print("engine: feral-engine \(s.version)")
 }
 
@@ -149,6 +154,47 @@ func runEngineCommand(_ command: String, _ args: [String]) {
     case "save":
         session.send(.save, until: isStatus)
         print("saved \(session.status?.showPath ?? "the show")")
+
+    case "trigger":
+        var control = state.show.control
+        switch args.first ?? "list" {
+        case "list":
+            printTriggers(control)
+            return
+        case "add":
+            let t = parseTrigger(Array(args.dropFirst()))
+            control.triggers.append(t)
+            print("added trigger \(control.triggers.count): \(t.on) -> \(t.action)")
+        case "remove":
+            guard args.count == 2, let n = Int(args[1]), n >= 1, n <= control.triggers.count else {
+                fail("trigger remove needs a number from feral-cli trigger list")
+            }
+            let t = control.triggers.remove(at: n - 1)
+            print("removed trigger \(n): \(t.on) -> \(t.action)")
+        case let other:
+            fail("trigger \(other)? Try trigger list, trigger add or trigger remove")
+        }
+        let c = Command.setControl(control: control)
+        session.send(.apply(command: c), until: applied(c))
+
+    case "admbox":
+        if args.isEmpty { printBox(state.show.control.admBox); return }
+        let v = args.compactMap(Double.init)
+        guard args.count == 6, v.count == 6 else { fail("admbox needs min x y z and max x y z in metres: feral-cli admbox -10 -2 0 10 20 10") }
+        var control = state.show.control
+        control.admBox = ADMBox(min: Position(v[0], v[1], v[2]), max: Position(v[3], v[4], v[5]))
+        let c = Command.setControl(control: control)
+        session.send(.apply(command: c), until: applied(c))
+        printBox(control.admBox)
+
+    case "release":
+        guard !args.isEmpty else { fail("release needs source numbers: feral-cli release 1 2") }
+        let ids = args.map { a -> UUID in
+            guard let s = state.source(matching: a) else { fail("no source \(a)") }
+            return s.id
+        }
+        session.send(.release(sources: ids), until: isStatus)
+        print("handed \(ids.count) source(s) back to cues")
 
     default:
         fail("unknown engine command \(command)")
