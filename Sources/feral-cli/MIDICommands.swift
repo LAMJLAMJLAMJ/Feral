@@ -1,5 +1,6 @@
 #if canImport(CoreMIDI)
 import FeralControl
+import FeralScene
 import Foundation
 
 // feral-cli midi: sends MIDI to the engine's "Feral" destination (or --to another), as a console would,
