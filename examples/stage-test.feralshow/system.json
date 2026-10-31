@@ -1,0 +1,493 @@
+{
+  "lfeSpeakers": [
+    "05BAAEB5-1A32-5804-949C-59B545539268",
+    "3EF095D4-6A5D-53E2-8C71-5EC65204967F"
+  ],
+  "schema": 1,
+  "speakers": [
+    {
+      "delayMS": 0,
+      "eq": [],
+      "id": "A544AA59-C6B0-59A9-AEEC-7D15D707D50F",
+      "invert": false,
+      "limiterDB": -1,
+      "limiterReleaseMS": 200,
+      "mute": false,
+      "name": "Main 1",
+      "number": 1,
+      "output": 1,
+      "position": [
+        -10.5,
+        0,
+        5
+      ],
+      "trimDB": 0
+    },
+    {
+      "delayMS": 0,
+      "eq": [],
+      "id": "A2CFC6C6-3097-50F4-896A-1F3A4DFAA3F5",
+      "invert": false,
+      "limiterDB": -1,
+      "limiterReleaseMS": 200,
+      "mute": false,
+      "name": "Main 2",
+      "number": 2,
+      "output": 2,
+      "position": [
+        -7.5,
+        0,
+        5
+      ],
+      "trimDB": 0
+    },
+    {
+      "delayMS": 0,
+      "eq": [],
+      "id": "47A24AA5-C2A1-5910-982D-524209E998E7",
+      "invert": false,
+      "limiterDB": -1,
+      "limiterReleaseMS": 200,
+      "mute": false,
+      "name": "Main 3",
+      "number": 3,
+      "output": 3,
+      "position": [
+        -4.5,
+        0,
+        5
+      ],
+      "trimDB": 0
+    },
+    {
+      "delayMS": 0,
+      "eq": [],
+      "id": "19D45A67-0FB2-55E9-A9CC-4D879575D0F3",
+      "invert": false,
+      "limiterDB": -1,
+      "limiterReleaseMS": 200,
+      "mute": false,
+      "name": "Main 4",
+      "number": 4,
+      "output": 4,
+      "position": [
+        -1.5,
+        0,
+        5
+      ],
+      "trimDB": 0
+    },
+    {
+      "delayMS": 0,
+      "eq": [],
+      "id": "FB336221-676C-5EE9-8D7D-15F03C674F8F",
+      "invert": false,
+      "limiterDB": -1,
+      "limiterReleaseMS": 200,
+      "mute": false,
+      "name": "Main 5",
+      "number": 5,
+      "output": 5,
+      "position": [
+        1.5,
+        0,
+        5
+      ],
+      "trimDB": 0
+    },
+    {
+      "delayMS": 0,
+      "eq": [],
+      "id": "4E5E83B4-179A-5638-8A07-20802374A2F6",
+      "invert": false,
+      "limiterDB": -1,
+      "limiterReleaseMS": 200,
+      "mute": false,
+      "name": "Main 6",
+      "number": 6,
+      "output": 6,
+      "position": [
+        4.5,
+        0,
+        5
+      ],
+      "trimDB": 0
+    },
+    {
+      "delayMS": 0,
+      "eq": [],
+      "id": "A1800A06-55C5-52EA-8940-E7F15CD5692D",
+      "invert": false,
+      "limiterDB": -1,
+      "limiterReleaseMS": 200,
+      "mute": false,
+      "name": "Main 7",
+      "number": 7,
+      "output": 7,
+      "position": [
+        7.5,
+        0,
+        5
+      ],
+      "trimDB": 0
+    },
+    {
+      "delayMS": 0,
+      "eq": [],
+      "id": "A940039D-3970-5528-A5BE-CF09D469983D",
+      "invert": false,
+      "limiterDB": -1,
+      "limiterReleaseMS": 200,
+      "mute": false,
+      "name": "Main 8",
+      "number": 8,
+      "output": 8,
+      "position": [
+        10.5,
+        0,
+        5
+      ],
+      "trimDB": 0
+    },
+    {
+      "delayMS": 0,
+      "eq": [
+        {
+          "gainDB": 0,
+          "hz": 120,
+          "type": "highPass"
+        }
+      ],
+      "id": "0D6632A9-F52C-57C4-A026-CD068F3FE9D6",
+      "invert": false,
+      "limiterDB": -1,
+      "limiterReleaseMS": 200,
+      "mute": false,
+      "name": "Front fill 1",
+      "number": 9,
+      "output": 9,
+      "position": [
+        -6,
+        1,
+        0.5
+      ],
+      "trimDB": -6
+    },
+    {
+      "delayMS": 0,
+      "eq": [
+        {
+          "gainDB": 0,
+          "hz": 120,
+          "type": "highPass"
+        }
+      ],
+      "id": "CF6A7D53-7CF7-5C83-ABE7-DFCB9B5430DD",
+      "invert": false,
+      "limiterDB": -1,
+      "limiterReleaseMS": 200,
+      "mute": false,
+      "name": "Front fill 2",
+      "number": 10,
+      "output": 10,
+      "position": [
+        -2,
+        1,
+        0.5
+      ],
+      "trimDB": -6
+    },
+    {
+      "delayMS": 0,
+      "eq": [
+        {
+          "gainDB": 0,
+          "hz": 120,
+          "type": "highPass"
+        }
+      ],
+      "id": "6AD85EA5-5821-522E-A05C-619E57D27A5F",
+      "invert": false,
+      "limiterDB": -1,
+      "limiterReleaseMS": 200,
+      "mute": false,
+      "name": "Front fill 3",
+      "number": 11,
+      "output": 11,
+      "position": [
+        2,
+        1,
+        0.5
+      ],
+      "trimDB": -6
+    },
+    {
+      "delayMS": 0,
+      "eq": [
+        {
+          "gainDB": 0,
+          "hz": 120,
+          "type": "highPass"
+        }
+      ],
+      "id": "E6303D19-4FB0-5ADC-B286-9004A2D549FE",
+      "invert": false,
+      "limiterDB": -1,
+      "limiterReleaseMS": 200,
+      "mute": false,
+      "name": "Front fill 4",
+      "number": 12,
+      "output": 12,
+      "position": [
+        6,
+        1,
+        0.5
+      ],
+      "trimDB": -6
+    },
+    {
+      "delayMS": 0,
+      "eq": [],
+      "id": "4343BF10-63AC-5A71-82B2-715F2FDAD049",
+      "invert": false,
+      "limiterDB": -1,
+      "limiterReleaseMS": 200,
+      "mute": false,
+      "name": "Delay 1",
+      "number": 13,
+      "output": 13,
+      "position": [
+        -9,
+        20,
+        5
+      ],
+      "trimDB": 0
+    },
+    {
+      "delayMS": 0,
+      "eq": [],
+      "id": "0C564987-8347-521F-B6A6-3B4A45574B69",
+      "invert": false,
+      "limiterDB": -1,
+      "limiterReleaseMS": 200,
+      "mute": false,
+      "name": "Delay 2",
+      "number": 14,
+      "output": 14,
+      "position": [
+        -3,
+        20,
+        5
+      ],
+      "trimDB": 0
+    },
+    {
+      "delayMS": 0,
+      "eq": [],
+      "id": "F2B186A4-B0AE-5A5F-B5F7-4A98F24B5B8A",
+      "invert": false,
+      "limiterDB": -1,
+      "limiterReleaseMS": 200,
+      "mute": false,
+      "name": "Delay 3",
+      "number": 15,
+      "output": 15,
+      "position": [
+        3,
+        20,
+        5
+      ],
+      "trimDB": 0
+    },
+    {
+      "delayMS": 0,
+      "eq": [],
+      "id": "11EAB758-0CEB-5DB2-85FF-2BA3F836440C",
+      "invert": false,
+      "limiterDB": -1,
+      "limiterReleaseMS": 200,
+      "mute": false,
+      "name": "Delay 4",
+      "number": 16,
+      "output": 16,
+      "position": [
+        9,
+        20,
+        5
+      ],
+      "trimDB": 0
+    },
+    {
+      "delayMS": 0,
+      "eq": [],
+      "id": "6D7FB758-5AE7-5679-BC74-8FB9D99313CA",
+      "invert": false,
+      "limiterReleaseMS": 200,
+      "mute": false,
+      "name": "Overhead 1",
+      "number": 17,
+      "output": 17,
+      "position": [
+        0.0,
+        4.0,
+        8
+      ],
+      "trimDB": 0
+    },
+    {
+      "delayMS": 0,
+      "eq": [],
+      "id": "2501411E-A8A1-584B-8E70-3B47B6132FBF",
+      "invert": false,
+      "limiterReleaseMS": 200,
+      "mute": false,
+      "name": "Overhead 2",
+      "number": 18,
+      "output": 18,
+      "position": [
+        5.657,
+        6.343,
+        8
+      ],
+      "trimDB": 0
+    },
+    {
+      "delayMS": 0,
+      "eq": [],
+      "id": "3DB1C7F8-CADD-5838-BF78-50A369481E04",
+      "invert": false,
+      "limiterReleaseMS": 200,
+      "mute": false,
+      "name": "Overhead 3",
+      "number": 19,
+      "output": 19,
+      "position": [
+        8.0,
+        12.0,
+        8
+      ],
+      "trimDB": 0
+    },
+    {
+      "delayMS": 0,
+      "eq": [],
+      "id": "264D41FA-5FFE-5AD5-914B-B27CB4DF7ED2",
+      "invert": false,
+      "limiterReleaseMS": 200,
+      "mute": false,
+      "name": "Overhead 4",
+      "number": 20,
+      "output": 20,
+      "position": [
+        5.657,
+        17.657,
+        8
+      ],
+      "trimDB": 0
+    },
+    {
+      "delayMS": 0,
+      "eq": [],
+      "id": "C292CA1E-FD52-59DC-94B7-63C9EB046926",
+      "invert": false,
+      "limiterReleaseMS": 200,
+      "mute": false,
+      "name": "Overhead 5",
+      "number": 21,
+      "output": 21,
+      "position": [
+        0.0,
+        20.0,
+        8
+      ],
+      "trimDB": 0
+    },
+    {
+      "delayMS": 0,
+      "eq": [],
+      "id": "8B34D2A7-5100-5C34-939D-0B8527844112",
+      "invert": false,
+      "limiterReleaseMS": 200,
+      "mute": false,
+      "name": "Overhead 6",
+      "number": 22,
+      "output": 22,
+      "position": [
+        -5.657,
+        17.657,
+        8
+      ],
+      "trimDB": 0
+    },
+    {
+      "delayMS": 0,
+      "eq": [],
+      "id": "50325981-6AE6-55B4-AFC1-9F174A6A02B8",
+      "invert": false,
+      "limiterReleaseMS": 200,
+      "mute": false,
+      "name": "Overhead 7",
+      "number": 23,
+      "output": 23,
+      "position": [
+        -8.0,
+        12.0,
+        8
+      ],
+      "trimDB": 0
+    },
+    {
+      "delayMS": 0,
+      "eq": [],
+      "id": "693B864A-6A11-5E1D-8669-B4A3AAAB7113",
+      "invert": false,
+      "limiterReleaseMS": 200,
+      "mute": false,
+      "name": "Overhead 8",
+      "number": 24,
+      "output": 24,
+      "position": [
+        -5.657,
+        6.343,
+        8
+      ],
+      "trimDB": 0
+    },
+    {
+      "delayMS": 0,
+      "eq": [],
+      "id": "05BAAEB5-1A32-5804-949C-59B545539268",
+      "invert": false,
+      "limiterReleaseMS": 200,
+      "mute": false,
+      "name": "Sub L",
+      "number": 25,
+      "output": 25,
+      "position": [
+        -4,
+        0,
+        0
+      ],
+      "trimDB": 0,
+      "type": "sub"
+    },
+    {
+      "delayMS": 0,
+      "eq": [],
+      "id": "3EF095D4-6A5D-53E2-8C71-5EC65204967F",
+      "invert": false,
+      "limiterReleaseMS": 200,
+      "mute": false,
+      "name": "Sub R",
+      "number": 26,
+      "output": 26,
+      "position": [
+        4,
+        0,
+        0
+      ],
+      "trimDB": 0,
+      "type": "sub"
+    }
+  ]
+}

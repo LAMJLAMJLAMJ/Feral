@@ -1,0 +1,12 @@
+{
+  "device": "BlackHole 64ch",
+  "sampleRate": 48000,
+  "bufferFrames": 128,
+  "inputs": 2,
+  "outputs": 26,
+  "firstInputChannel": 1,
+  "firstOutputChannel": 33,
+  "testSignal": "pink",
+  "testSignalDB": -20,
+  "show": "Shows/stage-test.feralshow"
+}

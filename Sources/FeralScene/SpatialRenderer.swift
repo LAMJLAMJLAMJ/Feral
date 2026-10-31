@@ -25,7 +25,9 @@ public final class SpatialRenderer {
     private let lfeOutputs: [Int]
     private let routing: Routing?
     private let outputParams: [Int: OutputParams]
-    public private(set) var positions: [Position]
+    /// The sources as they are now (config.sources with every move and update since).
+    public private(set) var sources: [SourceConfig]
+    public var positions: [Position] { sources.map(\.position) }
     private var taps: [[Tap]]
 
     private final class Group {
@@ -96,7 +98,7 @@ public final class SpatialRenderer {
         var params: [Int: OutputParams] = [:]
         for s in config.speakers { params[s.output - 1] = SpatialRenderer.outputParams(s, sampleRate: config.sampleRate) }
         outputParams = params
-        positions = config.sources.map(\.position)
+        sources = config.sources
         taps = Array(repeating: [], count: config.sources.count)
         for i in config.sources.indices { taps[i] = computeTaps(source: i) }
     }
@@ -109,19 +111,29 @@ public final class SpatialRenderer {
 
     /// Moves a source (by its index in config.sources) and recomputes its taps.
     public func move(source index: Int, to position: Position) {
-        positions[index] = position
+        sources[index].position = position
+        taps[index] = computeTaps(source: index)
+    }
+
+    /// Replaces a source's settings (position, gain, mute, width, sends, LFE send) and recomputes its
+    /// taps. Its input stays the one it had; a new input needs a new renderer. Sends must name groups
+    /// that exist.
+    public func update(source index: Int, to source: SourceConfig) {
+        var s = source
+        s.input = sources[index].input
+        sources[index] = s
         taps[index] = computeTaps(source: index)
     }
 
     /// The index in config.sources of the source on an input (from 1).
-    public func sourceIndex(input: Int) -> Int? { config.sources.firstIndex { $0.input == input } }
+    public func sourceIndex(input: Int) -> Int? { sources.firstIndex { $0.input == input } }
 
     /// The render state for the sources where they are now, plus any fixed routes, the speakers'
     /// processing and the delay motion.
     public func makeState() -> RenderState {
         let state = RenderState(inputs: config.inputs, outputs: config.outputs)
         state.setMotion(motion)
-        for (i, source) in config.sources.enumerated() {
+        for (i, source) in sources.enumerated() {
             let input = source.input - 1
             for t in taps[i] {
                 if t.delayed {
@@ -144,9 +156,9 @@ public final class SpatialRenderer {
     }
 
     private func computeTaps(source index: Int) -> [Tap] {
-        let source = config.sources[index]
+        let source = sources[index]
         if source.mute { return [] }
-        let p = positions[index].c
+        let p = source.position.c
         let sourceGain = pow(10, source.gainDB / 20)
         var result: [Tap] = []
         for g in groups {

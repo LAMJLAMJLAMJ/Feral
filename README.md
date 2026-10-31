@@ -2,7 +2,7 @@
 
 In-house spatial audio engine for immersive live sound, on macOS. The design is in the [v1 technical design](https://claude.ai/artifact/313W4TBPo6gruTH6rBM8qq) and the background in the [platforms research](https://claude.ai/artifact/DeXcLoQPN3MHfYYRwwTGy9).
 
-This is **milestone 2, the renderers**, on top of milestone 1's engine skeleton: a headless `feral-engine` process that opens one Core Audio device and renders up to 128 sources to 128 speakers through Delay, VBAP and DBAP speaker groups, with per-speaker processing, and is restarted by launchd if it crashes. Sources, speakers and groups are set in `engine.json` for now; the show file and the Mac app come in milestone 3, and OSC control in milestone 4.
+This is **milestone 3, the show file and the Mac app**, on top of milestone 1's engine skeleton and milestone 2's renderers: a headless `feral-engine` process that opens one Core Audio device and renders up to 128 sources to 128 speakers through Delay, VBAP and DBAP speaker groups, with per-speaker processing, and is restarted by launchd if it crashes. Sources, speakers and groups now live in a **show file** (a `.feralshow` package) with **snapshots**, a **cue list** and a **journal** of every change, and the **Feral Mac app** shows the layout on a plan and moves sources with the mouse. OSC control (QLab, consoles) comes in milestone 4.
 
 ## What's here
 
@@ -10,14 +10,16 @@ This is **milestone 2, the renderers**, on top of milestone 1's engine skeleton:
 | --- | --- |
 | `Sources/FeralCore` | The real-time render core in C++20: render states, per-source delay lines, gain ramps, delay glides and crossfades, per-output processing, and the lock-free swap between the control and audio threads. Also the renderers' geometry (`include/feral_geometry.h`): Delay, VBAP (2D pairs, 3D triangulation with virtual speakers, MDAP width) and DBAP, and EQ design. No Apple APIs, so it builds and tests on Linux. Swift reaches it through the C API in `include/feral_core.h`. |
 | `Sources/FeralCoreAudio` | The Core Audio IOProc, in C++ so no Swift runs on the audio thread. It maps the device's streams (mono or interleaved) to engine channels. macOS only. |
-| `Sources/FeralScene` | Engine settings (`engine.json`), the fixed routing, and the spatial layout (speakers, groups, sources) that `SpatialRenderer` turns into render states. The show file, snapshots and cues join it in milestone 3. |
-| `Sources/FeralOffline`, `Sources/feral-cli` | Offline rendering through the same core, WAV files, and the known-answer checks. `feral-cli check`, `taps`, `impulse` and `render`. |
+| `Sources/FeralScene` | Engine settings (`engine.json`), the fixed routing, the show (sources, speakers, groups, snapshots, cues), its `.feralshow` package and journal, the commands that change it, snapshot fades, and `SpatialRenderer`, which turns the layout into render states. |
+| `Sources/FeralControl` | The control link between the engine and the app or `feral-cli`: one JSON message per line over TCP, port 9100. |
+| `Sources/FeralApp` | The Feral Mac app (SwiftUI): the plan, the cue list with GO, snapshots, and an inspector for sources, speakers, snapshots and cues. |
+| `Sources/FeralOffline`, `Sources/feral-cli` | Offline rendering through the same core, WAV files, and the known-answer checks: `feral-cli check`, `taps`, `impulse` and `render`. Show files: `show import`, `show info`. The running engine from Terminal: `status`, `go`, `recall`, `move`, `store`, `cue`, `stop`, `save`. |
 | `Sources/FeralIO` | Core Audio device list, opening one device, and keeping it open: if it disappears, changes sample rate or changes its channels, the engine keeps its state and reopens it every second until it is back. macOS only. |
 | `Sources/feral-engine` | The engine process. |
 | `launchd/local.feral.engine.plist` | The launchd agent: starts at login, restarts within about a second after a crash. |
-| `scripts/` | `build-engine-app.sh` (bundle), `install-engine.sh` (install or update the agent), `engine.sh` (status, log, reload, restart, stop, crash test). |
-| `examples/stage-test.json` | A 26-speaker test layout: a Delay group (front line, fills, delays), a VBAP overhead ring, two subs on the LFE send, and a test source orbiting the stage. |
-| `Tests/` | The known-answer checks, delay taps, spatial settings and WAV files; from milestone 1, the matrix and ramps, the state swap under concurrent publishing (run under the thread sanitizer on Linux CI), a timing check for a dense 128 by 128 matrix, and the IOProc on hand-made mono and interleaved buffer lists (macOS). |
+| `scripts/` | `build-engine-app.sh` (bundle), `install-engine.sh` (install or update the agent), `engine.sh` (status, log, reload, restart, stop, crash test), `build-app.sh` (the Mac app). |
+| `examples/stage-test.json`, `examples/stage-test.feralshow` | Engine settings and a show for a 26-speaker test layout: a Delay group (front line, fills, delays), a VBAP overhead ring, two subs on the LFE send, a pink-noise test source, and five cues that walk it around the venue. |
+| `Tests/` | The show file, journal replay, commands, snapshots, fades and cue order; the control link's messages and (macOS) a real connection; from milestone 2, the known-answer checks, delay taps, spatial settings and WAV files; from milestone 1, the matrix and ramps, the state swap under concurrent publishing (run under the thread sanitizer on Linux CI), a timing check for a dense 128 by 128 matrix, and the IOProc on hand-made mono and interleaved buffer lists (macOS). |
 
 ### How a change reaches the audio
 
@@ -75,14 +77,16 @@ This builds `FeralEngine.app` (the engine inside a minimal app bundle, so macOS 
 | `refuseAggregateDevices` | true | Aggregate devices drift or resample between clocks, so the engine refuses them |
 | `testSignal` | `"off"` | `"pink"` or `"sine"` plays a generated signal in place of input 1, to check outputs with nothing plugged in |
 | `testSignalDB`, `testSignalHz` | -20, 1000 | The test signal's RMS level in dB re full scale (a sine peaks 3 dB higher), and the sine's frequency |
-| `speakers` | none | The speakers, below |
-| `groups` | none | The speaker groups, below. With groups set, the engine renders `sources` to them, and `routes` only adds fixed feeds on top (no passthrough) |
-| `sources` | none | The sources, below |
-| `lfeOutputs` | none | The outputs a source's `lfeDB` send feeds, such as `"25-26"` |
+| `show` | `Shows/Default.feralshow` | The show to play: a `.feralshow` package, absolute, from `~`, or relative to engine.json's folder. With groups in the show, the engine renders its sources to them, and `routes` only adds fixed feeds on top (no passthrough) |
+| `controlAddress` | `127.0.0.1` | Where the app and `feral-cli` reach the engine. `127.0.0.1` is this Mac only; `0.0.0.0` lets an app on another Mac connect. Needs an engine restart |
+| `controlPort` | 9100 | The control link's TCP port |
+| `speakers`, `groups`, `sources`, `lfeOutputs` | none | Milestone 2's layout keys. They are only read once, to make the first show (below); after that the show holds the layout |
 | `airTemperatureC` | 20 | Sets the speed of sound for Delay groups |
 | `delayGlidePercent`, `delayJumpMS`, `delayCrossfadeMS` | 0.5, 5, 30 | A moving delay glides at most this fast (as a pitch shift); a jump bigger than `delayJumpMS` crossfades instead, over `delayCrossfadeMS` |
 | `groupCrossfadeMS` | 50 | How long a reload's group, send or renderer changes take |
 | `testMotion` | none | Moves one source by itself: `{ "source": 1, "shape": "circle", "center": [0, 6, 1.6], "radius": 6, "seconds": 20 }`, or `"shape": "line"` with `"from"` and `"to"` |
+
+Milestone 2's layout keys, kept here because `feral-cli show import` and the engine's first start read them (the show file uses the same fields, with ids):
 
 A **speaker**: `{ "output": 3, "name": "Main L", "position": [-6, 0, 5], "delayMS": 0, "trimDB": 0, "invert": false, "mute": false, "eq": [ { "type": "highPass", "hz": 80 }, { "type": "peak", "hz": 2500, "q": 2, "gainDB": -3 } ], "limiterDB": -1, "limiterReleaseMS": 200 }`. Only `output` and `position` are needed. `delayMS`, EQ (up to 8 bands: `peak`, `lowShelf`, `highShelf`, `lowPass`, `highPass`, `notch`, `allPass`), trim, `invert` (polarity), the limiter (none unless `limiterDB` is set; it has no look-ahead, so no latency) and `mute` are the system layer, which cues will never touch.
 
@@ -119,17 +123,89 @@ Watch the outputs on TotalMix's meters. Set `"testSignal": "off"` and reload to 
 
 For a straight 128-channel passthrough, leave out `inputs`, `outputs` and `routes`. The log line at start says how many engine channels found a device channel, the buffer size the device accepted and the latency it reports; every 10 seconds the engine logs a warning if any buffer ran late (over 80 % of its time), Core Audio reported an overload, or a buffer was skipped, and every 5 minutes it logs a status line.
 
-### Hearing the renderers on the rig
+## The show file
 
-`examples/stage-test.json` is a test layout on the XT's first 26 outputs: a Delay group of 8 mains, 4 front fills and 4 delays, a VBAP ring of 8 overheads, and 2 subs on the LFE send. Its test source plays pink noise and walks a 12 m circle from the stage lip into the house every 20 s, so you hear the delays glide and crossfade and the levels move:
+A show is one `.feralshow` package (a folder): `show.json` holds the sources, groups, snapshots and cues; `system.json` holds the speakers and their system layer (alignment delay, EQ, trim, polarity, limiter, mute), which snapshots and cues never touch; `journal/journal.jsonl` holds every change since the last save, one line each. Every object has a stable id, which the files use to refer to each other, and a number for people, so renumbering never breaks a cue.
+
+- **Opening**: the engine plays the show `engine.json` names (`"show"`), or `Shows/Default.feralshow` next to engine.json. If that show does not exist yet, the engine makes it from engine.json's own `speakers`, `groups` and `sources`, so a milestone 2 layout carries over by itself on the first start. After that, edit the layout in the show (or the app), not in engine.json.
+- **Every change is journaled.** The app and `feral-cli` change the show only through the engine, which writes each change to the journal within 0.1 s. After a crash, launchd restarts the engine, it replays the journal and is back where it was, unsaved changes included.
+- **Saving** (the app's Save button, ⌘S, or `feral-cli save`) writes `show.json` and `system.json` and empties the journal.
+- **Switching shows**: change `"show"` in engine.json and `./scripts/engine.sh reload`. The old show's unsaved changes stay in its journal and come back when it is opened again.
+
+**Snapshots** store some or all sources' position, gain, mute, width, sends and LFE send. Recalling one fades every stored value from where it is over the snapshot's fade time (or the cue's) with a linear, S-curve or exponential shape: positions in a straight line across the venue, levels in dB, a send that is added or removed fades from or to -60 dB, unmuting happens at the start and muting at the end. Moving a source by hand (or from another cue) during a fade takes it out of the fade.
+
+**Cues** are numbered like QLab's (1, 2, 2.5, 10). A cue recalls a snapshot, with its own fade time and curve if set; auto-follow runs the next cue as soon as its fade ends. GO runs the next cue after the current one.
+
+## The Feral app
 
 ```sh
-cp ~/Library/Application\ Support/Feral/engine.json ~/Desktop/engine-backup.json   # keep yours
-cp examples/stage-test.json ~/Library/Application\ Support/Feral/engine.json
-./scripts/engine.sh reload
+./scripts/build-app.sh        # builds build/Feral.app
+open build/Feral.app          # or copy it to /Applications
 ```
 
-On TotalMix's meters the level walks across the mains as the source circles, the front fills lead when it is near the lip, the delays take over when it is deep in the house, and the overhead nearest the source is loudest. Solo two neighbouring outputs on the XT's phones to hear the movement: a gliding delay is a slight pitch bend, never a click. `./scripts/engine.sh log` shows the groups (the overheads as a 2D VBAP ring) and the tap count; `feral-cli taps` and `impulse` give the same layout's numbers offline. Copy `~/Desktop/engine-backup.json` back and reload to return to your own settings.
+The app connects to the engine on this Mac (Feral > Settings to reach another Mac's engine) and shows its show: the plan (stage at the top, audience below, 1 m grid) with speakers coloured by group and sources as numbered dots. Drag a source to move it; the engine renders it as you drag. The sidebar has the GO button (⌘↩) with the current and next cue, the cue list, the snapshots (Store, Recall) and the sources and speakers. Select anything to edit it on the right: a source's name, position, gain, mute, width and sends; a speaker's position and system layer; a snapshot's name, fade and curve; a cue's number, snapshot, fade and auto-follow. "Move speakers" in the toolbar lets the plan drag speakers too. The engine keeps playing if the app quits or crashes.
+
+## Trying it on the rig
+
+This plays the example show on the XT's first 26 outputs, with pink noise as the test source.
+
+1. Update the engine (it keeps your engine.json) and back up your settings:
+
+   ```sh
+   cd Feral && git pull
+   ./scripts/install-engine.sh
+   cp ~/Library/Application\ Support/Feral/engine.json ~/Desktop/engine-backup.json
+   ```
+
+2. Copy the example show and its settings into place, and reload:
+
+   ```sh
+   mkdir -p ~/Library/Application\ Support/Feral/Shows
+   cp -R examples/stage-test.feralshow ~/Library/Application\ Support/Feral/Shows/
+   sed 's|"stage-test.feralshow"|"Shows/stage-test.feralshow"|' examples/stage-test.json > ~/Library/Application\ Support/Feral/engine.json
+   ./scripts/engine.sh reload
+   ./scripts/engine.sh log      # look for "show: Stage test" and "control: listening"; Ctrl-C to stop
+   ```
+
+3. From Terminal, check the engine and run the cues (watch TotalMix's meters):
+
+   ```sh
+   swift run -c release feral-cli status    # the show, current and next cue, the audio device
+   swift run -c release feral-cli go        # cue 1: the test source to centre stage
+   swift run -c release feral-cli go        # cue 2: walks to stage left over 6 s
+   swift run -c release feral-cli go        # cue 3: into the house over 10 s, then auto-follows cue 3.5 to stage right
+   swift run -c release feral-cli go        # cue 4: home over 4 s
+   swift run -c release feral-cli move 1 -6 10    # put source 1 at x -6, y 10
+   swift run -c release feral-cli store "My spot" --fade 3   # store it as snapshot 5
+   swift run -c release feral-cli cue 5 5          # add cue 5 that recalls it
+   swift run -c release feral-cli go 1 && swift run -c release feral-cli go 5
+   ```
+
+4. Open the app (`./scripts/build-app.sh && open build/Feral.app`). Drag the test source around the plan and listen; press GO; store a snapshot and recall it. The title bar says how many changes are unsaved.
+
+5. Crash test: `./scripts/engine.sh crash`, then `feral-cli status`. The source is where you left it and the unsaved changes are still listed (the journal was replayed). The app reconnects by itself.
+
+6. Save (⌘S in the app, or `feral-cli save`), then `swift run -c release feral-cli show info` lists what the show holds.
+
+To go back: `cp ~/Desktop/engine-backup.json ~/Library/Application\ Support/Feral/engine.json` and `./scripts/engine.sh reload`. Your own layout from milestone 2 is in `~/Library/Application Support/Feral/Shows/Default.feralshow` (made on the first start of this version).
+
+For milestone 2's orbiting test source, add `"testMotion": { "source": 1, "shape": "circle", "center": [0, 6, 1.6], "radius": 6, "seconds": 20 }` to engine.json; it moves the source on input 1 (not journaled) and the app shows it moving.
+
+## Without the rig: BlackHole and Max
+
+BlackHole (a virtual audio device) works as the engine's device: it is a single Core Audio device, not an aggregate, with 32-bit float streams. Whatever any app plays on BlackHole's output channel n comes back on its input channel n, so the engine's inputs and outputs must use different channels or the engine hears itself. `examples/blackhole.json` (for BlackHole 64ch) does this: engine inputs 1-2 are BlackHole channels 1-2, and the 26 outputs are channels 33-58.
+
+```sh
+cp ~/Library/Application\ Support/Feral/engine.json ~/Desktop/engine-backup.json
+mkdir -p ~/Library/Application\ Support/Feral/Shows
+cp -R examples/stage-test.feralshow ~/Library/Application\ Support/Feral/Shows/
+cp examples/blackhole.json ~/Library/Application\ Support/Feral/engine.json
+./scripts/engine.sh reload && ./scripts/engine.sh log   # "running on BlackHole 64ch", outputs 26 of 26 connected
+```
+
+In Max, set Audio Status to BlackHole 64ch at 48 kHz. Meter (or listen to) `adc~` inputs 33-58: those are the engine's outputs 1-26. To feed the engine a real signal, set `"testSignal": "off"`, reload, and play into `dac~` outputs 1-2: they are engine inputs 1-2 (sources 1 and 2). Keep Max's other outputs silent, especially 33-58, which would add into what you meter. "Feral Engine" needs microphone access to read BlackHole's inputs, as with any interface.
+
+`feral-engine devices` gives the exact name and channel count. With BlackHole 16ch, the 26-output example does not fit: use `"outputs": 14`, `"firstOutputChannel": 3` and a smaller show. With 128ch you can go up to 64 in and 64 out. BlackHole runs on its own clock, which is fine for testing but is not what a show would use.
 
 ## Checking the renderers offline: feral-cli
 
@@ -139,11 +215,13 @@ On TotalMix's meters the level walks across the mains as the source circles, the
 swift run -c release feral-cli check                                    # the known-answer checks
 swift run -c release feral-cli taps --config examples/stage-test.json   # every source's gain and delay per speaker
 swift run -c release feral-cli impulse --config examples/stage-test.json --source 1
-swift run -c release feral-cli render --config examples/stage-test.json --seconds 20 ~/Desktop/orbit.wav
+swift run -c release feral-cli render --config examples/stage-test.json --seconds 20 ~/Desktop/stage.wav
+swift run -c release feral-cli show info --config examples/stage-test.json
+swift run -c release feral-cli show import ~/Desktop/Mine.feralshow --config my-old-engine.json   # a milestone 2 layout as a show
 ```
 
-`check` plays generated signals through the core and compares the results with values worked out by hand from the design's formulas: arrival times and levels from the Delay renderer, the fractional delay's interpolation, the glide's rate, the crossfade's shape, gain ramps, the group crossfade, VBAP in 2D, 3D and an open dome, VBAP width, DBAP, and each part of the output processing. `impulse` gives each output's arrival (its loudest sample) and level (the energy of what it received, so it includes the speaker's trim and EQ). `taps` and `impulse` take the installed `engine.json` when `--config` is left out, so you can check a layout before reloading the engine. `render` writes a 32-bit float WAV with one channel per output; give it an input WAV (one channel per engine input) before the output file, or leave it out to render the config's test signal.
+`check` plays generated signals through the core and compares the results with values worked out by hand from the design's formulas: arrival times and levels from the Delay renderer, the fractional delay's interpolation, the glide's rate, the crossfade's shape, gain ramps, the group crossfade, VBAP in 2D, 3D and an open dome, VBAP width, DBAP, and each part of the output processing. `impulse` gives each output's arrival (its loudest sample) and level (the energy of what it received, so it includes the speaker's trim and EQ). `taps` and `impulse` take the installed `engine.json` and its show when `--config` is left out (`--show PATH` picks another show), so you can check a layout before reloading the engine. `render` writes a 32-bit float WAV with one channel per output; give it an input WAV (one channel per engine input) before the output file, or leave it out to render the config's test signal.
 
 ## Not yet
 
-Milestone 2 does not have the show file and journal, the Mac app, OSC control, render worker threads, show mode or the backup engine; they follow the milestones in the design. Delay rendering runs on the one audio thread: 128 sources each through 32 delayed speakers, with full processing on 128 outputs, took about 0.5 ms of a 64-frame buffer's 1.33 ms on GitHub's Apple-silicon CI runner (the timing test in `swift test -c release` prints it for your Mac); a Delay group feeding all 128 speakers from all 128 sources is the case the design's render workers are for. "Freeze delays while tracking" waits for tracking (milestone 5).
+Milestone 3 does not have OSC control (QLab, DiGiCo, ADM-OSC), MIDI, show mode, tracking, render worker threads or the backup engine; they follow the milestones in the design. From the design's milestone 3 list, importing the system layer from Measure's alignment results, a 3D view, editing EQ and limiters in the app, adding and removing speakers, groups and sources in the app, and New/Open/Save As are still to do: speakers, groups and sources can be added by editing the show's JSON (or importing an engine.json layout), and EQ and limiters in `system.json`. The control link is JSON over TCP on port 9100 rather than the design's OSC over TCP; milestone 4's OSC namespace maps onto the same requests. The show's content hash for the backup engine comes with the backup engine (milestone 6). Delay rendering runs on the one audio thread: 128 sources each through 32 delayed speakers, with full processing on 128 outputs, took about 0.5 ms of a 64-frame buffer's 1.33 ms on GitHub's Apple-silicon CI runner (the timing test in `swift test -c release` prints it for your Mac); a Delay group feeding all 128 speakers from all 128 sources is the case the design's render workers are for.

@@ -17,10 +17,15 @@ jobs:
         run: swift test -c release
       - name: Known-answer checks
         run: swift run -c release feral-cli check
-      - name: The example layout's taps and an impulse through it
+      - name: The example show's taps, an impulse through it, and what it holds
         run: |
           swift run -c release feral-cli taps --config examples/stage-test.json
           swift run -c release feral-cli impulse --config examples/stage-test.json --source 1
+          swift run -c release feral-cli show info --config examples/stage-test.json
+      - name: The engine with the example show, driven by feral-cli, crashed and replayed
+        run: ./scripts/ci-engine-smoke.sh
+      - name: Bundle the app
+        run: ./scripts/build-app.sh
       - name: Bundle the engine
         run: ./scripts/build-engine-app.sh
       - name: Check the launchd agent file
@@ -44,5 +49,7 @@ jobs:
         run: swift test -c release
       - name: Known-answer checks
         run: swift run -c release feral-cli check
+      - name: The example show offline
+        run: swift run -c release feral-cli show info --config examples/stage-test.json
       - name: Test the render-state swap under the thread sanitizer
         run: swift test --sanitize=thread --filter RenderCoreTests
