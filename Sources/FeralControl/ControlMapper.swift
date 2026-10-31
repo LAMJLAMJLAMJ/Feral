@@ -110,38 +110,39 @@ public struct ControlMapper {
         let a = m.arguments
         var v = SourceValues()
         var claims = false
+        // p is ["source", n, command, ...].
         switch (p[2], p.count) {
-        case ("xyz", 4):
+        case ("xyz", 3):
             try count(a, 3, m)
             v.position = Position(try num(a[0], m), try num(a[1], m), try num(a[2], m))
             claims = true
-        case ("xy", 4):
+        case ("xy", 3):
             try count(a, 2, m)
             v.position = Position(try num(a[0], m), try num(a[1], m), s.position.z)
             claims = true
-        case ("x", 4), ("y", 4), ("z", 4):
+        case ("x", 3), ("y", 3), ("z", 3):
             try count(a, 1, m)
             var pos = s.position
             let x = try num(a[0], m)
             switch p[2] { case "x": pos.x = x; case "y": pos.y = x; default: pos.z = x }
             v.position = pos
             claims = true
-        case ("gain", 4):
+        case ("gain", 3):
             try count(a, 1, m)
             v.gainDB = try num(a[0], m)
-        case ("mute", 4):
+        case ("mute", 3):
             try count(a, 1, m)
             v.mute = try num(a[0], m) != 0
-        case ("width", 4):
+        case ("width", 3):
             try count(a, 1, m)
             v.width = try num(a[0], m)
-        case ("lfe", 4):
+        case ("lfe", 3):
             if a.isEmpty || a[0] == .none || a[0].text?.lowercased() == "off" {
                 v.lfeOff = true
             } else {
                 v.lfeDB = try num(a[0], m)
             }
-        case ("send", 5):
+        case ("send", 4):
             try count(a, 1, m)
             let key = p[3]
             guard let g = state.show.groups.first(where: { Int(key) == $0.number || $0.name.lowercased() == key.lowercased() }) else {
