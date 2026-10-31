@@ -191,6 +191,22 @@ To go back: `cp ~/Desktop/engine-backup.json ~/Library/Application\ Support/Fera
 
 For milestone 2's orbiting test source, add `"testMotion": { "source": 1, "shape": "circle", "center": [0, 6, 1.6], "radius": 6, "seconds": 20 }` to engine.json; it moves the source on input 1 (not journaled) and the app shows it moving.
 
+## Without the rig: BlackHole and Max
+
+BlackHole (a virtual audio device) works as the engine's device: it is a single Core Audio device, not an aggregate, with 32-bit float streams. Whatever any app plays on BlackHole's output channel n comes back on its input channel n, so the engine's inputs and outputs must use different channels or the engine hears itself. `examples/blackhole.json` (for BlackHole 64ch) does this: engine inputs 1-2 are BlackHole channels 1-2, and the 26 outputs are channels 33-58.
+
+```sh
+cp ~/Library/Application\ Support/Feral/engine.json ~/Desktop/engine-backup.json
+mkdir -p ~/Library/Application\ Support/Feral/Shows
+cp -R examples/stage-test.feralshow ~/Library/Application\ Support/Feral/Shows/
+cp examples/blackhole.json ~/Library/Application\ Support/Feral/engine.json
+./scripts/engine.sh reload && ./scripts/engine.sh log   # "running on BlackHole 64ch", outputs 26 of 26 connected
+```
+
+In Max, set Audio Status to BlackHole 64ch at 48 kHz. Meter (or listen to) `adc~` inputs 33-58: those are the engine's outputs 1-26. To feed the engine a real signal, set `"testSignal": "off"`, reload, and play into `dac~` outputs 1-2: they are engine inputs 1-2 (sources 1 and 2). Keep Max's other outputs silent, especially 33-58, which would add into what you meter. "Feral Engine" needs microphone access to read BlackHole's inputs, as with any interface.
+
+`feral-engine devices` gives the exact name and channel count. With BlackHole 16ch, the 26-output example does not fit: use `"outputs": 14`, `"firstOutputChannel": 3` and a smaller show. With 128ch you can go up to 64 in and 64 out. BlackHole runs on its own clock, which is fine for testing but is not what a show would use.
+
 ## Checking the renderers offline: feral-cli
 
 `feral-cli` renders through the same core the engine plays live, faster than real time.
