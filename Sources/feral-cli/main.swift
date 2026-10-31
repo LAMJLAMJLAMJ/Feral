@@ -9,6 +9,9 @@
 //   feral-cli show info [PATH.feralshow]            what a show holds
 //   feral-cli status | go [CUE] | recall SNAPSHOT [--fade S] | move SOURCE X Y [Z] | store NAME [--fade S]
 //             | cue NUMBER SNAPSHOT [--fade S] [--name N] [--follow] | stop | save     the running engine
+//   feral-cli trigger list|add|remove | admbox | release SOURCE...      the trigger map, ADM box, owners
+//   feral-cli osc ADDRESS [ARGS] | osc-watch [--adm]                     OSC to and from the engine
+//   feral-cli midi program N | note N | cc N V | msc go [CUE] | list     MIDI to the engine
 //
 // --config defaults to the engine's own settings, ~/Library/Application Support/Feral/engine.json.
 // taps, impulse and render use the show engine.json names (or --show PATH), as the engine does.
@@ -36,6 +39,10 @@ var cueName: String?
 var follow = false
 var host = "127.0.0.1"
 var port: Int?
+var oscPort: Int?
+var adm = false
+var channel: Int?
+var midiDestination = "Feral"
 var files: [String] = []
 while !args.isEmpty {
     let arg = args.removeFirst()
@@ -52,6 +59,14 @@ while !args.isEmpty {
     case "--name": cueName = value()
     case "--follow": follow = true
     case "--host": host = value()
+    case "--osc-port":
+        guard let n = Int(value()) else { fail("--osc-port needs a number") }
+        oscPort = n
+    case "--adm": adm = true
+    case "--channel":
+        guard let n = Int(value()) else { fail("--channel needs a number from 1 to 16") }
+        channel = n
+    case "--to": midiDestination = value()
     case "--port":
         guard let n = Int(value()) else { fail("--port needs a number") }
         port = n
@@ -235,7 +250,17 @@ case "show":
         fail("show \(sub)? Try feral-cli show import My.feralshow, or feral-cli show info")
     }
 
-case "status", "go", "recall", "move", "store", "cue", "stop", "save":
+case "osc", "osc-watch":
+    runOSCCommand(command, files)
+
+case "midi":
+    #if canImport(CoreMIDI)
+    runMIDICommand(files)
+    #else
+    fail("MIDI needs macOS")
+    #endif
+
+case "status", "go", "recall", "move", "store", "cue", "stop", "save", "trigger", "admbox", "release":
     #if canImport(Network)
     runEngineCommand(command, files)
     #else
@@ -263,9 +288,29 @@ default:
     feral-cli cue NUMBER SNAPSHOT [--fade S] [--name N] [--follow]   add a cue (or change cue NUMBER)
     feral-cli stop                                    stop every running fade where it is
     feral-cli save                                    save the show (and empty its journal)
+    feral-cli release SOURCE...                       hand sources' positions back to cues from QLab/OSC
+
+    The trigger map (console and QLab messages that fire cues) and the ADM-OSC box:
+    feral-cli trigger list
+    feral-cli trigger add program 5 go 12             program change 5 fires cue 12 (--channel N: one channel)
+    feral-cli trigger add program any go {value}      every program change fires the cue with its number
+    feral-cli trigger add note 60 recall 3 [--fade S] a note recalls snapshot 3
+    feral-cli trigger add cc 20 127 stop              CC 20 at 127 stops every fade
+    feral-cli trigger add osc /my/address any go      an OSC message (any first value) runs the next cue
+    feral-cli trigger add msc go any go {value}       MSC (GO with any cue fires that cue; on without triggers)
+    feral-cli trigger remove N                        remove trigger N (as trigger list numbers them)
+    feral-cli admbox [MINX MINY MINZ MAXX MAXY MAXZ]  show or set the box ADM-OSC's -1 to 1 spans (metres)
+
+    OSC and MIDI, as QLab, a console or Max would send them:
+    feral-cli osc ADDRESS [ARGS]                      send one OSC message: feral-cli osc /feral/source/1/xyz 2 6 1.6
+    feral-cli osc-watch [--adm] [--seconds S]         print every change the engine sends its OSC subscribers
+    feral-cli midi program N | note N | cc N V | msc go [CUE] [--channel C] [--to DEST]
+                                                      send MIDI to the engine's "Feral" destination
+    feral-cli midi list                               the MIDI destinations on this Mac
 
     --config defaults to \(EngineConfig.defaultURL.path); --show PATH plays another show offline;
-    --host and --port reach an engine on another Mac (default 127.0.0.1, engine.json's controlPort).
+    --host and --port reach an engine on another Mac (default 127.0.0.1, engine.json's controlPort);
+    --osc-port is the engine's OSC port (default engine.json's oscPort, 9200).
     """)
     exit(command == "help" || command == "-h" || command == "--help" ? 0 : 2)
 }

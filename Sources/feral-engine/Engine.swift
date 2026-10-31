@@ -46,6 +46,18 @@ final class Engine {
     private var server: ControlServer?
     private var clientNames: [ControlServer.ClientID: String] = [:]
 
+    // OSC and MIDI
+    /// Sources whose position OSC or tracking owns; the rest belong to cues.
+    private var owners: [UUID: PositionOwner] = [:]
+    private var osc: OSCServer?
+    /// OSC subscribers, and whether each wants ADM-OSC.
+    private var subscribers: [OSCServer.Peer: Bool] = [:]
+    private var midiInput: MIDIInput?
+    private var oscState = "off"
+    private var midiState = "off"
+    /// When each repeated OSC or MIDI problem was last logged, so a flood of one logs every 10 s.
+    private var lastLogged: [String: Date] = [:]
+
     init(options: Options, config: EngineConfig) {
         self.options = options
         self.config = config
@@ -66,6 +78,8 @@ final class Engine {
             io = AudioEngineIO(core: core, config: config, queue: queue, log: log)
             io.start()
             startControl()
+            startOSC()
+            startMIDI()
             every(0.05) { [self] in core.collect() }
             every(0.1) { [self] in flushJournal() }
             every(10) { [self] in report(force: false) }
@@ -179,6 +193,8 @@ final class Engine {
             unsaved += 1
         }
         server?.broadcast(.applied(seq: seq, origin: origin, command: command))
+        if case .removeSource(let id) = command, owners.removeValue(forKey: id) != nil { broadcastStatus() }
+        echo(command)
     }
 
     /// Hands the journal entries so far to the housekeeping queue, which writes them.
@@ -214,7 +230,12 @@ final class Engine {
     // MARK: - Cues and fades
 
     private func recall(_ snapshot: Snapshot, seconds: Double?, curve: FadeCurve?, followCue: UUID?) {
-        let fade = SnapshotFade(snapshot: snapshot, state: scene, seconds: seconds, curve: curve)
+        // Sources OSC or tracking owns keep their position; the recall sets the rest of their values.
+        let live = Set(owners.keys)
+        let kept = snapshot.sources.filter { live.contains($0.id) && $0.values.position != nil }.count
+        if kept > 0 { log("snapshot \(snapshot.label): \(kept) source(s) keep their live position (OSC or tracking owns them)") }
+        let fade = SnapshotFade(snapshot: snapshot.withoutPositions(of: live), state: scene, seconds: seconds,
+                                curve: curve)
         // The new fade takes over its sources from any fade still running.
         let taken = Set(fade.sources)
         for i in fades.indices { fades[i].fade.remove(taken) }
@@ -277,6 +298,9 @@ final class Engine {
         }
         currentCue = cue.id
         let follow = cue.autoFollow ? cue.id : nil
+        if cue.reclaim, let id = cue.snapshot, let snapshot = scene.snapshot(id) {
+            release(snapshot.sources.map(\.id), origin: "cue \(cue.label)")
+        }
         if let id = cue.snapshot, let snapshot = scene.snapshot(id) {
             let seconds = cue.fadeSeconds ?? snapshot.fadeSeconds
             log("cue \(cue.label) GO (\(origin)): snapshot \(snapshot.label) over \(seconds) s")
@@ -321,11 +345,12 @@ final class Engine {
                 clientNames[client] = name
                 log("control: \(name) connected")
             case .apply(let command):
-                let touched = Set(command.touchedSources)
-                if !touched.isEmpty {
-                    for i in fades.indices { fades[i].fade.remove(touched) }
-                }
+                takeOver(command.touchedSources)
                 try apply(command, origin: origin)
+                // A move from the app or feral-cli hands the source back to cues: the newest owner wins.
+                if case .updateSources(let updates) = command {
+                    release(updates.filter { $0.values.position != nil }.map(\.id), origin: origin)
+                }
                 switch command {
                 case .updateSources, .setSpeaker: break // too many while dragging
                 default: log("\(origin): \(describe(command))")
@@ -342,6 +367,9 @@ final class Engine {
                 try save()
             case .refresh:
                 server?.send(.state(state: FullState(seq: seq, show: scene.show, system: scene.system, status: status)), to: client)
+            case .release(let sources):
+                release(sources, origin: origin)
+                broadcastStatus()
             }
         } catch {
             server?.send(.error(message: "\(error)"), to: client)
@@ -356,10 +384,172 @@ final class Engine {
         default: audio = "stopped"
         }
         return EngineStatus(version: version, showPath: showURL.path, unsaved: unsaved, currentCue: currentCue,
-                            nextCue: scene.cue(after: currentCue)?.id, fading: fades.flatMap { $0.fade.sources }, audio: audio)
+                            nextCue: scene.cue(after: currentCue)?.id, fading: fades.flatMap { $0.fade.sources }, audio: audio,
+                            owners: owners, osc: oscState, midi: midiState)
     }
 
-    private func broadcastStatus() { server?.broadcast(.status(status: status)) }
+    private func broadcastStatus() {
+        let s = status
+        server?.broadcast(.status(status: s))
+        let cues = ControlMapper(state: scene).cueMessages(s)
+        for (peer, adm) in subscribers where !adm { osc?.send(cues, to: peer) }
+    }
+
+    /// Stops any fade on sources something is setting directly.
+    private func takeOver(_ sources: [UUID]) {
+        guard !sources.isEmpty else { return }
+        let touched = Set(sources)
+        for i in fades.indices { fades[i].fade.remove(touched) }
+    }
+
+    /// Hands sources' positions back to cues.
+    private func release(_ sources: [UUID], origin: String) {
+        let freed = sources.filter { owners.removeValue(forKey: $0) != nil }
+        guard !freed.isEmpty else { return }
+        log("\(origin): \(freed.count) source(s) handed back to cues")
+        broadcastStatus()
+    }
+
+    // MARK: - OSC and MIDI
+
+    private func startOSC() {
+        guard config.oscPort != 0 else { log("osc: off (oscPort is 0)"); return }
+        let server = OSCServer(queue: queue)
+        server.onLog = { log($0) }
+        server.onReady = { [weak self] port in
+            self?.oscState = "UDP port \(port) on \(self?.config.oscAddress ?? "")"
+            self?.broadcastStatus()
+        }
+        server.onMessage = { [weak self] m, peer in self?.handle(m, from: peer) }
+        server.onBadPacket = { [weak self] why, peer in self?.logOnce("bad:\(peer.host)", "osc: unreadable packet from \(peer): \(why)") }
+        do {
+            try server.start(address: config.oscAddress, port: config.oscPort)
+            oscState = "starting on UDP port \(config.oscPort)"
+        } catch {
+            oscState = "not listening: \(error)"
+            log("error: OSC cannot listen on \(config.oscAddress) UDP port \(config.oscPort): \(error)")
+        }
+        osc = server
+    }
+
+    private func startMIDI() {
+        guard config.midi else { log("midi: off (midi is false)"); return }
+        let input = MIDIInput(queue: queue, only: config.midiInputs)
+        input.onLog = { [weak self] line in
+            log(line)
+            if line.hasPrefix("midi: listening to ") { self?.midiState = String(line.dropFirst("midi: listening to ".count)); self?.broadcastStatus() }
+        }
+        input.onMessage = { [weak self] m, source in self?.handle(m, from: source) }
+        input.start()
+        midiInput = input
+    }
+
+    /// An OSC message: the trigger map first, then Feral's and ADM-OSC's namespaces.
+    private func handle(_ m: OSCMessage, from peer: OSCServer.Peer) {
+        let mapper = ControlMapper(state: scene)
+        let triggered = mapper.triggered(by: m)
+        if !triggered.isEmpty { log("osc: \(m.description) from \(peer) matches the trigger map") }
+        run(triggered, origin: "OSC trigger", peer: peer)
+        let root = m.parts.first
+        guard root == "feral" || root == "adm" else {
+            if triggered.isEmpty { logOnce(m.address, "osc: nothing listens for \(m.address) (from \(peer)); add a trigger for it") }
+            return
+        }
+        do {
+            run(try mapper.actions(for: m), origin: root == "adm" ? "ADM-OSC" : "OSC", peer: peer)
+        } catch {
+            logOnce("err:\(m.address)", "osc: \(error) (from \(peer))")
+        }
+    }
+
+    private func handle(_ m: MIDIMessage, from source: String) {
+        let actions = ControlMapper(state: scene).triggered(by: m)
+        guard !actions.isEmpty else { return }
+        log("midi: \(m) from \(source)")
+        run(actions, origin: "MIDI", peer: nil)
+    }
+
+    /// Runs OSC's and MIDI's actions as the app's requests run.
+    private func run(_ actions: [ControlAction], origin: String, peer: OSCServer.Peer?) {
+        for action in actions {
+            do {
+                switch action {
+                case .go(let cue):
+                    try go(cue, origin: origin)
+                case .recall(let which, let seconds):
+                    guard let snapshot = scene.snapshot(matching: which) else { throw ConfigError("no snapshot \(which)") }
+                    log("snapshot \(snapshot.label) recalled (\(origin)) over \(seconds ?? snapshot.fadeSeconds) s")
+                    recall(snapshot, seconds: seconds, curve: nil, followCue: nil)
+                case .stopFades:
+                    log("\(origin): stop fades")
+                    stopFades()
+                case .save:
+                    try save()
+                case .apply(let command):
+                    takeOver(command.touchedSources)
+                    try apply(command, origin: origin)
+                    log("\(origin): \(describe(command))")
+                case .update(let updates, let owner):
+                    takeOver(updates.map(\.id))
+                    try apply(.updateSources(updates: updates), origin: origin)
+                    if let owner {
+                        var changed = false
+                        for u in updates where u.values.position != nil && owners[u.id] != owner {
+                            owners[u.id] = owner
+                            changed = true
+                        }
+                        if changed { broadcastStatus() }
+                    }
+                case .release(let sources):
+                    release(sources, origin: origin)
+                case .subscribe(let port, let adm):
+                    guard let peer else { break }
+                    let target = OSCServer.Peer(host: peer.host, port: port ?? peer.port)
+                    if subscribers.count >= 32 && subscribers[target] == nil { throw ConfigError("32 OSC subscribers already") }
+                    if subscribers.updateValue(adm, forKey: target) == nil {
+                        log("osc: \(target) subscribed" + (adm ? " (ADM-OSC)" : ""))
+                    }
+                    osc?.send(ControlMapper(state: scene).dump(adm: adm, status: status), to: target)
+                case .unsubscribe(let port):
+                    guard let peer else { break }
+                    let target = OSCServer.Peer(host: peer.host, port: port ?? peer.port)
+                    if subscribers.removeValue(forKey: target) != nil {
+                        log("osc: \(target) unsubscribed")
+                        osc?.forget(target)
+                    }
+                case .reply(let message):
+                    if let peer { osc?.send([message], to: peer) }
+                }
+            } catch {
+                logOnce("run:\(error)", "\(origin): \(error)")
+                if let peer { osc?.send([OSCMessage("/feral/error", [.string("\(error)")])], to: peer) }
+            }
+        }
+    }
+
+    /// Sends OSC subscribers what a command changed.
+    private func echo(_ command: Command) {
+        guard !subscribers.isEmpty else { return }
+        let mapper = ControlMapper(state: scene)
+        var feral: [OSCMessage]?, adm: [OSCMessage]?
+        for (peer, wantsADM) in subscribers {
+            if wantsADM {
+                if adm == nil { adm = mapper.echo(command, adm: true) }
+                osc?.send(adm!, to: peer)
+            } else {
+                if feral == nil { feral = mapper.echo(command, adm: false) }
+                osc?.send(feral!, to: peer)
+            }
+        }
+    }
+
+    private func logOnce(_ key: String, _ line: String) {
+        let now = Date()
+        if let last = lastLogged[key], now.timeIntervalSince(last) < 10 { return }
+        if lastLogged.count > 500 { lastLogged = lastLogged.filter { now.timeIntervalSince($0.value) < 10 } }
+        lastLogged[key] = now
+        log(line)
+    }
 
     private func describe(_ c: Command) -> String {
         switch c {
@@ -377,6 +567,7 @@ final class Engine {
         case .setCue(let c): return "set cue \(c.label)"
         case .removeCue: return "removed a cue"
         case .renameShow(let n): return "renamed the show \(n)"
+        case .setControl(let c): return "set the trigger map (\(c.triggers.count) trigger(s)) and ADM-OSC box"
         }
     }
 
@@ -439,10 +630,15 @@ final class Engine {
         if old.controlAddress != newConfig.controlAddress || old.controlPort != newConfig.controlPort {
             log("reload: the control link keeps \(old.controlAddress) port \(old.controlPort) until the engine restarts")
         }
+        if old.oscAddress != newConfig.oscAddress || old.oscPort != newConfig.oscPort || old.midi != newConfig.midi
+            || old.midiInputs != newConfig.midiInputs {
+            log("reload: OSC and MIDI keep their settings until the engine restarts")
+        }
         if ShowFile.url(for: newConfig, configURL: options.configURL) != showURL {
             flushJournal()
             housekeeping.sync {}
             stopFades()
+            owners = [:]
             openShow()
             server?.broadcast(.state(state: FullState(seq: seq, show: scene.show, system: scene.system, status: status)))
         }
@@ -457,6 +653,8 @@ final class Engine {
         flushJournal()
         housekeeping.sync {}
         server?.stop()
+        osc?.stop()
+        midiInput?.stop()
         io.stop()
         report(force: true)
         if let activity { ProcessInfo.processInfo.endActivity(activity) }

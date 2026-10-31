@@ -2,7 +2,7 @@
 
 In-house spatial audio engine for immersive live sound, on macOS. The design is in the [v1 technical design](https://claude.ai/artifact/313W4TBPo6gruTH6rBM8qq) and the background in the [platforms research](https://claude.ai/artifact/DeXcLoQPN3MHfYYRwwTGy9).
 
-This is **milestone 3, the show file and the Mac app**, on top of milestone 1's engine skeleton and milestone 2's renderers: a headless `feral-engine` process that opens one Core Audio device and renders up to 128 sources to 128 speakers through Delay, VBAP and DBAP speaker groups, with per-speaker processing, and is restarted by launchd if it crashes. Sources, speakers and groups now live in a **show file** (a `.feralshow` package) with **snapshots**, a **cue list** and a **journal** of every change, and the **Feral Mac app** shows the layout on a plan and moves sources with the mouse. OSC control (QLab, consoles) comes in milestone 4.
+This is **milestone 4, control**, on top of milestone 1's engine skeleton, milestone 2's renderers and milestone 3's show file and app: a headless `feral-engine` process that opens one Core Audio device and renders up to 128 sources to 128 speakers through Delay, VBAP and DBAP speaker groups, with per-speaker processing, and is restarted by launchd if it crashes. Sources, speakers and groups now live in a **show file** (a `.feralshow` package) with **snapshots**, a **cue list** and a **journal** of every change, and the **Feral Mac app** shows the layout on a plan and moves sources with the mouse. QLab, consoles and anything else can now drive the engine: **OSC** in Feral's own namespace and in **ADM-OSC**, a **trigger map** in the show that turns MIDI program changes, notes, CCs, MIDI Show Control or any OSC message into cues, and **position owners** so QLab and cues never fight over a source (see [OSC, MIDI and the trigger map](#osc-midi-and-the-trigger-map)).
 
 ## What's here
 
@@ -11,15 +11,15 @@ This is **milestone 3, the show file and the Mac app**, on top of milestone 1's 
 | `Sources/FeralCore` | The real-time render core in C++20: render states, per-source delay lines, gain ramps, delay glides and crossfades, per-output processing, and the lock-free swap between the control and audio threads. Also the renderers' geometry (`include/feral_geometry.h`): Delay, VBAP (2D pairs, 3D triangulation with virtual speakers, MDAP width) and DBAP, and EQ design. No Apple APIs, so it builds and tests on Linux. Swift reaches it through the C API in `include/feral_core.h`. |
 | `Sources/FeralCoreAudio` | The Core Audio IOProc, in C++ so no Swift runs on the audio thread. It maps the device's streams (mono or interleaved) to engine channels. macOS only. |
 | `Sources/FeralScene` | Engine settings (`engine.json`), the fixed routing, the show (sources, speakers, groups, snapshots, cues), its `.feralshow` package and journal, the commands that change it, snapshot fades, and `SpatialRenderer`, which turns the layout into render states. |
-| `Sources/FeralControl` | The control link between the engine and the app or `feral-cli`: one JSON message per line over TCP, port 9100. |
+| `Sources/FeralControl` | The control link between the engine and the app or `feral-cli`: one JSON message per line over TCP, port 9100. OSC (reading and writing packets, the UDP server on port 9200), MIDI (a byte-stream parser with MIDI Show Control, and Core MIDI input with a virtual "Feral" destination), and `ControlMapper`, which turns OSC, ADM-OSC, MIDI and the trigger map into engine actions and changes back into OSC for subscribers. |
 | `Sources/FeralApp` | The Feral Mac app (SwiftUI): the plan, the cue list with GO, snapshots, and an inspector for sources, speakers, snapshots and cues. |
-| `Sources/FeralOffline`, `Sources/feral-cli` | Offline rendering through the same core, WAV files, and the known-answer checks: `feral-cli check`, `taps`, `impulse` and `render`. Show files: `show import`, `show info`. The running engine from Terminal: `status`, `go`, `recall`, `move`, `store`, `cue`, `stop`, `save`. |
+| `Sources/FeralOffline`, `Sources/feral-cli` | Offline rendering through the same core, WAV files, and the known-answer checks: `feral-cli check`, `taps`, `impulse` and `render`. Show files: `show import`, `show info`. The running engine from Terminal: `status`, `go`, `recall`, `move`, `store`, `cue`, `stop`, `save`, `release`, `trigger`, `admbox`; `osc` and `osc-watch` to send and watch OSC, `midi` to send MIDI. |
 | `Sources/FeralIO` | Core Audio device list, opening one device, and keeping it open: if it disappears, changes sample rate or changes its channels, the engine keeps its state and reopens it every second until it is back. macOS only. |
 | `Sources/feral-engine` | The engine process. |
 | `launchd/local.feral.engine.plist` | The launchd agent: starts at login, restarts within about a second after a crash. |
 | `scripts/` | `build-engine-app.sh` (bundle), `install-engine.sh` (install or update the agent), `engine.sh` (status, log, reload, restart, stop, crash test), `build-app.sh` (the Mac app). |
 | `examples/stage-test.json`, `examples/stage-test.feralshow` | Engine settings and a show for a 26-speaker test layout: a Delay group (front line, fills, delays), a VBAP overhead ring, two subs on the LFE send, a pink-noise test source, and five cues that walk it around the venue. |
-| `Tests/` | The show file, journal replay, commands, snapshots, fades and cue order; the control link's messages and (macOS) a real connection; from milestone 2, the known-answer checks, delay taps, spatial settings and WAV files; from milestone 1, the matrix and ramps, the state swap under concurrent publishing (run under the thread sanitizer on Linux CI), a timing check for a dense 128 by 128 matrix, and the IOProc on hand-made mono and interleaved buffer lists (macOS). |
+| `Tests/` | OSC packets (known bytes, malformed packets and a 20,000-packet fuzz), the MIDI parser and MSC, Feral's OSC namespace, ADM-OSC, the trigger map and the echo to subscribers; the show file, journal replay, commands, snapshots, fades and cue order; the control link's messages and (macOS) a real connection; from milestone 2, the known-answer checks, delay taps, spatial settings and WAV files; from milestone 1, the matrix and ramps, the state swap under concurrent publishing (run under the thread sanitizer on Linux CI), a timing check for a dense 128 by 128 matrix, and the IOProc on hand-made mono and interleaved buffer lists (macOS). |
 
 ### How a change reaches the audio
 
@@ -80,6 +80,10 @@ This builds `FeralEngine.app` (the engine inside a minimal app bundle, so macOS 
 | `show` | `Shows/Default.feralshow` | The show to play: a `.feralshow` package, absolute, from `~`, or relative to engine.json's folder. With groups in the show, the engine renders its sources to them, and `routes` only adds fixed feeds on top (no passthrough) |
 | `controlAddress` | `127.0.0.1` | Where the app and `feral-cli` reach the engine. `127.0.0.1` is this Mac only; `0.0.0.0` lets an app on another Mac connect. Needs an engine restart |
 | `controlPort` | 9100 | The control link's TCP port |
+| `oscAddress` | `0.0.0.0` | Where OSC is read: `0.0.0.0` is any network (QLab or a console on another machine), `127.0.0.1` this Mac only. Needs an engine restart |
+| `oscPort` | 9200 | The UDP port OSC is read on; 0 turns OSC off |
+| `midi` | true | Read MIDI for the trigger map and MIDI Show Control |
+| `midiInputs` | every source | The MIDI sources to listen to, by name or part of one: `["IAC", "SD7"]`. The engine's own "Feral" destination always listens |
 | `speakers`, `groups`, `sources`, `lfeOutputs` | none | Milestone 2's layout keys. They are only read once, to make the first show (below); after that the show holds the layout |
 | `airTemperatureC` | 20 | Sets the speed of sound for Delay groups |
 | `delayGlidePercent`, `delayJumpMS`, `delayCrossfadeMS` | 0.5, 5, 30 | A moving delay glides at most this fast (as a pitch shift); a jump bigger than `delayJumpMS` crossfades instead, over `delayCrossfadeMS` |
@@ -207,6 +211,97 @@ In Max, set Audio Status to BlackHole 64ch at 48 kHz. Meter (or listen to) `adc~
 
 `feral-engine devices` gives the exact name and channel count. With BlackHole 16ch, the 26-output example does not fit: use `"outputs": 14`, `"firstOutputChannel": 3` and a smaller show. With 128ch you can go up to 64 in and 64 out. BlackHole runs on its own clock, which is fine for testing but is not what a show would use.
 
+## OSC, MIDI and the trigger map
+
+The engine reads OSC on UDP port 9200 (`oscPort`) and MIDI from every MIDI source on the Mac, plus its own virtual MIDI destination called **Feral**. Sources, snapshots and cues are addressed by the numbers the app shows.
+
+| OSC address | Arguments | What it does |
+| --- | --- | --- |
+| `/feral/go` | [cue] | GO: the next cue, or that cue |
+| `/feral/cue/{n}/go` | | Run cue n (`/feral/cue/12.5/go` works) |
+| `/feral/stop` | | Stop every running fade |
+| `/feral/snapshot/{n}/recall` | [seconds] | Recall snapshot n over its own fade time, or this one |
+| `/feral/snapshot/store` | [name] | Store every source as a new snapshot |
+| `/feral/save` | | Save the show |
+| `/feral/source/{n}/xyz` | x y z | Move source n (metres, venue frame); also `/xy x y`, `/x`, `/y`, `/z` |
+| `/feral/source/{n}/gain`, `/mute`, `/width`, `/lfe` | dB, 0 or 1, degrees, dB or "off" | Its level, mute, VBAP width and LFE send |
+| `/feral/source/{n}/send/{group}` | dB | A send level; the group by number or name |
+| `/feral/source/{n}/release` | | Hand the source's position back to cues |
+| `/feral/subscribe` | [port] ["adm"] | Send me every change, to this port (else the port the message came from), in ADM-OSC if asked |
+| `/feral/unsubscribe` | [port] | |
+| `/feral/ping` | anything | Answers `/feral/pong` with the same arguments |
+| `/adm/obj/{n}/xyz`, `/x`, `/y`, `/z` | -1 to 1 | ADM-OSC position of source n, mapped onto the show's ADM box |
+| `/adm/obj/{n}/aed`, `/azim`, `/elev`, `/dist` | degrees, degrees, 0 to 1 | ADM-OSC polar position (azimuth 0 is the front, positive to the left) |
+| `/adm/obj/{n}/gain`, `/mute`, `/w` | linear, 0 or 1, 0 to 1 | Level, mute, width (1 is 180 degrees) |
+
+Subscribers get `/feral/source/{n}/xyz`, `/gain`, `/mute`, `/width`, `/send/{group}` and `/lfe` whenever they change (from the app, a cue's fade, OSC or anything else), and `/feral/cue/current` and `/feral/cue/next` (number, name) when the cue list moves. A subscription lasts until `/feral/unsubscribe` or an engine restart. A message the engine cannot use is logged (once every 10 s per address) and answered with `/feral/error`; malformed packets are dropped without stopping anything.
+
+**ADM-OSC box.** ADM-OSC positions run from -1 to 1 around the listener: x from the audience's left to their right, y from the back to the front (the stage), z from bottom to top. Feral maps that cube onto a box in the venue, by default x -10 to 10, y -2 to 20 and z 0 to 10 metres. Because Feral's x runs to stage right (the audience's left) and its y towards the audience, ADM's left lands on +x and ADM's front on the stage side. Set the box with `feral-cli admbox MINX MINY MINZ MAXX MAXY MAXZ`.
+
+**Who moves a source.** Each source's position has one owner at a time: cues (the default, which includes the app and `feral-cli`), OSC, or later tracking. The newest one takes over. Once QLab (or any OSC) moves a source, cues and snapshots leave that source's position alone, while still setting its gain, mute and sends, so a QLab fade and a cue never fight. The source goes back to cues when you drag it in the app, move it with `feral-cli move`, press **Hand back to cues** in its inspector, run `feral-cli release N` or send `/feral/source/N/release`, or when a cue with **Take sources back from QLab or tracking** on runs. `feral-cli status` lists the sources OSC owns. Owners are not saved: after a restart every source belongs to cues.
+
+**The trigger map** lives in the show (`show.json`, under `control`), so it travels with the production. Each trigger is a message in and an action out; in the action, `{value}` stands for the incoming number (the program number 1 to 128, the note, the CC value, the MSC cue number or the OSC message's first argument).
+
+```sh
+feral-cli trigger add program 5 go 12            # program change 5 (any channel) runs cue 12
+feral-cli trigger add program any go {value}     # every program change runs the cue with its number
+feral-cli trigger add note 60 recall 3 --fade 2  # note 60 recalls snapshot 3 over 2 s
+feral-cli trigger add cc 20 127 stop --channel 16
+feral-cli trigger add osc /digico/snapshot any go {value}   # any OSC address a console sends
+feral-cli trigger list
+feral-cli trigger remove 2
+```
+
+In `show.json` the same triggers read `{ "on": { "midiProgram": { "program": 5 } }, "action": { "go": { "cue": "12" } } }`; a field left out (`channel`, `program`, `value`) matches anything, and `"enabled": false` turns one off.
+
+**DiGiCo.** Depending on the desk's software, its snapshots send MIDI program changes or OSC. Program changes need only `trigger add program any go {value}` (or one trigger per snapshot); for OSC, look in the engine's log for the line `osc: nothing listens for /...` the first time the desk fires a snapshot, and add a trigger for that address.
+
+**MIDI Show Control.** Without a trigger of its own, MSC GO (with or without a cue number), TIMED_GO and RESUME run cues and STOP, ALL_OFF and GO_OFF stop fades. The engine answers every device id unless the show sets `"mscDeviceID"` under `control` (then that id and 127, the all-call). A trigger for an MSC command replaces the built-in action.
+
+**QLab.** In QLab 5, add a Network patch: type OSC, destination the engine Mac's address (127.0.0.1 if QLab is on the same Mac), port 9200. Then a Network cue with the message `/feral/cue/12/go` fires cue 12, and a Network cue with `/feral/source/1/xyz` and a fade sends the position over time, so QLab moves the source smoothly (the engine follows each value it receives).
+
+### Testing control without the rig
+
+With the engine on BlackHole as above (`examples/blackhole.json`), everything here can be tested on the laptop. Update first:
+
+```sh
+cd Feral && git pull
+./scripts/install-engine.sh
+./scripts/engine.sh log      # look for "osc: listening on 0.0.0.0 UDP port 9200" and "midi: listening to ..."; Ctrl-C to stop
+```
+
+1. Watch what the engine sends, in a second Terminal window:
+
+   ```sh
+   swift run -c release feral-cli osc-watch
+   ```
+
+2. In the first window, move source 1 by OSC and listen (or meter channels 33-58 in Max):
+
+   ```sh
+   swift run -c release feral-cli osc /feral/ping
+   swift run -c release feral-cli osc /feral/source/1/xyz -6 4 1.6
+   swift run -c release feral-cli osc /adm/obj/1/azim -45
+   swift run -c release feral-cli status          # "live: source 1 Test position from OSC (QLab)"
+   swift run -c release feral-cli go 2            # cue 2 does not move source 1: OSC owns it
+   swift run -c release feral-cli release 1
+   swift run -c release feral-cli go 2            # now it does
+   ```
+
+3. Fire cues from MIDI, as a console's snapshots would:
+
+   ```sh
+   swift run -c release feral-cli trigger add program any go {value}
+   swift run -c release feral-cli midi program 3   # runs cue 3
+   swift run -c release feral-cli midi msc go 4    # MSC GO cue 4
+   ```
+
+4. From Max: `[udpsend 127.0.0.1 9200]` sends OSC (a message box `/feral/source/1/xyz $1 $2 1.6` fed by a `[pictslider]` moves the source as you drag). `[udpreceive 9300]` with `/feral/subscribe 9300` sent once shows every change. `[midiout]` set to the **Feral** destination (or the IAC bus) sends program changes and notes for the trigger map.
+
+5. If QLab is on the laptop, the QLab steps above work as they would at a show.
+
+The app shows who owns each source's position in its inspector, and the cue inspector has the **Take sources back from QLab or tracking** switch.
+
 ## Checking the renderers offline: feral-cli
 
 `feral-cli` renders through the same core the engine plays live, faster than real time.
@@ -224,4 +319,4 @@ swift run -c release feral-cli show import ~/Desktop/Mine.feralshow --config my-
 
 ## Not yet
 
-Milestone 3 does not have OSC control (QLab, DiGiCo, ADM-OSC), MIDI, show mode, tracking, render worker threads or the backup engine; they follow the milestones in the design. From the design's milestone 3 list, importing the system layer from Measure's alignment results, a 3D view, editing EQ and limiters in the app, adding and removing speakers, groups and sources in the app, and New/Open/Save As are still to do: speakers, groups and sources can be added by editing the show's JSON (or importing an engine.json layout), and EQ and limiters in `system.json`. The control link is JSON over TCP on port 9100 rather than the design's OSC over TCP; milestone 4's OSC namespace maps onto the same requests. The show's content hash for the backup engine comes with the backup engine (milestone 6). Delay rendering runs on the one audio thread: 128 sources each through 32 delayed speakers, with full processing on 128 outputs, took about 0.5 ms of a 64-frame buffer's 1.33 ms on GitHub's Apple-silicon CI runner (the timing test in `swift test -c release` prints it for your Mac); a Delay group feeding all 128 speakers from all 128 sources is the case the design's render workers are for.
+Milestone 4 does not have show mode, tracking, the iPad remote, render worker threads or the backup engine; they follow the milestones in the design. OSC is UDP only (no OSC over TCP yet), the trigger map is edited with `feral-cli` or in `show.json` (not yet in the app), and the engine does not yet reply to QLab's own OSC to show the live cue (subscribers get `/feral/cue/current` instead). The app's interface gets its next round of work after this milestone. From the design's milestone 3 list, importing the system layer from Measure's alignment results, a 3D view, editing EQ and limiters in the app, adding and removing speakers, groups and sources in the app, and New/Open/Save As are still to do: speakers, groups and sources can be added by editing the show's JSON (or importing an engine.json layout), and EQ and limiters in `system.json`. The app's control link stays JSON over TCP on port 9100; OSC drives the same engine actions. The show's content hash for the backup engine comes with the backup engine (milestone 6). Delay rendering runs on the one audio thread: 128 sources each through 32 delayed speakers, with full processing on 128 outputs, took about 0.5 ms of a 64-frame buffer's 1.33 ms on GitHub's Apple-silicon CI runner (the timing test in `swift test -c release` prints it for your Mac); a Delay group feeding all 128 speakers from all 128 sources is the case the design's render workers are for.

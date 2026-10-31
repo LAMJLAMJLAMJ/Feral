@@ -4,7 +4,8 @@ import Foundation
 // The control link between the engine and its clients (the Mac app, feral-cli): one JSON object per
 // line over TCP, port 9100 by default. On connect the engine sends the whole show (`state`); after
 // that it sends every command it applies (`applied`) to every client, so each client's copy of the
-// show stays the engine's. Clients send requests. OSC (milestone 4) maps onto the same requests.
+// show stays the engine's. Clients send requests. OSC and MIDI (ControlMapper) drive the same engine
+// actions.
 
 public let defaultControlPort = 9100
 
@@ -24,6 +25,8 @@ public enum Request: Codable, Equatable {
     case save
     /// Asks for the whole show again.
     case refresh
+    /// Hands sources' positions back to cues from OSC or tracking.
+    case release(sources: [UUID])
 }
 
 /// The engine's state besides the show itself.
@@ -38,12 +41,53 @@ public struct EngineStatus: Codable, Equatable {
     public var fading: [UUID]
     /// "running on MADIface XT", "waiting: ...".
     public var audio: String
+    /// Sources whose position something other than cues owns now, by source id.
+    public var owners: [UUID: PositionOwner]
+    /// "UDP port 9200", "off", or why it is not listening.
+    public var osc: String
+    /// "4 sources", "off".
+    public var midi: String
 
     public init(version: String, showPath: String, unsaved: Int = 0, currentCue: UUID? = nil, nextCue: UUID? = nil,
-                fading: [UUID] = [], audio: String = "") {
+                fading: [UUID] = [], audio: String = "", owners: [UUID: PositionOwner] = [:], osc: String = "", midi: String = "") {
         self.version = version; self.showPath = showPath; self.unsaved = unsaved; self.currentCue = currentCue
-        self.nextCue = nextCue; self.fading = fading; self.audio = audio
+        self.nextCue = nextCue; self.fading = fading; self.audio = audio; self.owners = owners; self.osc = osc; self.midi = midi
     }
+
+    enum CodingKeys: String, CodingKey { case version, showPath, unsaved, currentCue, nextCue, fading, audio, owners, osc, midi }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        version = try c.decode(String.self, forKey: .version)
+        showPath = try c.decode(String.self, forKey: .showPath)
+        unsaved = try c.decodeIfPresent(Int.self, forKey: .unsaved) ?? 0
+        currentCue = try c.decodeIfPresent(UUID.self, forKey: .currentCue)
+        nextCue = try c.decodeIfPresent(UUID.self, forKey: .nextCue)
+        fading = try c.decodeIfPresent([UUID].self, forKey: .fading) ?? []
+        audio = try c.decodeIfPresent(String.self, forKey: .audio) ?? ""
+        // Keyed by the id as text, so the JSON is an object.
+        let byText = try c.decodeIfPresent([String: PositionOwner].self, forKey: .owners) ?? [:]
+        owners = Dictionary(uniqueKeysWithValues: byText.compactMap { k, v in UUID(uuidString: k).map { ($0, v) } })
+        osc = try c.decodeIfPresent(String.self, forKey: .osc) ?? ""
+        midi = try c.decodeIfPresent(String.self, forKey: .midi) ?? ""
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(version, forKey: .version)
+        try c.encode(showPath, forKey: .showPath)
+        try c.encode(unsaved, forKey: .unsaved)
+        try c.encodeIfPresent(currentCue, forKey: .currentCue)
+        try c.encodeIfPresent(nextCue, forKey: .nextCue)
+        try c.encode(fading, forKey: .fading)
+        try c.encode(audio, forKey: .audio)
+        try c.encode(Dictionary(uniqueKeysWithValues: owners.map { ($0.key.uuidString, $0.value) }), forKey: .owners)
+        try c.encode(osc, forKey: .osc)
+        try c.encode(midi, forKey: .midi)
+    }
+
+    /// Who moves a source's position now.
+    public func owner(of source: UUID) -> PositionOwner { owners[source] ?? .cues }
 }
 
 /// The whole show and status, sent when a client connects.
