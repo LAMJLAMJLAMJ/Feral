@@ -464,7 +464,10 @@ final class Engine {
 
     private func handle(_ m: MIDIMessage, from source: String) {
         let actions = ControlMapper(state: scene).triggered(by: m)
-        guard !actions.isEmpty else { return }
+        guard !actions.isEmpty else {
+            logOnce("midi:\(m)", "midi: \(m) from \(source); no trigger for it")
+            return
+        }
         log("midi: \(m) from \(source)")
         run(actions, origin: "MIDI", peer: nil)
     }
