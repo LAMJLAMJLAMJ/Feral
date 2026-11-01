@@ -203,7 +203,7 @@ struct MeterBridge: View {
         .background(.bar)
     }
 
-    private struct Strip: Identifiable {
+    fileprivate struct Strip: Identifiable {
         let id: String
         let number: Int
         let name: String
@@ -250,24 +250,40 @@ struct MeterBridge: View {
                 .font(.caption).foregroundStyle(.secondary).frame(height: 130)
         } else {
             ForEach(strips) { strip in
-                let selected = strip.target != nil && selection == strip.target
-                VStack(spacing: 2) {
-                    MeterBar(channel: strip.channel).frame(width: 12).frame(maxHeight: .infinity)
-                    Text("\(strip.number)").font(.system(size: 9, weight: .semibold).monospacedDigit())
-                    Rectangle().fill(strip.color).frame(width: 16, height: 2)
-                    Text(strip.name).font(.system(size: 8)).lineLimit(1).frame(width: 34)
-                    Text("ch \(strip.device)").font(.system(size: 8).monospacedDigit()).foregroundStyle(.secondary)
-                }
-                .frame(width: 36, height: 130)
-                .padding(.vertical, 2)
-                .background(RoundedRectangle(cornerRadius: 4).fill(selected ? Color.accentColor.opacity(0.2) : .clear))
-                .contentShape(Rectangle())
-                .onTapGesture { if let t = strip.target { selection = t } }
-                .help("\(title) \(strip.number)" + (strip.name.isEmpty ? "" : ": \(strip.name)")
-                      + ", device channel \(strip.device)"
-                      + (strip.channel.map { ". Peak \(MeterScale.text($0.hold)), RMS \(MeterScale.text($0.rms)) dBFS" } ?? ""))
+                StripView(title: title, strip: strip, selected: strip.target != nil && selection == strip.target)
+                    .onTapGesture { if let t = strip.target { selection = t } }
             }
         }
+    }
+}
+
+/// One channel on the meter bridge.
+private struct StripView: View {
+    let title: String
+    let strip: MeterBridge.Strip
+    let selected: Bool
+
+    private var help: String {
+        var text = "\(title) \(strip.number)"
+        if !strip.name.isEmpty { text += ": \(strip.name)" }
+        text += ", device channel \(strip.device)"
+        if let c = strip.channel { text += ". Peak \(MeterScale.text(c.hold)), RMS \(MeterScale.text(c.rms)) dBFS" }
+        return text
+    }
+
+    var body: some View {
+        VStack(spacing: 2) {
+            MeterBar(channel: strip.channel).frame(width: 12).frame(maxHeight: .infinity)
+            Text(String(strip.number)).font(.system(size: 9, weight: .semibold).monospacedDigit())
+            Rectangle().fill(strip.color).frame(width: 16, height: 2)
+            Text(strip.name).font(.system(size: 8)).lineLimit(1).frame(width: 34)
+            Text("ch " + String(strip.device)).font(.system(size: 8).monospacedDigit()).foregroundStyle(.secondary)
+        }
+        .frame(width: 36, height: 130)
+        .padding(.vertical, 2)
+        .background(RoundedRectangle(cornerRadius: 4).fill(selected ? Color.accentColor.opacity(0.2) : Color.clear))
+        .contentShape(Rectangle())
+        .help(help)
     }
 }
 #endif
