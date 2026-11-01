@@ -155,6 +155,8 @@ The app connects to the engine on this Mac (Feral > Settings to reach another Ma
 - **Inspector** (right, toolbar button to hide it). A source's live input meter, name, position, gain, mute, width and sends; a speaker's output meter, groups, position and system layer; a snapshot's name, fade and curve; a cue's number, snapshot, fade and auto-follow.
 - **Control monitor** (Window > Control monitor, ⌥⌘M). Every OSC and MIDI message the engine receives, who sent it and what the engine did with it ("GO cue 3", or "nothing listens for /x; add a trigger for it"). Below it you can send test OSC (with examples) and MIDI (program change, note, CC, MSC GO) to the engine, so a console's or QLab's setup can be checked without them. The engine's OSC replies show up too.
 
+- **Engine on and off.** The Engine menu (and the top line of the sidebar's status, and the waiting screen) starts, stops and restarts the engine on this Mac, reloads engine.json, and turns **Start engine at login** on or off. The engine still runs under launchd, so it restarts after a crash whoever started it; Stop leaves it stopped until Start or the next login. Start works even when the agent was turned off with `launchctl disable` or `bootout`, and leaves the login setting as it was. In Terminal: `./scripts/engine.sh start`, `stop`, and `./scripts/engine.sh login on` or `off`.
+
 The engine keeps playing if the app quits or crashes. From Terminal, `feral-cli meters` prints the same levels and `feral-cli monitor` the same OSC and MIDI log.
 
 ## Trying it on the rig

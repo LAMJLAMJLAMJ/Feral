@@ -20,6 +20,8 @@ final class EngineModel: ObservableObject {
     let meters = MeterStore()
     /// The OSC and MIDI the engine hears, and test messages the app sends.
     let monitor = ControlMonitor()
+    /// The engine's launchd agent on this Mac: start, stop, start at login.
+    let service = EngineService()
 
     private var mirror = MirroredShow()
     private var client: ControlClient?

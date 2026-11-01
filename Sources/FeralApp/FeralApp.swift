@@ -20,6 +20,9 @@ struct FeralApp: App {
             CommandGroup(after: .windowArrangement) {
                 OpenMonitorButton()
             }
+            CommandMenu("Engine") {
+                EngineMenu(service: model.service)
+            }
         }
         Window("Control monitor", id: "monitor") {
             MonitorView(model: model, monitor: model.monitor)
@@ -125,6 +128,7 @@ struct ContentView: View {
         } message: {
             Text(model.lastError ?? "")
         }
+        .modifier(ServiceAlert(service: model.service))
     }
 
     @ViewBuilder
@@ -142,8 +146,9 @@ struct ContentView: View {
             VStack(spacing: 10) {
                 ProgressView()
                 Text(model.connected ? "Loading the show…" : "Waiting for feral-engine at \(model.address)")
-                Text("Is the engine running? In Terminal: ./scripts/engine.sh status. "
-                     + "Feral > Settings sets the engine's address.")
+                EngineStateLine(service: model.service, local: EngineService.isLocal(model.host))
+                EngineControls(service: model.service, local: EngineService.isLocal(model.host))
+                Text("Feral > Settings sets the engine's address.")
                     .font(.caption).foregroundStyle(.secondary)
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -442,6 +447,7 @@ struct EngineStatusBar: View {
     var body: some View {
         let s = model.status
         VStack(alignment: .leading, spacing: 3) {
+            EngineServiceRow(service: model.service, local: EngineService.isLocal(model.host))
             row(model.connected ? (s?.audio.hasPrefix("running") == true ? Color.green : Color.orange) : Color.red,
                 "Audio", model.connected ? (s?.audio ?? "…") : "engine not connected (\(model.address))")
             row(s?.oscPort != nil ? Color.green : Color.secondary, "OSC", s.map { $0.osc.isEmpty ? "off" : $0.osc } ?? "–")
