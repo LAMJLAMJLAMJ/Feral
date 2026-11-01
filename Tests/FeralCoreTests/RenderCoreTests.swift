@@ -25,7 +25,7 @@ final class RenderCoreTests: XCTestCase {
         }
         let m = core.readMeters(inputs: 2, outputs: 3)
         XCTAssertEqual(m.inputPeak[0], 0.5, accuracy: 0.001)
-        XCTAssertEqual(m.inputRMS[0], 0.5 / 2.0.squareRoot(), accuracy: 0.002)
+        XCTAssertEqual(m.inputRMS[0], Float(0.5 / 2.0.squareRoot()), accuracy: 0.002)
         XCTAssertEqual(m.inputPeak[1], 0.25, accuracy: 1e-6)
         XCTAssertEqual(m.inputRMS[1], 0.25, accuracy: 0.001)
         XCTAssertEqual(m.outputPeak[0], 0.5, accuracy: 0.001)
