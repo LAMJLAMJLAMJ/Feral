@@ -38,11 +38,11 @@ final class RenderCoreTests: XCTestCase {
         XCTAssertEqual(again.inputPeak[0], 0)
         XCTAssertEqual(again.inputRMS[0], m.inputRMS[0])
 
-        // A channel that stops falls to silence: about -40 dB after 2 s with the 300 ms average.
+        // A channel that stops falls to silence: power falls by e^-1 every 300 ms, so the level is about -29 dB after 2 s.
         for _ in 0..<1500 { render(core.pointer, TestBuffers(channels: 0, frames: frames), TestBuffers(channels: 3, frames: frames)) }
         let quiet = core.readMeters(inputs: 2, outputs: 3)
-        XCTAssertLessThan(quiet.inputRMS[1], 0.25 * 0.02)
-        XCTAssertLessThan(quiet.outputRMS[0], 0.5 * 0.02)
+        XCTAssertLessThan(quiet.inputRMS[1], 0.25 * 0.05)
+        XCTAssertLessThan(quiet.outputRMS[0], 0.5 * 0.05)
     }
 
     func testSilentBeforeAnyRouting() {
