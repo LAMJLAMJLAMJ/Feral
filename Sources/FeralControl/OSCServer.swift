@@ -92,11 +92,17 @@ public final class OSCServer {
     public func send(_ messages: [OSCMessage], to peer: Peer) {
         guard !messages.isEmpty else { return }
         let c: NWConnection
-        if let existing = outgoing[peer] {
+        if let flow = incoming[peer] {
+            // A peer that sent us something is answered on the same flow, from the port it sent to.
+            // macOS treats that as a reply, so Local Network privacy does not stop it.
+            c = flow
+        } else if let existing = outgoing[peer] {
             c = existing
         } else {
             guard let p = NWEndpoint.Port(rawValue: UInt16(clamping: peer.port)) else { return }
-            c = NWConnection(host: peer.host, port: p, using: .udp)
+            let params = NWParameters.udp
+            if OSCServer.isLoopback(peer.host) { params.requiredInterfaceType = .loopback }
+            c = NWConnection(host: peer.host, port: p, using: params)
             c.stateUpdateHandler = { [weak self, weak c] state in
                 guard let self, let c else { return }
                 if case .failed = state { c.cancel(); if self.outgoing[peer] === c { self.outgoing[peer] = nil } }
@@ -105,6 +111,15 @@ public final class OSCServer {
             outgoing[peer] = c
         }
         for m in messages { c.send(content: OSC.encode(m), completion: .contentProcessed { _ in }) }
+    }
+
+    static func isLoopback(_ host: NWEndpoint.Host) -> Bool {
+        switch host {
+        case .ipv4(let a): return a.isLoopback
+        case .ipv6(let a): return a.isLoopback || "\(a)".hasSuffix("127.0.0.1")
+        case .name(let n, _): return n == "localhost"
+        @unknown default: return false
+        }
     }
 
     /// Stops sending to a peer.

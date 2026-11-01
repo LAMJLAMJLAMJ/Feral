@@ -22,10 +22,11 @@ cat > "$APP/Contents/Info.plist" <<PLIST
     <key>CFBundleIdentifier</key><string>local.feral.engine</string>
     <key>CFBundleExecutable</key><string>feral-engine</string>
     <key>CFBundlePackageType</key><string>APPL</string>
-    <key>CFBundleShortVersionString</key><string>0.3</string>
+    <key>CFBundleShortVersionString</key><string>0.4</string>
     <key>CFBundleVersion</key><string>$(git rev-list --count HEAD 2>/dev/null || echo 1)</string>
     <key>LSMinimumSystemVersion</key><string>14.0</string>
     <key>LSBackgroundOnly</key><true/>
+    <key>NSLocalNetworkUsageDescription</key><string>Feral Engine answers OSC from QLab, consoles and Max, and sends them every change.</string>
     <key>NSMicrophoneUsageDescription</key><string>Feral Engine renders the audio inputs of your sound system's interface to its speakers.</string>
 </dict>
 </plist>
