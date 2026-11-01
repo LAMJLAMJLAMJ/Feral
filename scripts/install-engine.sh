@@ -18,6 +18,12 @@ DOMAIN="gui/$(id -u)"
 
 mkdir -p "$DEST" "$LOGS" "$HOME/Library/LaunchAgents"
 launchctl bootout "$DOMAIN/$LABEL" 2>/dev/null || true
+# bootout returns before launchd has finished removing the service; bootstrapping too soon fails
+# with "Bootstrap failed: 5: Input/output error". Wait for it to go (up to 10 s).
+for _ in $(seq 1 50); do
+    launchctl print "$DOMAIN/$LABEL" >/dev/null 2>&1 || break
+    sleep 0.2
+done
 rm -rf "$DEST/FeralEngine.app"
 cp -R build/FeralEngine.app "$DEST/"
 
@@ -29,7 +35,13 @@ fi
 
 sed -e "s|@ENGINE@|$ENGINE|" -e "s|@LOGS@|$LOGS|" launchd/local.feral.engine.plist > "$PLIST"
 plutil -lint "$PLIST" >/dev/null
-launchctl bootstrap "$DOMAIN" "$PLIST"
+# A service that was disabled (launchctl disable) refuses to load with the same error.
+launchctl enable "$DOMAIN/$LABEL"
+if ! launchctl bootstrap "$DOMAIN" "$PLIST"; then
+    echo "Retrying in 2 s..."
+    sleep 2
+    launchctl bootstrap "$DOMAIN" "$PLIST"
+fi
 
 echo "feral-engine is running under launchd as $LABEL."
 echo "  Settings: $DEST/engine.json   (./scripts/engine.sh reload after editing)"

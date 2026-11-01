@@ -25,8 +25,10 @@ let package = Package(
         // .feralshow package and journal, the commands that change it, snapshot fades, and the
         // SpatialRenderer that turns the layout into render states.
         .target(name: "FeralScene", dependencies: ["FeralCore"]),
-        // The control link between the engine and the app or feral-cli: JSON lines over TCP. The
-        // messages build everywhere; the server and client use Network.framework (macOS).
+        // The control link between the engine and the app or feral-cli: JSON lines over TCP. OSC and
+        // ADM-OSC over UDP, MIDI and MIDI Show Control, and the trigger map. The messages, the OSC and
+        // MIDI parsers and ControlMapper build everywhere; the servers use Network.framework and
+        // Core MIDI (macOS).
         .target(name: "FeralControl", dependencies: ["FeralScene"]),
         // Core Audio device list, opening one device and keeping it open. macOS only; empty elsewhere.
         .target(name: "FeralIO", dependencies: ["FeralCore", "FeralCoreAudio", "FeralScene"]),
@@ -35,7 +37,8 @@ let package = Package(
         // Offline rendering through the same core, WAV files, and the known-answer checks.
         .target(name: "FeralOffline", dependencies: ["FeralCore", "FeralScene"]),
         // Offline checks and renders (check, taps, impulse, render), show files (show import, show info),
-        // and the running engine from Terminal (status, go, recall, move, store, cue, save).
+        // the running engine from Terminal (status, go, recall, move, store, cue, save, trigger, admbox,
+        // release), and OSC and MIDI to it (osc, osc-watch, midi).
         .executableTarget(name: "feral-cli", dependencies: ["FeralOffline", "FeralScene", "FeralControl"]),
         // The Feral Mac app (SwiftUI): the plan view, sources, snapshots and cues, talking to the engine
         // over the control link. macOS only; a stub elsewhere. scripts/build-app.sh bundles it.

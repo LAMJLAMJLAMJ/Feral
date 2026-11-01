@@ -108,6 +108,7 @@ struct ContentView: View {
     private var subtitle: String {
         guard model.connected, let s = model.status else { return "not connected" }
         return (s.unsaved == 0 ? "saved" : "\(s.unsaved) unsaved change(s)") + " · " + s.audio
+            + (s.osc.isEmpty ? "" : " · OSC " + s.osc)
     }
 }
 

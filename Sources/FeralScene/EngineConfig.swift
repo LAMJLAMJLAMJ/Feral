@@ -57,6 +57,16 @@ public struct EngineConfig: Codable, Equatable {
     public var controlAddress: String
     /// The control link's TCP port.
     public var controlPort: Int
+    /// The address OSC (QLab, consoles, ADM-OSC) is read on: 0.0.0.0 (any network, the default) or
+    /// 127.0.0.1 (this Mac only).
+    public var oscAddress: String
+    /// The UDP port OSC is read on; 0 turns OSC off.
+    public var oscPort: Int
+    /// Reads MIDI (program changes, notes, CC, MIDI Show Control) for the trigger map and MSC.
+    public var midi: Bool
+    /// The MIDI sources to listen to (a name or part of one); none listens to every source. The
+    /// engine's own "Feral" destination always listens.
+    public var midiInputs: [String]?
 
     public init(device: String? = nil, sampleRate: Double = 48_000, bufferFrames: Int = 64,
                 inputs: Int = 128, outputs: Int = 128, firstInputChannel: Int = 1, firstOutputChannel: Int = 1,
@@ -66,7 +76,8 @@ public struct EngineConfig: Codable, Equatable {
                 lfeOutputs: String? = nil, airTemperatureC: Double = 20, delayGlidePercent: Double = 0.5,
                 delayJumpMS: Double = 5, delayCrossfadeMS: Double = 30, groupCrossfadeMS: Double = 50,
                 testMotion: TestMotion? = nil, show: String? = nil, controlAddress: String = "127.0.0.1",
-                controlPort: Int = 9100) {
+                controlPort: Int = 9100, oscAddress: String = "0.0.0.0", oscPort: Int = 9200, midi: Bool = true,
+                midiInputs: [String]? = nil) {
         self.device = device
         self.sampleRate = sampleRate
         self.bufferFrames = bufferFrames
@@ -92,13 +103,17 @@ public struct EngineConfig: Codable, Equatable {
         self.show = show
         self.controlAddress = controlAddress
         self.controlPort = controlPort
+        self.oscAddress = oscAddress
+        self.oscPort = oscPort
+        self.midi = midi
+        self.midiInputs = midiInputs
     }
 
     enum CodingKeys: String, CodingKey {
         case device, sampleRate, bufferFrames, inputs, outputs, firstInputChannel, firstOutputChannel, routes,
              refuseAggregateDevices, testSignal, testSignalDB, testSignalHz, speakers, groups, sources, lfeOutputs,
              airTemperatureC, delayGlidePercent, delayJumpMS, delayCrossfadeMS, groupCrossfadeMS, testMotion, show,
-             controlAddress, controlPort
+             controlAddress, controlPort, oscAddress, oscPort, midi, midiInputs
     }
 
     /// Every key is optional in the file; missing ones take the defaults above.
@@ -130,6 +145,10 @@ public struct EngineConfig: Codable, Equatable {
         show = try c.decodeIfPresent(String.self, forKey: .show)
         controlAddress = try c.decodeIfPresent(String.self, forKey: .controlAddress) ?? d.controlAddress
         controlPort = try c.decodeIfPresent(Int.self, forKey: .controlPort) ?? d.controlPort
+        oscAddress = try c.decodeIfPresent(String.self, forKey: .oscAddress) ?? d.oscAddress
+        oscPort = try c.decodeIfPresent(Int.self, forKey: .oscPort) ?? d.oscPort
+        midi = try c.decodeIfPresent(Bool.self, forKey: .midi) ?? d.midi
+        midiInputs = try c.decodeIfPresent([String].self, forKey: .midiInputs)
     }
 
     /// True when sources are rendered to speaker groups, rather than only the fixed routing played.
@@ -184,6 +203,9 @@ public struct EngineConfig: Codable, Equatable {
         guard testSignalHz >= 10, testSignalHz <= 20_000 else { throw ConfigError("testSignalHz must be from 10 to 20000") }
         guard (1...65_535).contains(controlPort) else { throw ConfigError("controlPort must be from 1 to 65535") }
         guard !controlAddress.isEmpty else { throw ConfigError("controlAddress must be an IP address such as 127.0.0.1") }
+        guard (0...65_535).contains(oscPort) else { throw ConfigError("oscPort must be from 1 to 65535, or 0 for no OSC") }
+        guard oscPort == 0 || oscPort != controlPort else { throw ConfigError("oscPort and controlPort must differ") }
+        guard !oscAddress.isEmpty else { throw ConfigError("oscAddress must be an IP address such as 0.0.0.0") }
         if testSignal != .off && inputs < 1 { throw ConfigError("the test signal replaces input 1, so inputs must be 1 or more") }
         _ = try Routing(routes: routes, inputs: inputs, outputs: outputs)
         try validateSpatial()

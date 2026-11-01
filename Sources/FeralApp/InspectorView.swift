@@ -63,6 +63,15 @@ struct SourceInspector: View {
                 NumberField(title: "x (m)", value: source.position.x) { v in move(x: v) }
                 NumberField(title: "y (m)", value: source.position.y) { v in move(y: v) }
                 NumberField(title: "z (m)", value: source.position.z) { v in move(z: v) }
+                let owner = model.status?.owner(of: source.id) ?? .cues
+                LabeledContent("Position from") {
+                    HStack {
+                        Text(owner == .cues ? "cues" : "\(owner.label), live").foregroundStyle(owner == .cues ? Color.secondary : Color.orange)
+                        if owner != .cues {
+                            Button("Hand back to cues") { model.send(.release(sources: [source.id])) }
+                        }
+                    }
+                }
             }
             Section("Level") {
                 LabeledContent("Gain") {
@@ -243,6 +252,8 @@ struct CueInspector: View {
                 }
                 Toggle("Auto-follow (go on to the next cue when the fade ends)",
                        isOn: Binding(get: { cue.autoFollow }, set: { v in set { $0.autoFollow = v } }))
+                Toggle("Take sources back from QLab or tracking",
+                       isOn: Binding(get: { cue.reclaim }, set: { v in set { $0.reclaim = v } }))
             }
             Section {
                 Button("GO this cue") { model.go(cue.id.uuidString) }

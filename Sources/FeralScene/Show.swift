@@ -4,7 +4,7 @@ import Foundation
 // saved as a .feralshow package (see ShowFile.swift): show.json holds the sources, groups, snapshots
 // and cues; system.json holds the speakers, the system tech's layer that snapshots and cues never
 // touch. Every object has a stable UUID, which the file uses for references, and a number for
-// people (and, from milestone 4, OSC addresses), so renumbering never breaks a cue.
+// people and for OSC addresses, so renumbering never breaks a cue.
 
 /// The schema the show and system files are written with. Older files are migrated on load; newer
 /// ones are refused.
@@ -314,14 +314,17 @@ public struct Cue: Codable, Equatable, Identifiable {
     public var curve: FadeCurve?
     /// Go to the next cue as soon as this one's fade is over.
     public var autoFollow: Bool
+    /// Hand the snapshot's sources back to cues first, so it moves them even where QLab or tracking
+    /// had taken them over (see PositionOwner).
+    public var reclaim: Bool
 
     public init(id: UUID = UUID(), number: String, name: String? = nil, snapshot: UUID? = nil, fadeSeconds: Double? = nil,
-                curve: FadeCurve? = nil, autoFollow: Bool = false) {
+                curve: FadeCurve? = nil, autoFollow: Bool = false, reclaim: Bool = false) {
         self.id = id; self.number = number; self.name = name; self.snapshot = snapshot; self.fadeSeconds = fadeSeconds
-        self.curve = curve; self.autoFollow = autoFollow
+        self.curve = curve; self.autoFollow = autoFollow; self.reclaim = reclaim
     }
 
-    enum CodingKeys: String, CodingKey { case id, number, name, snapshot, fadeSeconds, curve, autoFollow }
+    enum CodingKeys: String, CodingKey { case id, number, name, snapshot, fadeSeconds, curve, autoFollow, reclaim }
 
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -336,6 +339,7 @@ public struct Cue: Codable, Equatable, Identifiable {
         fadeSeconds = try c.decodeIfPresent(Double.self, forKey: .fadeSeconds)
         curve = try c.decodeIfPresent(FadeCurve.self, forKey: .curve)
         autoFollow = try c.decodeIfPresent(Bool.self, forKey: .autoFollow) ?? false
+        reclaim = try c.decodeIfPresent(Bool.self, forKey: .reclaim) ?? false
     }
 
     /// The number as a value to sort by: "12.5" after "12" and before "13".
@@ -345,7 +349,7 @@ public struct Cue: Codable, Equatable, Identifiable {
     public var label: String { name.map { "\(number) \($0)" } ?? number }
 }
 
-/// show.json: the sources, groups, snapshots and cues.
+/// show.json: the sources, groups, snapshots and cues, and how OSC, MIDI and consoles drive them.
 public struct Show: Codable, Equatable {
     public var schema: Int
     public var name: String
@@ -353,14 +357,16 @@ public struct Show: Codable, Equatable {
     public var groups: [SpeakerGroup]
     public var snapshots: [Snapshot]
     public var cues: [Cue]
+    public var control: ControlSettings
 
     public init(name: String, sources: [Source] = [], groups: [SpeakerGroup] = [], snapshots: [Snapshot] = [],
-                cues: [Cue] = []) {
+                cues: [Cue] = [], control: ControlSettings = ControlSettings()) {
         schema = showSchema
         self.name = name; self.sources = sources; self.groups = groups; self.snapshots = snapshots; self.cues = cues
+        self.control = control
     }
 
-    enum CodingKeys: String, CodingKey { case schema, name, sources, groups, snapshots, cues }
+    enum CodingKeys: String, CodingKey { case schema, name, sources, groups, snapshots, cues, control }
 
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -373,6 +379,7 @@ public struct Show: Codable, Equatable {
         groups = try c.decodeIfPresent([SpeakerGroup].self, forKey: .groups) ?? []
         snapshots = try c.decodeIfPresent([Snapshot].self, forKey: .snapshots) ?? []
         cues = try c.decodeIfPresent([Cue].self, forKey: .cues) ?? []
+        control = try c.decodeIfPresent(ControlSettings.self, forKey: .control) ?? ControlSettings()
         // Migrations from older schemas go here, oldest first.
         schema = showSchema
     }

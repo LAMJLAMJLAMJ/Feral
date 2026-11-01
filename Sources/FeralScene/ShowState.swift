@@ -1,6 +1,6 @@
 import Foundation
 
-/// A change to the show. Every client (the app, feral-cli, later OSC and cues) changes the show only
+/// A change to the show. Every client (the app, feral-cli, OSC, MIDI and cues) changes the show only
 /// through commands; the engine applies them, writes each to the journal and sends it to every
 /// client, which applies it to its own copy. Commands carry every id they need and apply the same way
 /// each time, so replaying the journal brings back exactly the state that was live.
@@ -26,6 +26,8 @@ public enum Command: Codable, Equatable {
     case setCue(cue: Cue)
     case removeCue(id: UUID)
     case renameShow(name: String)
+    /// Replaces the show's control settings: the ADM-OSC box, the trigger map, the MSC device id.
+    case setControl(control: ControlSettings)
 
     /// The sources whose values the command sets directly, so a fade running on them stops.
     public var touchedSources: [UUID] {
@@ -226,6 +228,11 @@ public struct ShowState: Equatable {
         case .renameShow(let name):
             show.name = name
             return .none
+
+        case .setControl(let control):
+            try control.check()
+            show.control = control
+            return .none
         }
     }
 
@@ -276,6 +283,7 @@ public struct ShowState: Equatable {
         }
         for s in show.sources { try checkValues(s) }
         for s in system.lfeSpeakers where speaker(s) == nil { throw ConfigError("the LFE speakers list \(s), which does not exist") }
+        try show.control.check()
     }
 
     // MARK: Snapshots
