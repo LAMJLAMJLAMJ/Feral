@@ -6,7 +6,7 @@
   "outputs": 26,
   "firstInputChannel": 1,
   "firstOutputChannel": 33,
-  "testSignal": "pink",
+  "testSignal": "off",
   "testSignalDB": -20,
   "show": "Shows/stage-test.feralshow"
 }

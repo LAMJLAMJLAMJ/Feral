@@ -215,7 +215,7 @@ cp examples/blackhole.json ~/Library/Application\ Support/Feral/engine.json
 ./scripts/engine.sh reload && ./scripts/engine.sh log   # "running on BlackHole 64ch", outputs 26 of 26 connected
 ```
 
-In Max, set Audio Status to BlackHole 64ch at 48 kHz. Meter (or listen to) `adc~` inputs 33-58: those are the engine's outputs 1-26. To feed the engine a real signal, set `"testSignal": "off"`, reload, and play into `dac~` outputs 1-2: they are engine inputs 1-2 (sources 1 and 2). Keep Max's other outputs silent, especially 33-58, which would add into what you meter. "Feral Engine" needs microphone access to read BlackHole's inputs, as with any interface.
+In Max, set Audio Status to BlackHole 64ch at 48 kHz. Meter (or listen to) `adc~` inputs 33-58: those are the engine's outputs 1-26. The example has the test signal off, so the engine plays what you send it: play into `dac~` outputs 1-2, which are engine inputs 1-2 (sources 1 and 2). For a quick output check with nothing playing, set `"testSignal": "pink"` and reload. Keep Max's other outputs silent, especially 33-58, which would add into what you meter. "Feral Engine" needs microphone access to read BlackHole's inputs, as with any interface.
 
 `feral-engine devices` gives the exact name and channel count. With BlackHole 16ch, the 26-output example does not fit: use `"outputs": 14`, `"firstOutputChannel": 3` and a smaller show. With 128ch you can go up to 64 in and 64 out. BlackHole runs on its own clock, which is fine for testing but is not what a show would use.
 
