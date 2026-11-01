@@ -83,6 +83,12 @@ public final class ControlServer {
         c.send(content: data, completion: .contentProcessed { _ in })
     }
 
+    /// Sends one event to several clients, encoding it once.
+    public func send(_ event: Event, to some: [ClientID]) {
+        guard !some.isEmpty, let data = try? Wire.encode(event) else { return }
+        for id in some { clients[id]?.send(content: data, completion: .contentProcessed { _ in }) }
+    }
+
     public func broadcast(_ event: Event) {
         guard !clients.isEmpty, let data = try? Wire.encode(event) else { return }
         for c in clients.values { c.send(content: data, completion: .contentProcessed { _ in }) }

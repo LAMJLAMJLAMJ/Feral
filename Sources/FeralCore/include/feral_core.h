@@ -5,7 +5,8 @@
 //   control thread   feral_state_*, feral_core_publish, feral_core_publish_gains, feral_core_collect,
 //                    feral_core_audio_detached, and the geometry functions in feral_geometry.h
 //   audio thread     feral_core_render (never allocates, locks or logs)
-//   any thread       feral_core_get_stats, feral_core_live_states, feral_core_set_test_signal
+//   any thread       feral_core_get_stats, feral_core_live_states, feral_core_set_test_signal,
+//                    feral_core_read_meters (one reader at a time)
 #ifndef FERAL_CORE_H
 #define FERAL_CORE_H
 
@@ -182,6 +183,14 @@ typedef struct feral_core_stats {
     /// Taps playing now, including ones still fading out.
     uint32_t active_taps;
 } feral_core_stats;
+
+/// Reads the level meters: the first `inputs` engine inputs as they arrive (with the test signal in
+/// place of input 1) and the first `outputs` outputs after their processing, as the device gets them.
+/// *_peak: the highest absolute sample since the last read, linear (reading starts it again from 0).
+/// *_rms: the RMS level averaged over about 300 ms, linear. Any of the arrays may be null.
+/// Any thread, but one reader at a time (the peaks are reset by whoever reads them).
+void feral_core_read_meters(feral_core *core, float *input_peak, float *input_rms, int inputs,
+                            float *output_peak, float *output_rms, int outputs);
 
 /// Reads the counters. When reset_max_load is non-zero, max_load starts again from 0.
 void feral_core_get_stats(feral_core *core, feral_core_stats *stats, int reset_max_load);

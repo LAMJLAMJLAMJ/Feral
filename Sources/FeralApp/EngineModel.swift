@@ -14,6 +14,12 @@ final class EngineModel: ObservableObject {
     /// The engine's last refusal or error, shown until dismissed.
     @Published var lastError: String?
     @Published private(set) var address = ""
+    /// The engine's host, for OSC test messages.
+    private(set) var host = "127.0.0.1"
+    /// Levels, 20 times a second. Kept apart so meters redraw without the rest of the window.
+    let meters = MeterStore()
+    /// The OSC and MIDI the engine hears, and test messages the app sends.
+    let monitor = ControlMonitor()
 
     private var mirror = MirroredShow()
     private var client: ControlClient?
@@ -23,13 +29,21 @@ final class EngineModel: ObservableObject {
         mirror = MirroredShow()
         state = nil
         status = nil
+        meters.reset()
+        self.host = host
         address = "\(host):\(port)"
         let c = ControlClient(host: host, port: port, name: "Feral app", queue: .main)
         c.onEvent = { [weak self] event in self?.handle(event) }
         c.onConnected = { [weak self] up in
             guard let self else { return }
             self.connected = up
-            if !up { self.state = nil; self.status = nil; self.mirror = MirroredShow() }
+            if up {
+                // Meters and the control monitor are off until a client asks.
+                self.client?.send(.watch(meters: true, activity: true))
+            } else {
+                self.state = nil; self.status = nil; self.mirror = MirroredShow()
+                self.meters.reset()
+            }
         }
         c.start()
         client = c
@@ -45,6 +59,10 @@ final class EngineModel: ObservableObject {
             status = mirror.status
         case .error(let message):
             lastError = message
+        case .meters(let frame):
+            meters.update(frame)
+        case .activity(let lines, let dropped):
+            monitor.heard(lines, dropped: dropped)
         }
     }
 

@@ -27,6 +27,9 @@ public enum Request: Codable, Equatable {
     case refresh
     /// Hands sources' positions back to cues from OSC or tracking.
     case release(sources: [UUID])
+    /// Asks for the level meters (`meters` events, 20 a second) and for the OSC and MIDI the engine
+    /// receives (`activity` events). Both are off until a client asks.
+    case watch(meters: Bool, activity: Bool)
 }
 
 /// The engine's state besides the show itself.
@@ -47,14 +50,18 @@ public struct EngineStatus: Codable, Equatable {
     public var osc: String
     /// "4 sources", "off".
     public var midi: String
+    /// The UDP port the engine's OSC listens on, once it is listening.
+    public var oscPort: Int?
 
     public init(version: String, showPath: String, unsaved: Int = 0, currentCue: UUID? = nil, nextCue: UUID? = nil,
-                fading: [UUID] = [], audio: String = "", owners: [UUID: PositionOwner] = [:], osc: String = "", midi: String = "") {
+                fading: [UUID] = [], audio: String = "", owners: [UUID: PositionOwner] = [:], osc: String = "", midi: String = "",
+                oscPort: Int? = nil) {
         self.version = version; self.showPath = showPath; self.unsaved = unsaved; self.currentCue = currentCue
         self.nextCue = nextCue; self.fading = fading; self.audio = audio; self.owners = owners; self.osc = osc; self.midi = midi
+        self.oscPort = oscPort
     }
 
-    enum CodingKeys: String, CodingKey { case version, showPath, unsaved, currentCue, nextCue, fading, audio, owners, osc, midi }
+    enum CodingKeys: String, CodingKey { case version, showPath, unsaved, currentCue, nextCue, fading, audio, owners, osc, midi, oscPort }
 
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -70,6 +77,7 @@ public struct EngineStatus: Codable, Equatable {
         owners = Dictionary(uniqueKeysWithValues: byText.compactMap { k, v in UUID(uuidString: k).map { ($0, v) } })
         osc = try c.decodeIfPresent(String.self, forKey: .osc) ?? ""
         midi = try c.decodeIfPresent(String.self, forKey: .midi) ?? ""
+        oscPort = try c.decodeIfPresent(Int.self, forKey: .oscPort)
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -84,6 +92,7 @@ public struct EngineStatus: Codable, Equatable {
         try c.encode(Dictionary(uniqueKeysWithValues: owners.map { ($0.key.uuidString, $0.value) }), forKey: .owners)
         try c.encode(osc, forKey: .osc)
         try c.encode(midi, forKey: .midi)
+        try c.encodeIfPresent(oscPort, forKey: .oscPort)
     }
 
     /// Who moves a source's position now.
@@ -103,6 +112,61 @@ public struct FullState: Codable, Equatable {
     }
 }
 
+/// The engine's level meters at one moment, for clients that asked (`watch`). Levels are dBFS to a
+/// tenth of a dB, and `MeterFrame.silence` (-120) for nothing at all. Input n (from 1) is index n - 1,
+/// the engine input sources name; output n is the engine output speakers name.
+public struct MeterFrame: Codable, Equatable {
+    public static let silence: Float = -120
+
+    /// The highest sample since the last frame, per engine input.
+    public var inputPeak: [Float]
+    /// RMS over about 300 ms, per engine input.
+    public var inputRMS: [Float]
+    public var outputPeak: [Float]
+    public var outputRMS: [Float]
+    /// The device channel engine input 1 and output 1 are on (engine.json's firstInputChannel and
+    /// firstOutputChannel), so a meter can say which device channel it is.
+    public var firstInputChannel: Int
+    public var firstOutputChannel: Int
+    /// The render's highest share of a buffer's time in the last few seconds (1 is 100 %).
+    public var load: Float
+
+    public init(inputPeak: [Float], inputRMS: [Float], outputPeak: [Float], outputRMS: [Float],
+                firstInputChannel: Int = 1, firstOutputChannel: Int = 1, load: Float = 0) {
+        self.inputPeak = inputPeak; self.inputRMS = inputRMS; self.outputPeak = outputPeak; self.outputRMS = outputRMS
+        self.firstInputChannel = firstInputChannel; self.firstOutputChannel = firstOutputChannel; self.load = load
+    }
+
+    /// A linear level as the frame carries it: dBFS to 0.1 dB, at least `silence`.
+    public static func dB(_ linear: Float) -> Float {
+        guard linear > 0 else { return silence }
+        return max(silence, Float((200 * log10(Double(linear))).rounded() / 10))
+    }
+}
+
+/// An OSC or MIDI message the engine received and what it did with it, for clients that asked
+/// (`watch`), such as the app's control monitor.
+public struct ControlActivity: Codable, Equatable {
+    public enum Kind: String, Codable { case osc, midi }
+
+    /// Seconds since 1970.
+    public var time: Double
+    public var kind: Kind
+    /// Who sent it: "127.0.0.1:53000", or the MIDI source's name.
+    public var from: String
+    /// The message as text: "/feral/go 3", "program change 5 on channel 1".
+    public var message: String
+    /// What the engine did: "GO cue 3", or why it did nothing.
+    public var result: String
+    /// False when nothing listens for it or it could not be done.
+    public var handled: Bool
+
+    public init(time: Double, kind: Kind, from: String, message: String, result: String, handled: Bool) {
+        self.time = time; self.kind = kind; self.from = from; self.message = message; self.result = result
+        self.handled = handled
+    }
+}
+
 /// What the engine sends its clients.
 public enum Event: Codable, Equatable {
     case state(state: FullState)
@@ -110,6 +174,11 @@ public enum Event: Codable, Equatable {
     case status(status: EngineStatus)
     /// A request was refused, or something went wrong; the show did not change.
     case error(message: String)
+    /// Level meters, 20 a second, to clients that asked.
+    case meters(frame: MeterFrame)
+    /// OSC and MIDI received in the last moment, to clients that asked. `dropped` counts messages
+    /// left out because too many came at once (a tracker streaming positions).
+    case activity(lines: [ControlActivity], dropped: Int)
 }
 
 /// Newline-framed JSON.
@@ -171,7 +240,7 @@ public struct MirroredShow {
             seq = n
         case .status(let s):
             status = s
-        case .error:
+        case .error, .meters, .activity:
             break
         }
         return true

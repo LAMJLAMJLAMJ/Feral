@@ -55,6 +55,35 @@ public final class RenderCore {
         feral_core_set_test_signal(pointer, code, Float(levelDB), Float(sineHz))
     }
 
+    /// Linear levels per channel (see feral_core_read_meters).
+    public struct Levels: Equatable {
+        /// The highest absolute sample since the last read.
+        public var inputPeak: [Float]
+        /// RMS over about 300 ms.
+        public var inputRMS: [Float]
+        public var outputPeak: [Float]
+        public var outputRMS: [Float]
+    }
+
+    /// Reads the first `inputs` inputs' and `outputs` outputs' meters, and starts the peaks again.
+    /// One reader at a time.
+    public func readMeters(inputs: Int, outputs: Int) -> Levels {
+        let i = max(0, min(inputs, Routing.maxChannels)), o = max(0, min(outputs, Routing.maxChannels))
+        var inPeak = [Float](repeating: 0, count: i), inRMS = [Float](repeating: 0, count: i)
+        var outPeak = [Float](repeating: 0, count: o), outRMS = [Float](repeating: 0, count: o)
+        inPeak.withUnsafeMutableBufferPointer { ip in
+            inRMS.withUnsafeMutableBufferPointer { ir in
+                outPeak.withUnsafeMutableBufferPointer { op in
+                    outRMS.withUnsafeMutableBufferPointer { or in
+                        feral_core_read_meters(pointer, ip.baseAddress, ir.baseAddress, Int32(i),
+                                               op.baseAddress, or.baseAddress, Int32(o))
+                    }
+                }
+            }
+        }
+        return Levels(inputPeak: inPeak, inputRMS: inRMS, outputPeak: outPeak, outputRMS: outRMS)
+    }
+
     public struct Stats: Equatable {
         public var buffers: UInt64
         public var lateBuffers: UInt64

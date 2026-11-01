@@ -9,6 +9,42 @@ final class RenderCoreTests: XCTestCase {
     /// A different, recognisable signal on every input.
     func signal(_ channel: Int, _ n: Int) -> Float { Float(channel + 1) * 0.01 + Float(n) * 0.0001 }
 
+    func testMetersReadPeaksAndRMS() throws {
+        let core = RenderCore(sampleRate: 48_000)
+        // Input 1 to output 1, input 2 to output 2 at half gain.
+        core.publish(try Routing(routes: [Route(inputs: "1", outputs: "1"), Route(inputs: "2", outputs: "2", gainDB: -6.0206)],
+                                 inputs: 2, outputs: 3))
+        var phase = 0.0
+        for _ in 0..<1500 {
+            let input = TestBuffers(channels: 2, frames: frames) { c, _ in
+                if c == 1 { return 0.25 }
+                phase += 2 * Double.pi * 1000 / 48_000
+                return Float(0.5 * sin(phase))
+            }
+            render(core.pointer, input, TestBuffers(channels: 3, frames: frames))
+        }
+        let m = core.readMeters(inputs: 2, outputs: 3)
+        XCTAssertEqual(m.inputPeak[0], 0.5, accuracy: 0.001)
+        XCTAssertEqual(m.inputRMS[0], 0.5 / 2.0.squareRoot(), accuracy: 0.002)
+        XCTAssertEqual(m.inputPeak[1], 0.25, accuracy: 1e-6)
+        XCTAssertEqual(m.inputRMS[1], 0.25, accuracy: 0.001)
+        XCTAssertEqual(m.outputPeak[0], 0.5, accuracy: 0.001)
+        XCTAssertEqual(m.outputPeak[1], 0.125, accuracy: 1e-4)
+        XCTAssertEqual(m.outputRMS[1], 0.125, accuracy: 0.001)
+        XCTAssertEqual(m.outputPeak[2], 0)
+        XCTAssertEqual(m.outputRMS[2], 0)
+        // Reading starts the peaks again; the RMS stays.
+        let again = core.readMeters(inputs: 2, outputs: 3)
+        XCTAssertEqual(again.inputPeak[0], 0)
+        XCTAssertEqual(again.inputRMS[0], m.inputRMS[0])
+
+        // A channel that stops falls to silence: about -40 dB after 2 s with the 300 ms average.
+        for _ in 0..<1500 { render(core.pointer, TestBuffers(channels: 0, frames: frames), TestBuffers(channels: 3, frames: frames)) }
+        let quiet = core.readMeters(inputs: 2, outputs: 3)
+        XCTAssertLessThan(quiet.inputRMS[1], 0.25 * 0.02)
+        XCTAssertLessThan(quiet.outputRMS[0], 0.5 * 0.02)
+    }
+
     func testSilentBeforeAnyRouting() {
         let core = RenderCore(sampleRate: 48_000)
         let input = TestBuffers(channels: 2, frames: frames) { _, _ in 1 }

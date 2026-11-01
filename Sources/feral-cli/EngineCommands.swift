@@ -34,6 +34,21 @@ final class EngineSession {
     var state: ShowState { queue.sync { mirror.state! } }
     var status: EngineStatus? { queue.sync { mirror.status } }
 
+    /// Sends a request and waits up to `seconds` for an error (for requests the engine does not answer).
+    func send(_ request: Request, waiting seconds: Double) {
+        queue.sync { events = [] }
+        client.send(request)
+        let deadline = Date() + seconds
+        while Date() < deadline {
+            let error: String? = queue.sync {
+                for e in events { if case .error(let m) = e { return m } }
+                return nil
+            }
+            if let error { fail(error) }
+            _ = signal.wait(timeout: .now() + 0.05)
+        }
+    }
+
     /// Sends a request and waits for the first event `done` accepts, or an error.
     @discardableResult
     func send(_ request: Request, timeout: Double = 3, until done: @escaping (Event) -> Bool) -> Event {
@@ -54,6 +69,16 @@ final class EngineSession {
             _ = signal.wait(timeout: .now() + 0.1)
         }
         fail("the engine did not answer in \(Int(timeout)) s")
+    }
+
+    /// Hands every event that arrives to `each` for `seconds` (nil: until Ctrl-C).
+    func stream(for seconds: Double?, _ each: (Event) -> Void) {
+        let until = seconds.map { Date() + $0 }
+        while until.map({ Date() < $0 }) ?? true {
+            _ = signal.wait(timeout: .now() + 0.1)
+            let arrived: [Event] = queue.sync { defer { events = [] }; return events }
+            for e in arrived { each(e) }
+        }
     }
 
     func close() { client.stop() }
@@ -196,8 +221,74 @@ func runEngineCommand(_ command: String, _ args: [String]) {
         session.send(.release(sources: ids), until: isStatus)
         print("handed \(ids.count) source(s) back to cues")
 
+    case "meters":
+        // The highest peak and RMS seen per channel over --seconds (default 2).
+        session.send(.watch(meters: true, activity: false), until: { e in
+            if case .meters = e { return true }
+            return false
+        })
+        var frame: MeterFrame?
+        session.stream(for: seconds ?? 2) { e in
+            guard case .meters(let f) = e else { return }
+            guard var m = frame, m.inputPeak.count == f.inputPeak.count, m.outputPeak.count == f.outputPeak.count else {
+                frame = f
+                return
+            }
+            m.inputPeak = zip(m.inputPeak, f.inputPeak).map { max($0, $1) }
+            m.inputRMS = zip(m.inputRMS, f.inputRMS).map { max($0, $1) }
+            m.outputPeak = zip(m.outputPeak, f.outputPeak).map { max($0, $1) }
+            m.outputRMS = zip(m.outputRMS, f.outputRMS).map { max($0, $1) }
+            m.load = max(m.load, f.load)
+            frame = m
+        }
+        guard let frame else { fail("the engine sent no meters") }
+        printMeters(frame, state, all: args.contains("all"))
+
+    case "monitor":
+        // Every OSC and MIDI message the engine receives, and what it did, as the app's control monitor shows them.
+        session.send(.watch(meters: false, activity: true), waiting: 0.3)
+        print("watching the engine's OSC and MIDI" + (seconds.map { " for \(Int($0)) s" } ?? "; Ctrl-C to stop"))
+        session.stream(for: seconds) { e in
+            guard case .activity(let lines, let dropped) = e else { return }
+            for l in lines { print(activityLine(l)) }
+            if dropped > 0 { print("  (\(dropped) more left out: too many at once)") }
+            fflush(stdout)
+        }
+
     default:
         fail("unknown engine command \(command)")
     }
+}
+
+func activityLine(_ l: ControlActivity) -> String {
+    let f = DateFormatter()
+    f.dateFormat = "HH:mm:ss.SSS"
+    let time = f.string(from: Date(timeIntervalSince1970: l.time))
+    return "\(time)  \(l.kind == .osc ? "OSC " : "MIDI")  \(pad(l.message, 34)) from \(l.from)\n"
+        + "              \(l.handled ? "->" : "!!") \(l.result)"
+}
+
+/// The meters as a table: every engine input a source uses and every output a speaker uses (or, with
+/// `all`, every channel), with the device channel each is on.
+func printMeters(_ m: MeterFrame, _ state: ShowState, all: Bool) {
+    func level(_ v: Float) -> String { v <= MeterFrame.silence ? "   -inf" : String(format: "%7.1f", v) }
+    func bar(_ v: Float) -> String {
+        let n = max(0, min(30, Int(((v + 60) / 2).rounded())))
+        return String(repeating: "#", count: n) + String(repeating: ".", count: 30 - n)
+    }
+    let sources = Dictionary(state.show.sources.map { ($0.input, $0.label) }, uniquingKeysWith: { a, b in a + ", " + b })
+    let speakers = Dictionary(state.system.speakers.map { ($0.output, $0.label) }, uniquingKeysWith: { a, b in a + ", " + b })
+    print("levels in dBFS (peak and RMS), the loudest over the time watched; bar from -60 to 0")
+    print("\nINPUTS          device ch   peak     rms")
+    for i in m.inputPeak.indices where all || sources[i + 1] != nil || m.inputPeak[i] > MeterFrame.silence {
+        print("  \(pad(String(i + 1), 4)) \(pad(sources[i + 1] ?? "", 18)) \(pad(String(m.firstInputChannel + i), 4))"
+              + "\(level(m.inputPeak[i])) \(level(m.inputRMS[i]))  \(bar(m.inputRMS[i]))")
+    }
+    print("\nOUTPUTS         device ch   peak     rms")
+    for o in m.outputPeak.indices where all || speakers[o + 1] != nil || m.outputPeak[o] > MeterFrame.silence {
+        print("  \(pad(String(o + 1), 4)) \(pad(speakers[o + 1] ?? "", 18)) \(pad(String(m.firstOutputChannel + o), 4))"
+              + "\(level(m.outputPeak[o])) \(level(m.outputRMS[o]))  \(bar(m.outputRMS[o]))")
+    }
+    print(String(format: "\nrender load: %.0f %% of a buffer at most", m.load * 100))
 }
 #endif

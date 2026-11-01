@@ -58,6 +58,15 @@ final class Engine {
     /// When each repeated OSC or MIDI problem was last logged, so a flood of one logs every 10 s.
     private var lastLogged: [String: Date] = [:]
 
+    // Meters and the control monitor, for clients that asked (Request.watch)
+    private struct Watch { var meters = false, activity = false }
+    private var watchers: [ControlServer.ClientID: Watch] = [:]
+    /// OSC and MIDI received since the last `activity` event, and how many more were left out.
+    private var heard: [ControlActivity] = []
+    private var heardDropped = 0
+    /// The most messages one `activity` event carries (it is sent every 0.1 s).
+    private static let maxHeard = 100
+
     init(options: Options, config: EngineConfig) {
         self.options = options
         self.config = config
@@ -82,6 +91,8 @@ final class Engine {
             startMIDI()
             every(0.05) { [self] in core.collect() }
             every(0.1) { [self] in flushJournal() }
+            every(0.05) { [self] in sendMeters() }
+            every(0.1) { [self] in sendActivity() }
             every(10) { [self] in report(force: false) }
             every(300) { [self] in report(force: true) }
             onSignal(SIGHUP) { [self] in reload() }
@@ -329,6 +340,7 @@ final class Engine {
         server.onDisconnect = { [weak self] id in
             guard let self else { return }
             if let name = clientNames.removeValue(forKey: id) { log("control: \(name) disconnected") }
+            watchers[id] = nil
         }
         server.onRequest = { [weak self] id, request in self?.handle(request, from: id) }
         do { try server.start(address: config.controlAddress, port: config.controlPort) } catch {
@@ -370,6 +382,8 @@ final class Engine {
             case .release(let sources):
                 release(sources, origin: origin)
                 broadcastStatus()
+            case .watch(let meters, let activity):
+                watchers[client] = meters || activity ? Watch(meters: meters, activity: activity) : nil
             }
         } catch {
             server?.send(.error(message: "\(error)"), to: client)
@@ -385,7 +399,7 @@ final class Engine {
         }
         return EngineStatus(version: version, showPath: showURL.path, unsaved: unsaved, currentCue: currentCue,
                             nextCue: scene.cue(after: currentCue)?.id, fading: fades.flatMap { $0.fade.sources }, audio: audio,
-                            owners: owners, osc: oscState, midi: midiState)
+                            owners: owners, osc: oscState, midi: midiState, oscPort: osc?.port)
     }
 
     private func broadcastStatus() {
@@ -449,31 +463,95 @@ final class Engine {
         let mapper = ControlMapper(state: scene)
         let triggered = mapper.triggered(by: m)
         if !triggered.isEmpty { log("osc: \(m.description) from \(peer) matches the trigger map") }
-        run(triggered, origin: "OSC trigger", peer: peer)
+        var problems = run(triggered, origin: "OSC trigger", peer: peer)
+        var did = triggered.isEmpty ? [] : ["trigger: " + summary(triggered)]
         let root = m.parts.first
         guard root == "feral" || root == "adm" else {
-            if triggered.isEmpty { logOnce(m.address, "osc: nothing listens for \(m.address) (from \(peer)); add a trigger for it") }
+            if triggered.isEmpty {
+                logOnce(m.address, "osc: nothing listens for \(m.address) (from \(peer)); add a trigger for it")
+                noteHeard(.osc, from: "\(peer)", m.description, ["nothing listens for \(m.address); add a trigger for it"], handled: false)
+            } else {
+                noteHeard(.osc, from: "\(peer)", m.description, did + problems, handled: problems.isEmpty)
+            }
             return
         }
         do {
-            run(try mapper.actions(for: m), origin: root == "adm" ? "ADM-OSC" : "OSC", peer: peer)
+            let actions = try mapper.actions(for: m)
+            did.append(summary(actions))
+            problems += run(actions, origin: root == "adm" ? "ADM-OSC" : "OSC", peer: peer)
         } catch {
             logOnce("err:\(m.address)", "osc: \(error) (from \(peer))")
+            problems.append("\(error)")
         }
+        noteHeard(.osc, from: "\(peer)", m.description, did + problems, handled: problems.isEmpty)
     }
 
     private func handle(_ m: MIDIMessage, from source: String) {
         let actions = ControlMapper(state: scene).triggered(by: m)
         guard !actions.isEmpty else {
             logOnce("midi:\(m)", "midi: \(m) from \(source); no trigger for it")
+            noteHeard(.midi, from: source, m.description, ["no trigger for it; add one to the trigger map"], handled: false)
             return
         }
         log("midi: \(m) from \(source)")
-        run(actions, origin: "MIDI", peer: nil)
+        let problems = run(actions, origin: "MIDI", peer: nil)
+        noteHeard(.midi, from: source, m.description, ["trigger: " + summary(actions)] + problems, handled: problems.isEmpty)
     }
 
-    /// Runs OSC's and MIDI's actions as the app's requests run.
-    private func run(_ actions: [ControlAction], origin: String, peer: OSCServer.Peer?) {
+    /// Notes a message for the control monitor, if a client is watching.
+    private func noteHeard(_ kind: ControlActivity.Kind, from: String, _ message: String, _ result: [String], handled: Bool) {
+        guard watchers.values.contains(where: { $0.activity }) else { return }
+        guard heard.count < Engine.maxHeard else { heardDropped += 1; return }
+        heard.append(ControlActivity(time: Date().timeIntervalSince1970, kind: kind, from: from, message: message,
+                                     result: result.joined(separator: "; "), handled: handled))
+    }
+
+    private func sendActivity() {
+        guard !heard.isEmpty || heardDropped > 0 else { return }
+        let clients = watchers.filter { $0.value.activity }.map(\.key)
+        server?.send(.activity(lines: heard, dropped: heardDropped), to: clients)
+        heard = []
+        heardDropped = 0
+    }
+
+    private func sendMeters() {
+        let clients = watchers.filter { $0.value.meters }.map(\.key)
+        guard !clients.isEmpty else { return }
+        let l = core.readMeters(inputs: config.inputs, outputs: config.outputs)
+        let frame = MeterFrame(inputPeak: l.inputPeak.map(MeterFrame.dB), inputRMS: l.inputRMS.map(MeterFrame.dB),
+                               outputPeak: l.outputPeak.map(MeterFrame.dB), outputRMS: l.outputRMS.map(MeterFrame.dB),
+                               firstInputChannel: config.firstInputChannel, firstOutputChannel: config.firstOutputChannel,
+                               load: core.stats().maxLoad)
+        server?.send(.meters(frame: frame), to: clients)
+    }
+
+    /// What OSC's or MIDI's actions do, for the control monitor.
+    private func summary(_ actions: [ControlAction]) -> String {
+        func sources(_ ids: [UUID]) -> String {
+            let names = ids.compactMap { scene.source($0)?.label }
+            return names.count == 1 ? "source \(names[0])" : "\(ids.count) sources"
+        }
+        return actions.map { a -> String in
+            switch a {
+            case .go(let cue): return cue.map { "GO cue \($0)" } ?? "GO"
+            case .recall(let s, let f): return "recall snapshot \(s)" + (f.map { " over \($0) s" } ?? "")
+            case .stopFades: return "stop fades"
+            case .save: return "save"
+            case .apply(let c): return describe(c)
+            case .update(let u, let owner):
+                return "set \(sources(u.map(\.id)))" + (owner.map { "; \($0.label) owns its position" } ?? "")
+            case .release(let ids): return "hand \(sources(ids)) back to cues"
+            case .subscribe(let port, let adm): return "subscribed" + (port.map { " (to port \($0))" } ?? "") + (adm ? ", ADM-OSC" : "")
+            case .unsubscribe: return "unsubscribed"
+            case .reply(let r): return "answered \(r.description)"
+            }
+        }.joined(separator: "; ")
+    }
+
+    /// Runs OSC's and MIDI's actions as the app's requests run. Returns what went wrong.
+    @discardableResult
+    private func run(_ actions: [ControlAction], origin: String, peer: OSCServer.Peer?) -> [String] {
+        var problems: [String] = []
         for action in actions {
             do {
                 switch action {
@@ -525,9 +603,11 @@ final class Engine {
                 }
             } catch {
                 logOnce("run:\(error)", "\(origin): \(error)")
+                problems.append("\(error)")
                 if let peer { osc?.send([OSCMessage("/feral/error", [.string("\(error)")])], to: peer) }
             }
         }
+        return problems
     }
 
     /// Sends OSC subscribers what a command changed.

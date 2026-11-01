@@ -7,6 +7,7 @@ import SwiftUI
 /// values, so a refused edit springs back.
 struct InspectorView: View {
     @ObservedObject var model: EngineModel
+    let meters: MeterStore
     let state: ShowState
     @Binding var selection: Selection?
 
@@ -15,20 +16,57 @@ struct InspectorView: View {
             VStack(alignment: .leading, spacing: 0) {
                 switch selection {
                 case .source(let id):
-                    if let s = state.source(id) { SourceInspector(model: model, state: state, source: s) }
+                    if let s = state.source(id) { SourceInspector(model: model, meters: meters, state: state, source: s) }
                 case .speaker(let id):
-                    if let s = state.speaker(id) { SpeakerInspector(model: model, speaker: s) }
+                    if let s = state.speaker(id) { SpeakerInspector(model: model, meters: meters, state: state, speaker: s) }
                 case .snapshot(let id):
                     if let s = state.snapshot(id) { SnapshotInspector(model: model, state: state, snapshot: s, selection: $selection) }
                 case .cue(let id):
                     if let c = state.cue(id) { CueInspector(model: model, state: state, cue: c, selection: $selection) }
                 case nil:
-                    Text("Select a source, speaker, snapshot or cue.")
-                        .foregroundStyle(.secondary)
-                        .padding()
+                    ShowSummary(state: state)
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+}
+
+/// What the inspector shows with nothing selected.
+struct ShowSummary: View {
+    let state: ShowState
+
+    var body: some View {
+        Form {
+            Section(state.show.name) {
+                LabeledContent("Sources", value: "\(state.show.sources.count)")
+                LabeledContent("Speakers", value: "\(state.system.speakers.count)")
+                LabeledContent("Groups", value: state.show.groups.map(\.name).joined(separator: ", ").isEmpty ? "none"
+                               : state.show.groups.map(\.name).joined(separator: ", "))
+                LabeledContent("Snapshots", value: "\(state.show.snapshots.count)")
+                LabeledContent("Cues", value: "\(state.show.cues.count)")
+                LabeledContent("OSC and MIDI triggers", value: "\(state.show.control.triggers.count)")
+            }
+            Section {
+                Text("Select a cue, snapshot, source or speaker in the list, on the plan or on the meter bridge to edit it.")
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .formStyle(.grouped)
+    }
+}
+
+/// A live meter that redraws on its own, so the form around it does not redraw 20 times a second.
+struct LiveMeter: View {
+    @ObservedObject var meters: MeterStore
+    let input: Int?
+    let output: Int?
+
+    var body: some View {
+        if let input {
+            MeterReadout(title: "Input \(input) · device channel \(meters.firstInputChannel + input - 1)", channel: meters.input(input))
+        } else if let output {
+            MeterReadout(title: "Output \(output) · device channel \(meters.firstOutputChannel + output - 1)", channel: meters.output(output))
         }
     }
 }
@@ -47,13 +85,23 @@ struct NumberField: View {
 
 struct SourceInspector: View {
     @ObservedObject var model: EngineModel
+    let meters: MeterStore
     let state: ShowState
     let source: Source
     @State private var name = ""
 
     var body: some View {
         Form {
-            Section("Source \(source.number) · input \(source.input)") {
+            Section {
+                LiveMeter(meters: meters, input: source.input, output: nil)
+            } header: {
+                HStack(spacing: 8) {
+                    Circle().fill(source.color).frame(width: 12, height: 12)
+                    Text("Source \(source.number)").font(.headline)
+                    Text(source.name ?? "").foregroundStyle(.secondary)
+                }
+            }
+            Section("Name and position") {
                 TextField("Name", text: $name)
                     .onSubmit {
                         var s = source
@@ -151,12 +199,27 @@ struct SendRow: View {
 /// A speaker's position and system layer. EQ and the limiter are edited in system.json for now.
 struct SpeakerInspector: View {
     @ObservedObject var model: EngineModel
+    let meters: MeterStore
+    let state: ShowState
     let speaker: Speaker
     @State private var name = ""
 
     var body: some View {
+        let groups = state.show.groups.filter { $0.speakers.contains(speaker.id) }
         Form {
-            Section("Speaker \(speaker.number) · output \(speaker.output)") {
+            Section {
+                LiveMeter(meters: meters, input: nil, output: speaker.output)
+                LabeledContent("Groups", value: groups.isEmpty ? "none" : groups.map { "\($0.name) (\($0.renderer.rawValue))" }
+                    .joined(separator: ", "))
+                if state.system.lfeSpeakers.contains(speaker.id) { LabeledContent("LFE", value: "takes the sources' LFE sends") }
+            } header: {
+                HStack(spacing: 8) {
+                    Image(systemName: "diamond.fill").foregroundStyle(groups.first?.color ?? .gray)
+                    Text("Speaker \(speaker.number)").font(.headline)
+                    Text(speaker.name ?? "").foregroundStyle(.secondary)
+                }
+            }
+            Section("Name and position") {
                 TextField("Name", text: $name).onSubmit { set { $0.name = name.isEmpty ? nil : name } }
                 NumberField(title: "x (m)", value: speaker.position.x) { v in set { $0.position.x = v } }
                 NumberField(title: "y (m)", value: speaker.position.y) { v in set { $0.position.y = v } }

@@ -2,6 +2,7 @@
 #include "render_state.hpp"
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <chrono>
 #include <cmath>
@@ -294,6 +295,13 @@ struct feral_core {
     std::atomic<float> maxLoad{0};
     std::atomic<uint32_t> activeTaps{0};
 
+    // Level meters. The audio thread writes them; one other thread reads them (feral_core_read_meters).
+    // Peaks are linear and start again from 0 when read; powers are mean squares averaged over about
+    // 300 ms. The *State arrays are the audio thread's own copies of the averages.
+    std::array<std::atomic<float>, FERAL_MAX_CHANNELS> inputPeak{}, inputPower{}, outputPeak{}, outputPower{};
+    std::array<float, FERAL_MAX_CHANNELS> inputPowerState{}, outputPowerState{};
+    int meteredInputs = 0, meteredOutputs = 0;
+
     DelayLine inputLine(int in) { return {lineMemory + static_cast<size_t>(in) * (lineMask + 1), lineMask}; }
     DelayLine outputLine(int out) {
         return {lineMemory + static_cast<size_t>(FERAL_MAX_CHANNELS + out) * (lineMask + 1), lineMask};
@@ -425,6 +433,14 @@ void feral_core_audio_detached(feral_core *core) {
     for (int in = 0; in < core->inputLinesUsed; ++in) std::memset(core->inputLine(in).data, 0, length * sizeof(float));
     for (int out = 0; out < core->outputLinesUsed; ++out) std::memset(core->outputLine(out).data, 0, length * sizeof(float));
     core->inputLinesUsed = core->outputLinesUsed = 0;
+    // The meters fall to silence; nothing is playing.
+    core->inputPowerState.fill(0);
+    core->outputPowerState.fill(0);
+    for (int i = 0; i < FERAL_MAX_CHANNELS; ++i) {
+        core->inputPower[i].store(0, std::memory_order_relaxed);
+        core->outputPower[i].store(0, std::memory_order_relaxed);
+    }
+    core->meteredInputs = core->meteredOutputs = 0;
     RenderState *newest = core->latest.load(std::memory_order_acquire);
     // Nothing reads the older states now; the newest stays for the next start.
     core->acknowledged.store(newest ? newest->sequence : 0, std::memory_order_release);
@@ -434,6 +450,20 @@ void feral_core_set_test_signal(feral_core *core, int kind, float level_db, floa
     core->testGain.store(std::pow(10.0f, level_db / 20.0f), std::memory_order_relaxed);
     core->testHz.store(sine_hz > 0 ? sine_hz : 1000, std::memory_order_relaxed);
     core->testKind.store(kind, std::memory_order_relaxed);
+}
+
+void feral_core_read_meters(feral_core *core, float *input_peak, float *input_rms, int inputs,
+                            float *output_peak, float *output_rms, int outputs) {
+    inputs = std::clamp(inputs, 0, FERAL_MAX_CHANNELS);
+    outputs = std::clamp(outputs, 0, FERAL_MAX_CHANNELS);
+    for (int i = 0; i < inputs; ++i) {
+        if (input_peak) input_peak[i] = core->inputPeak[i].exchange(0, std::memory_order_relaxed);
+        if (input_rms) input_rms[i] = std::sqrt(core->inputPower[i].load(std::memory_order_relaxed));
+    }
+    for (int o = 0; o < outputs; ++o) {
+        if (output_peak) output_peak[o] = core->outputPeak[o].exchange(0, std::memory_order_relaxed);
+        if (output_rms) output_rms[o] = std::sqrt(core->outputPower[o].load(std::memory_order_relaxed));
+    }
 }
 
 }
@@ -648,6 +678,23 @@ void processOutput(feral_core *core, int out, const feral_output_params &p, floa
     }
 }
 
+/// Meters one block of a channel (x null is silence): its peak joins the peak not yet read, and its
+/// mean square moves the running average by `a`. Audio thread only.
+void meterBlock(const float *x, int frames, float a, float &state, std::atomic<float> &peak, std::atomic<float> &power) {
+    float p = 0, sum = 0;
+    if (x) {
+        for (int n = 0; n < frames; ++n) {
+            const float v = x[n];
+            p = std::max(p, std::fabs(v));
+            sum += v * v;
+        }
+    }
+    state = flushTiny(state + a * (sum / static_cast<float>(frames) - state));
+    power.store(state, std::memory_order_relaxed);
+    // The reader may zero the peak between this load and store; then this block's peak is kept, as it should be.
+    if (p > peak.load(std::memory_order_relaxed)) peak.store(p, std::memory_order_relaxed);
+}
+
 void renderBlock(feral_core *core, const float *const *inputs, int num_inputs, float *const *outputs,
                  int num_outputs, int frames) {
     RenderState *previous = core->current;
@@ -710,6 +757,22 @@ void renderBlock(feral_core *core, const float *const *inputs, int num_inputs, f
     }
     core->writeIndex = block + static_cast<uint32_t>(frames);
     core->activeTaps.store(active, std::memory_order_relaxed);
+
+    // Meters: the inputs as they arrived (the test signal in place of input 1), the outputs as the
+    // device gets them. Channels no longer there fall to silence (every channel metered since the
+    // audio started keeps being metered).
+    const float a = 1.0f - static_cast<float>(std::exp(-frames / (0.3 * core->sampleRate)));
+    const int inputsMetered = std::max(num_inputs, test ? 1 : 0);
+    for (int in = 0; in < std::max(inputsMetered, core->meteredInputs); ++in) {
+        meterBlock(in < inputsMetered ? input(in) : nullptr, frames, a, core->inputPowerState[in], core->inputPeak[in],
+                   core->inputPower[in]);
+    }
+    core->meteredInputs = std::max(core->meteredInputs, inputsMetered);
+    for (int out = 0; out < std::max(rendered, core->meteredOutputs); ++out) {
+        meterBlock(out < rendered ? outputs[out] : nullptr, frames, a, core->outputPowerState[out], core->outputPeak[out],
+                   core->outputPower[out]);
+    }
+    core->meteredOutputs = std::max(core->meteredOutputs, rendered);
 }
 
 }
