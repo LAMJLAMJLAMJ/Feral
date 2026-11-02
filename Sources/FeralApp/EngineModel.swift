@@ -109,6 +109,52 @@ final class EngineModel: ObservableObject {
 
     func go(_ cue: String? = nil) { send(.go(cue: cue)) }
 
+    /// Feral's input count, from the patch (or the meters) when the engine has sent them.
+    var feralInputs: Int { patch?.inputs.count ?? (meters.inputs.isEmpty ? 128 : meters.inputs.count) }
+
+    /// Adds a source on the first Feral input no source uses. A copy (`like`) takes the original's
+    /// sends, level, width and LFE send, a little to its right; a new one sends to every group at
+    /// 0 dB, like the last source if there is one. Returns its id.
+    @discardableResult
+    func addSource(like original: Source? = nil) -> UUID? {
+        guard let state else { return nil }
+        let used = Set(state.show.sources.map(\.input))
+        guard let input = (1...max(feralInputs, 1)).first(where: { !used.contains($0) }) else {
+            lastError = "Every Feral input (\(feralInputs)) already has a source."
+            return nil
+        }
+        let number = (state.show.sources.map(\.number).max() ?? 0) + 1
+        let base = original ?? state.show.sources.last
+        var position = Position(0, 4, 1.5)
+        if let p = base?.position { position = Position(p.x + 1, p.y, p.z) }
+        var source = Source(number: number, input: input, position: position,
+                            sends: base?.sends ?? state.show.groups.map { GroupSend(group: $0.id) })
+        if let original {
+            source.name = (original.name ?? "Source \(original.number)") + " copy"
+            source.gainDB = original.gainDB
+            source.width = original.width
+            source.lfeDB = original.lfeDB
+        }
+        apply(.setSource(source: source))
+        return source.id
+    }
+
+    /// Moves a source to another Feral input, if no other source uses it.
+    func setInput(_ input: Int, of source: Source) {
+        guard let state, input != source.input else { return }
+        guard (1...max(feralInputs, 1)).contains(input) else {
+            lastError = "Feral inputs run from 1 to \(feralInputs)."
+            return
+        }
+        if let other = state.show.sources.first(where: { $0.input == input && $0.id != source.id }) {
+            lastError = "Source \(other.label) already uses Feral input \(input)."
+            return
+        }
+        var s = source
+        s.input = input
+        apply(.setSource(source: s))
+    }
+
     func recall(_ snapshot: Snapshot, fadeSeconds: Double? = nil) {
         send(.recall(snapshot: snapshot.id.uuidString, fadeSeconds: fadeSeconds))
     }

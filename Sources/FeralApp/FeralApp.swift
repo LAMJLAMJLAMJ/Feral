@@ -190,6 +190,8 @@ struct SidebarView: View {
     let meters: MeterStore
     @Binding var selection: Selection?
     @AppStorage("sidebarTab") private var tab = Tab.cues
+    /// A source waiting for the person to confirm deleting it.
+    @State private var deleting: Source?
 
     enum Tab: String, CaseIterable {
         case cues = "Cues", snapshots = "Snapshots", sources = "Sources", speakers = "Speakers"
@@ -235,6 +237,11 @@ struct SidebarView: View {
                         ForEach(state.show.sources) { s in
                             SourceRow(source: s, owner: model.status?.owner(of: s.id) ?? .cues, meters: meters)
                                 .tag(Selection.source(s.id))
+                                .contextMenu {
+                                    Button("Duplicate") { if let id = model.addSource(like: s) { selection = .source(id) } }
+                                    Divider()
+                                    Button("Delete…", role: .destructive) { deleting = s }
+                                }
                         }
                     case .speakers:
                         let groups = groupOf(state)
@@ -251,6 +258,7 @@ struct SidebarView: View {
             Divider()
             EngineStatusBar(model: model, meters: meters)
         }
+        .modifier(DeleteSourceConfirmation(model: model, source: $deleting, selection: $selection))
     }
 
     /// Column titles and the list's add button.
@@ -281,6 +289,12 @@ struct SidebarView: View {
                 Text("Source")
                 Spacer()
                 Text("Input level")
+                Button { if let id = model.addSource() { selection = .source(id) } } label: {
+                    Label("Add", systemImage: "plus")
+                }
+                .buttonStyle(.borderless)
+                .keyboardShortcut("n", modifiers: [.command, .shift])
+                .help("Add a source on the next free Feral input (⇧⌘N)")
             case .speakers:
                 Text("Speaker")
                 Spacer()

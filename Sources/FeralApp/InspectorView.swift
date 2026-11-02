@@ -16,7 +16,7 @@ struct InspectorView: View {
             VStack(alignment: .leading, spacing: 0) {
                 switch selection {
                 case .source(let id):
-                    if let s = state.source(id) { SourceInspector(model: model, meters: meters, state: state, source: s) }
+                    if let s = state.source(id) { SourceInspector(model: model, meters: meters, state: state, source: s, selection: $selection) }
                 case .speaker(let id):
                     if let s = state.speaker(id) { SpeakerInspector(model: model, meters: meters, state: state, speaker: s) }
                 case .snapshot(let id):
@@ -145,12 +145,28 @@ struct SourceInspector: View {
     let meters: MeterStore
     let state: ShowState
     let source: Source
+    @Binding var selection: Selection?
     @State private var name = ""
+    @State private var input = 1
+    @State private var deleting: Source?
 
     var body: some View {
         Form {
             Section {
                 LiveMeter(meters: meters, input: source.input, output: nil)
+                LabeledContent("Feral input") {
+                    HStack(spacing: 6) {
+                        TextField("Feral input", value: $input, format: .number)
+                            .labelsHidden()
+                            .multilineTextAlignment(.trailing)
+                            .frame(width: 56)
+                            .onSubmit { model.setInput(input, of: source); input = source.input }
+                        Stepper("Feral input", value: Binding(get: { source.input }, set: { model.setInput($0, of: source) }),
+                                in: 1...max(model.feralInputs, 1))
+                            .labelsHidden()
+                    }
+                }
+                .help("The Feral input this source plays. Which card input feeds it is set in Audio > Patch.")
             } header: {
                 HStack(spacing: 8) {
                     Circle().fill(source.color).frame(width: 12, height: 12)
@@ -216,10 +232,21 @@ struct SourceInspector: View {
                 }
             }
         }
+            Section {
+                HStack {
+                    Button("Duplicate") { if let id = model.addSource(like: source) { selection = .source(id) } }
+                        .help("A new source on the next free Feral input, with the same sends and levels")
+                    Spacer()
+                    Button("Delete source…", role: .destructive) { deleting = source }
+                }
+            }
+        }
         .formStyle(.grouped)
-        .onAppear { name = source.name ?? "" }
-        .onChange(of: source.id) { _ in name = source.name ?? "" }
+        .onAppear { name = source.name ?? ""; input = source.input }
+        .onChange(of: source.id) { _ in name = source.name ?? ""; input = source.input }
         .onChange(of: source.name) { n in name = n ?? "" }
+        .onChange(of: source.input) { n in input = n }
+        .modifier(DeleteSourceConfirmation(model: model, source: $deleting, selection: $selection))
     }
 
     private func move(x: Double? = nil, y: Double? = nil, z: Double? = nil) {
@@ -395,6 +422,31 @@ func curveName(_ c: FadeCurve) -> String {
     case .linear: return "Linear"
     case .sCurve: return "S-curve"
     case .exponential: return "Exponential (slow start)"
+    }
+}
+/// Asks before deleting a source: cues and snapshots keep working, but the source is gone from the show.
+struct DeleteSourceConfirmation: ViewModifier {
+    @ObservedObject var model: EngineModel
+    @Binding var source: Source?
+    @Binding var selection: Selection?
+
+    func body(content: Content) -> some View {
+        content.confirmationDialog(
+            "Delete source \(source?.label ?? "")?",
+            isPresented: Binding(get: { source != nil }, set: { if !$0 { source = nil } }),
+            titleVisibility: .visible
+        ) {
+            Button("Delete", role: .destructive) {
+                if let s = source {
+                    model.apply(.removeSource(id: s.id))
+                    if selection == .source(s.id) { selection = nil }
+                }
+                source = nil
+            }
+            Button("Cancel", role: .cancel) { source = nil }
+        } message: {
+            Text("It stops playing at once. Snapshots that hold it skip it from then on.")
+        }
     }
 }
 #endif
