@@ -4,7 +4,7 @@ import SwiftUI
 
 /// The height panel to the right of the plan: the venue seen from the front (left to right as on the plan) or
 /// from the side (stage on the left, audience on the right), with height going up. Drag a source up
-/// or down to set its height; only z changes. With "Move speakers" on, speakers drag too.
+/// or down to set its height; with the lock open it also moves across. With "Move speakers" on, speakers drag too.
 struct ElevationView: View {
     @ObservedObject var model: EngineModel
     @ObservedObject var meters: MeterStore
@@ -14,6 +14,12 @@ struct ElevationView: View {
     /// Unhidden; when hidden only the title bar stays, to unhide it from.
     @Binding var shown: Bool
     @AppStorage("elevationSide") private var side = false
+    /// The panel's width, set by dragging its left edge.
+    @AppStorage("elevationWidth") private var width: Double = 280
+    /// Locked: dragging changes only the height. Unlocked: it also moves across (left/right from the
+    /// front, stage/audience from the side).
+    @AppStorage("elevationLockAcross") private var lockAcross = true
+    @State private var resizeStart: Double?
 
     private struct Drag {
         var target: Selection
@@ -39,6 +45,8 @@ struct ElevationView: View {
         }
 
         func z(at y: CGFloat) -> Double { (height - offset.y - Double(y)) / scale + minZ }
+
+        func across(at x: CGFloat) -> Double { (Double(x) - offset.x) / scale + minA }
     }
 
     /// Where a position sits across the view.
@@ -53,8 +61,7 @@ struct ElevationView: View {
         return Frame(minA: lo, maxA: hi, minZ: bottom, maxZ: top, size: size)
     }
 
-    /// The panel's width when shown.
-    static let width: CGFloat = 280
+    static let minWidth: Double = 200, maxWidth: Double = 900
 
     var body: some View {
         if shown {
@@ -71,6 +78,13 @@ struct ElevationView: View {
                     .buttonStyle(.plain)
                     .help("Hide the height view (⇧⌘E)")
                     Spacer()
+                    Button { lockAcross.toggle() } label: {
+                        Image(systemName: lockAcross ? "lock.fill" : "lock.open")
+                            .foregroundStyle(lockAcross ? Color.secondary : Color.accentColor)
+                            .frame(width: 18)
+                    }
+                    .buttonStyle(.borderless)
+                    .help(lockAcross ? lockedHelp : unlockedHelp)
                     Picker("View", selection: $side) {
                         Text("Front").tag(false)
                         Text("Side").tag(true)
@@ -105,7 +119,8 @@ struct ElevationView: View {
                     .padding(6)
                     .background(.bar)
             }
-            .frame(width: Self.width)
+            .frame(width: CGFloat(min(max(width, Self.minWidth), Self.maxWidth)))
+            .overlay(alignment: .leading) { resizeHandle }
         } else {
             // Hidden: a thin strip to show it again from.
             Button { withAnimation(.easeInOut(duration: 0.15)) { shown = true } } label: {
@@ -126,9 +141,43 @@ struct ElevationView: View {
         }
     }
 
+    private var lockedHelp: String {
+        "Locked: dragging changes only the height. Click to also move " + (side ? "front to back." : "left and right.")
+    }
+
+    private var unlockedHelp: String {
+        "Unlocked: dragging also moves " + (side ? "front to back" : "left and right") + ". Click to lock to height only."
+    }
+
+    /// The left edge: drag it to make the panel wider or narrower.
+    private var resizeHandle: some View {
+        Color.clear
+            .frame(width: 6)
+            .frame(maxHeight: .infinity)
+            .contentShape(Rectangle())
+            .onHover { inside in
+                if inside { NSCursor.resizeLeftRight.push() } else { NSCursor.pop() }
+            }
+            .gesture(
+                DragGesture(minimumDistance: 1, coordinateSpace: .global)
+                    .onChanged { g in
+                        let start = resizeStart ?? min(max(width, Self.minWidth), Self.maxWidth)
+                        resizeStart = start
+                        width = min(max(start - Double(g.translation.width), Self.minWidth), Self.maxWidth)
+                    }
+                    .onEnded { _ in resizeStart = nil }
+            )
+            .help("Drag to resize the height view")
+    }
+
     private var hint: String {
-        if let drag { return String(format: "height %.1f m", drag.position.z) }
-        return "Drag a source up or down to set its height"
+        if let drag {
+            let p = drag.position
+            if lockAcross { return String(format: "height %.1f m", p.z) }
+            return String(format: "%@ %.1f m, height %.1f m", side ? "y" : "x", across(p), p.z)
+        }
+        return lockAcross ? "Drag a source up or down to set its height"
+            : "Drag a source to move it " + (side ? "front to back" : "left and right") + " and up or down"
     }
 
     // MARK: Drawing
@@ -236,7 +285,12 @@ struct ElevationView: View {
         guard var d = drag else { return }
         // Only the height changes; snap to 10 cm, from 2 m below the floor to 50 m up.
         let z = min(max((f.z(at: g.location.y) * 10).rounded() / 10, -2), 50)
-        d.position = Position(d.position.x, d.position.y, z)
+        var x = d.position.x, y = d.position.y
+        if !lockAcross {
+            let a = (f.across(at: g.location.x) * 10).rounded() / 10
+            if side { y = a } else { x = a }
+        }
+        d.position = Position(x, y, z)
         drag = d
         if Date().timeIntervalSince(lastSent) >= 1.0 / 60 { send(d) }
     }
