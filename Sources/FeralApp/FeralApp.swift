@@ -418,7 +418,7 @@ struct SourceRow: View {
                 .font(.caption).foregroundStyle(.secondary)
             }
             Spacer(minLength: 4)
-            MeterBar(channel: meters.input(source.input), vertical: false, clear: meters.clearClips).frame(width: 70, height: 7)
+            MeterBar(channel: meters.input(source.input), vertical: false, clear: { meters.clearClip(input: source.input) }).frame(width: 70, height: 7)
         }
         .padding(.vertical, 1)
     }
@@ -441,7 +441,7 @@ struct SpeakerRow: View {
                     .font(.caption).foregroundStyle(.secondary).lineLimit(1)
             }
             Spacer(minLength: 4)
-            MeterBar(channel: meters.output(speaker.output), vertical: false, clear: meters.clearClips).frame(width: 70, height: 7)
+            MeterBar(channel: meters.output(speaker.output), vertical: false, clear: { meters.clearClip(output: speaker.output) }).frame(width: 70, height: 7)
         }
         .padding(.vertical, 1)
     }

@@ -64,9 +64,9 @@ struct LiveMeter: View {
 
     var body: some View {
         if let input {
-            MeterReadout(title: "Input \(input) · device channel \(meters.firstInputChannel + input - 1)", channel: meters.input(input), clear: meters.clearClips)
+            MeterReadout(title: "Input \(input) · device channel \(meters.firstInputChannel + input - 1)", channel: meters.input(input), clear: { meters.clearClip(input: input) })
         } else if let output {
-            MeterReadout(title: "Output \(output) · device channel \(meters.firstOutputChannel + output - 1)", channel: meters.output(output), clear: meters.clearClips)
+            MeterReadout(title: "Output \(output) · device channel \(meters.firstOutputChannel + output - 1)", channel: meters.output(output), clear: { meters.clearClip(output: output) })
         }
     }
 }
