@@ -28,6 +28,8 @@ final class EngineModel: ObservableObject {
     /// A device chosen in a menu, waiting for the person to confirm the switch.
     @Published var pendingDevice: AudioDeviceSummary?
     private var deviceTimer: Timer?
+    /// The patch between the sound card's channels and the engine's inputs and outputs.
+    @Published private(set) var patch: PatchInfo?
 
     private var mirror = MirroredShow()
     private var client: ControlClient?
@@ -49,6 +51,7 @@ final class EngineModel: ObservableObject {
                 // Meters and the control monitor are off until a client asks.
                 self.client?.send(.watch(meters: true, activity: true))
                 self.client?.send(.listDevices)
+                self.client?.send(.getPatch)
             } else {
                 self.state = nil; self.status = nil; self.mirror = MirroredShow()
                 self.meters.reset()
@@ -80,6 +83,8 @@ final class EngineModel: ObservableObject {
         case .devices(let list, let selected):
             if devices != list { devices = list }
             if selectedDevice != selected { selectedDevice = selected }
+        case .patch(let p):
+            if patch != p { patch = p; meters.patch = p }
         }
     }
 
@@ -90,6 +95,10 @@ final class EngineModel: ObservableObject {
     func refreshDevices() { send(.listDevices) }
 
     func setDevice(_ device: AudioDeviceSummary) { send(.setDevice(device: device.uid)) }
+
+    func refreshPatch() { send(.getPatch) }
+
+    func setPatch(inputs: [Int]?, outputs: [Int]?) { send(.setPatch(inputs: inputs, outputs: outputs)) }
 
     func send(_ request: Request) { client?.send(request) }
     func apply(_ command: Command) { send(.apply(command: command)) }

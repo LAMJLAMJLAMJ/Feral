@@ -260,6 +260,45 @@ func runEngineCommand(_ command: String, _ args: [String]) {
         }
         if args.isEmpty { print("\n* is the one in engine.json. Switch with: feral-cli device \"NAME\"") }
 
+    case "patch":
+        // The patch between the sound card and the engine, or a change to it.
+        let isPatch: (Event) -> Bool = { e in
+            if case .patch = e { return true }
+            return false
+        }
+        guard case .patch(let current) = session.send(.getPatch, timeout: 5, until: isPatch) else { return }
+        var patch = current
+        if !args.isEmpty {
+            // patch in|out FERAL-CHANNELS DEVICE-CHANNEL|none
+            guard args.count == 3, ["in", "out"].contains(args[0]) else {
+                fail("usage: feral-cli patch in|out CHANNELS FIRST-DEVICE-CHANNEL (or none), e.g. patch in 1-2 33")
+            }
+            let isIn = args[0] == "in"
+            let count = isIn ? patch.inputs.count : patch.outputs.count
+            let range = args[1].split(separator: "-").compactMap { Int($0) }
+            guard (1...2).contains(range.count), range[0] >= 1, range.last! <= count, range[0] <= range.last! else {
+                fail("'\(args[1])': give Feral \(isIn ? "inputs" : "outputs") as N or N-M, from 1 to \(count)")
+            }
+            let first: Int
+            if args[2] == "none" { first = 0 } else if let n = Int(args[2]), n >= 1 { first = n } else {
+                fail("'\(args[2])': give the first sound card channel (from 1), or none")
+            }
+            var list = isIn ? patch.inputs : patch.outputs
+            for (k, ch) in (range[0]...range.last!).enumerated() {
+                let device = first == 0 ? 0 : first + k
+                if !isIn && device > 0 {
+                    // A sound card output takes one Feral output: take it from any other.
+                    for j in list.indices where list[j] == device { list[j] = 0 }
+                }
+                list[ch - 1] = device
+            }
+            let request: Request = isIn ? .setPatch(inputs: list, outputs: nil) : .setPatch(inputs: nil, outputs: list)
+            guard case .patch(let updated) = session.send(request, timeout: 5, until: isPatch) else { return }
+            patch = updated
+            print("patched\n")
+        }
+        printPatch(patch, state)
+
     case "monitor":
         // Every OSC and MIDI message the engine receives, and what it did, as the app's control monitor shows them.
         session.send(.watch(meters: false, activity: true), waiting: 0.3)
@@ -274,6 +313,27 @@ func runEngineCommand(_ command: String, _ args: [String]) {
     default:
         fail("unknown engine command \(command)")
     }
+}
+
+/// The patch as two tables, listing patched channels and the ones the show uses.
+func printPatch(_ p: PatchInfo, _ state: ShowState) {
+    print("sound card: \(p.device ?? "none open")" + (p.device == nil ? "" : " (\(p.deviceInputs) in, \(p.deviceOutputs) out)"))
+    var sources: [Int: String] = [:], speakers: [Int: String] = [:]
+    for s in state.show.sources { sources[s.input] = sources[s.input].map { $0 + ", " + s.label } ?? s.label }
+    for s in state.system.speakers { speakers[s.output] = s.label }
+    func table(_ title: String, _ list: [Int], _ names: [Int: String], _ available: Int, _ arrow: String) {
+        print("\n\(title)")
+        var shown = 0
+        for (k, ch) in list.enumerated() where ch > 0 || names[k + 1] != nil {
+            let card = ch == 0 ? "-" : (p.device != nil && ch > available ? "\(ch) (card has \(available))" : String(ch))
+            print("  \(pad(String(k + 1), 4)) \(pad(names[k + 1] ?? "", 18)) \(arrow) card \(card)")
+            shown += 1
+        }
+        if shown == 0 { print("  nothing patched") }
+    }
+    table("FERAL INPUT  SOURCE", p.inputs, sources, p.deviceInputs, "<-")
+    table("FERAL OUTPUT SPEAKER", p.outputs, speakers, p.deviceOutputs, "->")
+    print("\nChange it with, for example: feral-cli patch in 1-2 33   or   feral-cli patch out 5 none")
 }
 
 func activityLine(_ l: ControlActivity) -> String {

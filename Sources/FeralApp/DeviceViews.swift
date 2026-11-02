@@ -59,6 +59,8 @@ struct AudioMenu: View {
         Section("Sound card (inputs and outputs)") {
             DeviceChoices(model: model)
         }
+        Divider()
+        OpenPatchButton()
     }
 }
 
@@ -98,7 +100,9 @@ extension MeterStore {
     /// The highest device input and output channel the engine uses, from the meters.
     var channelsNeeded: (inputs: Int, outputs: Int)? {
         guard live else { return nil }
-        return (firstInputChannel + inputs.count - 1, firstOutputChannel + outputs.count - 1)
+        let ins = (0..<inputs.count).map { cardInput($0 + 1) }.max() ?? 0
+        let outs = (0..<outputs.count).map { cardOutput($0 + 1) }.max() ?? 0
+        return (ins, outs)
     }
 }
 #endif

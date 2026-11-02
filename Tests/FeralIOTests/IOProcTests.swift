@@ -104,6 +104,7 @@ final class IOProcTests: XCTestCase {
     func testChannelMap() {
         XCTAssertEqual(AudioEngineIO.channelMap(count: 4, first: 1, available: 8), [0, 1, 2, 3])
         XCTAssertEqual(AudioEngineIO.channelMap(count: 4, first: 7, available: 8), [6, 7, -1, -1])
+        XCTAssertEqual(AudioEngineIO.channelMap([3, 0, 1, 9], available: 8), [2, -1, 0, -1], "a free patch; 0 and missing channels are none")
     }
 
     func testListingDevicesDoesNotFail() throws {

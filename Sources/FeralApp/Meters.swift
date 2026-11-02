@@ -27,6 +27,8 @@ final class MeterStore: ObservableObject {
     @Published private(set) var outputs: [Channel] = []
     @Published private(set) var firstInputChannel = 1
     @Published private(set) var firstOutputChannel = 1
+    /// The patch, when the engine has sent it: the card channel per engine input and output.
+    @Published var patch: PatchInfo?
     /// The render's highest share of a buffer's time lately (1 is 100 %).
     @Published private(set) var load: Float = 0
     /// Frames are arriving.
@@ -59,6 +61,17 @@ final class MeterStore: ObservableObject {
     }
 
     var anyClipped: Bool { inputs.contains { $0.clipped } || outputs.contains { $0.clipped } }
+
+    /// The sound card channel engine input or output n (from 1) is patched to; 0 for none.
+    func cardInput(_ n: Int) -> Int {
+        if let p = patch { return p.inputs.indices.contains(n - 1) ? p.inputs[n - 1] : 0 }
+        return firstInputChannel + n - 1
+    }
+
+    func cardOutput(_ n: Int) -> Int {
+        if let p = patch { return p.outputs.indices.contains(n - 1) ? p.outputs[n - 1] : 0 }
+        return firstOutputChannel + n - 1
+    }
 
     /// Engine input n (from 1), if the engine has it.
     func input(_ n: Int) -> Channel? { inputs.indices.contains(n - 1) ? inputs[n - 1] : nil }
@@ -253,7 +266,7 @@ struct MeterBridge: View {
             let s = byOutput[n]
             guard allChannels || s != nil else { return nil }
             return Strip(id: "out\(n)", number: n, name: s.map { $0.name ?? "spk \($0.number)" } ?? "",
-                         device: meters.firstOutputChannel + n - 1, color: s.flatMap { groupOf[$0.id]?.color } ?? .secondary,
+                         device: meters.cardOutput(n), color: s.flatMap { groupOf[$0.id]?.color } ?? .secondary,
                          channel: meters.output(n), target: s.map { .speaker($0.id) })
         }
     }
@@ -285,7 +298,7 @@ private struct StripView: View {
     private var help: String {
         var text = "\(title) \(strip.number)"
         if !strip.name.isEmpty { text += ": \(strip.name)" }
-        text += ", device channel \(strip.device)"
+        text += strip.device > 0 ? ", card output \(strip.device)" : ", not patched to the card"
         if let c = strip.channel { text += ". Peak \(MeterScale.text(c.hold)), RMS \(MeterScale.text(c.rms)) dBFS" }
         return text
     }

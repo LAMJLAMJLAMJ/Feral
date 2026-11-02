@@ -35,6 +35,33 @@ public enum Request: Codable, Equatable {
     /// Switches the engine to an audio device (its UID, or part of its name) for both inputs and
     /// outputs: written to engine.json as `device`, and the device is reopened at once.
     case setDevice(device: String)
+    /// Asks for the patch between the sound card's channels and the engine's (answered with `patch`).
+    case getPatch
+    /// Sets the patch: the device channel (from 1, 0 for none) for each engine input and output.
+    /// Either may be left out to keep it. Written to engine.json as inputPatch and outputPatch; the
+    /// audio reopens on the new patch at once (a short gap).
+    case setPatch(inputs: [Int]?, outputs: [Int]?)
+}
+
+/// The patch between the sound card and the engine, for the app's Patch window.
+public struct PatchInfo: Codable, Equatable {
+    /// The device channel (from 1, 0 for none) each engine input reads, from input 1.
+    public var inputs: [Int]
+    /// The device channel (from 1, 0 for none) each engine output plays on.
+    public var outputs: [Int]
+    /// The open device and its channels; nil while none is open.
+    public var device: String?
+    public var deviceInputs: Int
+    public var deviceOutputs: Int
+    /// engine.json has a free patch (inputPatch / outputPatch) rather than channels in order.
+    public var customInputs: Bool
+    public var customOutputs: Bool
+
+    public init(inputs: [Int], outputs: [Int], device: String?, deviceInputs: Int, deviceOutputs: Int,
+                customInputs: Bool, customOutputs: Bool) {
+        self.inputs = inputs; self.outputs = outputs; self.device = device; self.deviceInputs = deviceInputs
+        self.deviceOutputs = deviceOutputs; self.customInputs = customInputs; self.customOutputs = customOutputs
+    }
 }
 
 /// An audio device on the engine's Mac, as the app's sound card menu lists it.
@@ -214,6 +241,9 @@ public enum Event: Codable, Equatable {
     case activity(lines: [ControlActivity], dropped: Int)
     /// The audio devices on the engine's Mac, and engine.json's `device` setting.
     case devices(list: [AudioDeviceSummary], selected: String?)
+    /// The patch between the sound card and the engine: to the client that asked, and to everyone
+    /// when it changes.
+    case patch(patch: PatchInfo)
 }
 
 /// Newline-framed JSON.
@@ -275,7 +305,7 @@ public struct MirroredShow {
             seq = n
         case .status(let s):
             status = s
-        case .error, .meters, .activity, .devices:
+        case .error, .meters, .activity, .devices, .patch:
             break
         }
         return true

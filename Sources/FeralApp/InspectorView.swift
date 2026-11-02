@@ -64,10 +64,20 @@ struct LiveMeter: View {
 
     var body: some View {
         if let input {
-            MeterReadout(title: "Input \(input) · device channel \(meters.firstInputChannel + input - 1)", channel: meters.input(input), clear: { meters.clearClip(input: input) })
+            MeterReadout(title: inputTitle(input), channel: meters.input(input), clear: { meters.clearClip(input: input) })
         } else if let output {
-            MeterReadout(title: "Output \(output) · device channel \(meters.firstOutputChannel + output - 1)", channel: meters.output(output), clear: { meters.clearClip(output: output) })
+            MeterReadout(title: outputTitle(output), channel: meters.output(output), clear: { meters.clearClip(output: output) })
         }
+    }
+
+    private func inputTitle(_ n: Int) -> String {
+        let card = meters.cardInput(n)
+        return "Input \(n) · " + (card > 0 ? "card input \(card)" : "not patched")
+    }
+
+    private func outputTitle(_ n: Int) -> String {
+        let card = meters.cardOutput(n)
+        return "Output \(n) · " + (card > 0 ? "card output \(card)" : "not patched")
     }
 }
 

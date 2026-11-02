@@ -22,6 +22,7 @@ final class MessageTests: XCTestCase {
             .recall(snapshot: "3", fadeSeconds: 2.5),
             .go(cue: nil), .go(cue: "12.5"), .stopFades, .save, .refresh,
             .watch(meters: true, activity: false),
+            .getPatch, .setPatch(inputs: [33, 34, 0], outputs: nil), .setPatch(inputs: nil, outputs: [1, 2]),
         ]
         for r in requests { try roundTrip(r) }
         let status = EngineStatus(version: "0.3", showPath: "/x.feralshow", unsaved: 2, currentCue: id, fading: [id], audio: "running")
@@ -34,6 +35,8 @@ final class MessageTests: XCTestCase {
                                       outputPeak: [0], outputRMS: [-9.9], firstInputChannel: 1, firstOutputChannel: 33, load: 0.25)),
             .activity(lines: [ControlActivity(time: 1_700_000_000.25, kind: .osc, from: "127.0.0.1:5000", message: "/feral/go",
                                               result: "GO", handled: true)], dropped: 3),
+            .patch(patch: PatchInfo(inputs: [33, 0], outputs: [1, 2, 3], device: "BlackHole 64ch", deviceInputs: 64,
+                                    deviceOutputs: 64, customInputs: true, customOutputs: false)),
         ]
         for e in events { try roundTrip(e) }
     }

@@ -388,6 +388,10 @@ final class Engine {
                 server?.send(.devices(list: deviceList(), selected: config.device), to: client)
             case .setDevice(let device):
                 try setDevice(device, origin: origin)
+            case .getPatch:
+                server?.send(.patch(patch: patchInfo), to: client)
+            case .setPatch(let inputs, let outputs):
+                try setPatch(inputs: inputs, outputs: outputs, origin: origin)
             }
         } catch {
             server?.send(.error(message: "\(error)"), to: client)
@@ -413,22 +417,64 @@ final class Engine {
         if chosen.isAggregate && config.refuseAggregateDevices {
             throw ConfigError("\(chosen.name) is an aggregate device; aggregates drift or resample between clocks, so the engine refuses them")
         }
-        let url = options.configURL
-        var json: [String: Any] = [:]
-        if FileManager.default.fileExists(atPath: url.path) {
-            guard let object = try JSONSerialization.jsonObject(with: Data(contentsOf: url)) as? [String: Any] else {
-                throw ConfigError("\(url.path) is not a JSON object")
-            }
-            json = object
-        }
+        var json = try readConfigJSON()
         json["device"] = chosen.uid
-        try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
-        try JSONSerialization.data(withJSONObject: json, options: [.prettyPrinted, .sortedKeys]).write(to: url, options: .atomic)
-        log("\(origin): audio device set to \(chosen.name) (\(chosen.uid)) in \(url.path)")
+        try writeConfig(json)
+        log("\(origin): audio device set to \(chosen.name) (\(chosen.uid)) in \(options.configURL.path)")
         reload()
         server?.broadcast(.devices(list: list, selected: config.device))
         // The device opens in the background; tell clients how it went.
-        for delay in [0.5, 2.0] { queue.asyncAfter(deadline: .now() + delay) { [self] in broadcastStatus() } }
+        for delay in [0.5, 2.0] {
+            queue.asyncAfter(deadline: .now() + delay) { [self] in
+                broadcastStatus()
+                server?.broadcast(.patch(patch: patchInfo))
+            }
+        }
+    }
+
+    /// engine.json as a JSON object, to change a few keys and keep the rest as written.
+    private func readConfigJSON() throws -> [String: Any] {
+        let url = options.configURL
+        guard FileManager.default.fileExists(atPath: url.path) else { return [:] }
+        guard let object = try JSONSerialization.jsonObject(with: Data(contentsOf: url)) as? [String: Any] else {
+            throw ConfigError("\(url.path) is not a JSON object")
+        }
+        return object
+    }
+
+    private func writeConfig(_ json: [String: Any]) throws {
+        let url = options.configURL
+        try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try JSONSerialization.data(withJSONObject: json, options: [.prettyPrinted, .sortedKeys]).write(to: url, options: .atomic)
+    }
+
+    private var patchInfo: PatchInfo {
+        let dev = io.openDevice
+        return PatchInfo(inputs: config.inputChannels, outputs: config.outputChannels, device: dev?.name,
+                         deviceInputs: dev?.inputChannels ?? 0, deviceOutputs: dev?.outputChannels ?? 0,
+                         customInputs: config.inputPatch != nil, customOutputs: config.outputPatch != nil)
+    }
+
+    /// Writes inputPatch and outputPatch into engine.json and reopens the audio on them.
+    private func setPatch(inputs: [Int]?, outputs: [Int]?, origin: String) throws {
+        var trial = config
+        if let inputs { trial.inputPatch = Array(inputs.prefix(config.inputs)) }
+        if let outputs { trial.outputPatch = Array(outputs.prefix(config.outputs)) }
+        try trial.validate()
+        var json = try readConfigJSON()
+        if let p = trial.inputPatch, inputs != nil { json["inputPatch"] = p }
+        if let p = trial.outputPatch, outputs != nil { json["outputPatch"] = p }
+        try writeConfig(json)
+        func count(_ p: [Int]?) -> Int { p?.filter { $0 > 0 }.count ?? 0 }
+        log("\(origin): patch set (\(count(trial.inputPatch)) inputs, \(count(trial.outputPatch)) outputs patched)")
+        reload()
+        server?.broadcast(.patch(patch: patchInfo))
+        for delay in [0.5, 2.0] {
+            queue.asyncAfter(deadline: .now() + delay) { [self] in
+                broadcastStatus()
+                server?.broadcast(.patch(patch: patchInfo))
+            }
+        }
     }
 
     private var status: EngineStatus {

@@ -101,4 +101,24 @@ final class ControlSettingsTests: XCTestCase {
         c.oscPort = 0
         XCTAssertNoThrow(try c.validate(), "0 turns OSC off")
     }
+
+    func testPatchInOrderOrFree() throws {
+        var c = EngineConfig(inputs: 4, outputs: 3, firstInputChannel: 33, firstOutputChannel: 1)
+        XCTAssertEqual(c.inputChannels, [33, 34, 35, 36], "no patch: in order from firstInputChannel")
+        XCTAssertEqual(c.outputChannels, [1, 2, 3])
+        c.inputPatch = [5, 5, 0]
+        c.outputPatch = [7, 0, 2]
+        XCTAssertEqual(c.inputChannels, [5, 5, 0, 0], "inputs past the patch are unpatched; inputs may share a card channel")
+        XCTAssertEqual(c.outputChannels, [7, 0, 2])
+        XCTAssertNoThrow(try c.validate())
+        let json = try JSONEncoder().encode(c)
+        let back = try JSONDecoder().decode(EngineConfig.self, from: json)
+        XCTAssertEqual(back.inputPatch, [5, 5, 0])
+        XCTAssertFalse(back.sameDeviceSettings(as: EngineConfig(inputs: 4, outputs: 3, firstInputChannel: 33)),
+                       "a patch change reopens the audio")
+        c.outputPatch = [7, 7, 0]
+        XCTAssertThrowsError(try c.validate(), "a card output takes one Feral output")
+        c.outputPatch = [7, -1]
+        XCTAssertThrowsError(try c.validate())
+    }
 }

@@ -19,6 +19,13 @@ public struct EngineConfig: Codable, Equatable {
     public var firstInputChannel: Int
     /// The device channel (from 1) that engine output 1 plays on. Later outputs follow in order.
     public var firstOutputChannel: Int
+    /// A free patch in place of firstInputChannel: the device channel (from 1) each engine input
+    /// reads, in order from input 1; 0 leaves an input unpatched, as do inputs past the end. Several
+    /// inputs may read the same device channel. Set from the app's Patch window.
+    public var inputPatch: [Int]?
+    /// A free patch in place of firstOutputChannel: the device channel (from 1) each engine output
+    /// plays on; 0 leaves an output unpatched. A device channel takes at most one output.
+    public var outputPatch: [Int]?
     /// The fixed gain matrix, as routes. Empty means every input straight to the output with its
     /// number (a passthrough).
     public var routes: [Route]
@@ -85,6 +92,8 @@ public struct EngineConfig: Codable, Equatable {
         self.outputs = outputs
         self.firstInputChannel = firstInputChannel
         self.firstOutputChannel = firstOutputChannel
+        self.inputPatch = nil
+        self.outputPatch = nil
         self.routes = routes
         self.refuseAggregateDevices = refuseAggregateDevices
         self.testSignal = testSignal
@@ -110,7 +119,7 @@ public struct EngineConfig: Codable, Equatable {
     }
 
     enum CodingKeys: String, CodingKey {
-        case device, sampleRate, bufferFrames, inputs, outputs, firstInputChannel, firstOutputChannel, routes,
+        case device, sampleRate, bufferFrames, inputs, outputs, firstInputChannel, firstOutputChannel, inputPatch, outputPatch, routes,
              refuseAggregateDevices, testSignal, testSignalDB, testSignalHz, speakers, groups, sources, lfeOutputs,
              airTemperatureC, delayGlidePercent, delayJumpMS, delayCrossfadeMS, groupCrossfadeMS, testMotion, show,
              controlAddress, controlPort, oscAddress, oscPort, midi, midiInputs
@@ -127,6 +136,8 @@ public struct EngineConfig: Codable, Equatable {
         outputs = try c.decodeIfPresent(Int.self, forKey: .outputs) ?? d.outputs
         firstInputChannel = try c.decodeIfPresent(Int.self, forKey: .firstInputChannel) ?? d.firstInputChannel
         firstOutputChannel = try c.decodeIfPresent(Int.self, forKey: .firstOutputChannel) ?? d.firstOutputChannel
+        inputPatch = try c.decodeIfPresent([Int].self, forKey: .inputPatch)
+        outputPatch = try c.decodeIfPresent([Int].self, forKey: .outputPatch)
         routes = try c.decodeIfPresent([Route].self, forKey: .routes) ?? d.routes
         refuseAggregateDevices = try c.decodeIfPresent(Bool.self, forKey: .refuseAggregateDevices) ?? d.refuseAggregateDevices
         testSignal = try c.decodeIfPresent(TestSignal.self, forKey: .testSignal) ?? d.testSignal
@@ -159,6 +170,23 @@ public struct EngineConfig: Codable, Equatable {
         device == o.device && sampleRate == o.sampleRate && bufferFrames == o.bufferFrames && inputs == o.inputs
             && outputs == o.outputs && firstInputChannel == o.firstInputChannel
             && firstOutputChannel == o.firstOutputChannel && refuseAggregateDevices == o.refuseAggregateDevices
+            && inputPatch == o.inputPatch && outputPatch == o.outputPatch
+    }
+
+    /// The device channel (from 1) each engine input reads, 0 for none: inputPatch, or in order from
+    /// firstInputChannel.
+    public var inputChannels: [Int] {
+        Self.patch(inputPatch, count: inputs, first: firstInputChannel)
+    }
+
+    /// The device channel (from 1) each engine output plays on, 0 for none.
+    public var outputChannels: [Int] {
+        Self.patch(outputPatch, count: outputs, first: firstOutputChannel)
+    }
+
+    static func patch(_ patch: [Int]?, count: Int, first: Int) -> [Int] {
+        guard let patch else { return (0..<count).map { first + $0 } }
+        return (0..<count).map { $0 < patch.count ? max(patch[$0], 0) : 0 }
     }
 
     /// How delays move, in samples at this sample rate.
@@ -198,6 +226,18 @@ public struct EngineConfig: Codable, Equatable {
         guard (16...4096).contains(bufferFrames) else { throw ConfigError("bufferFrames must be from 16 to 4096") }
         guard firstInputChannel >= 1, firstOutputChannel >= 1 else {
             throw ConfigError("firstInputChannel and firstOutputChannel count from 1")
+        }
+        if let p = inputPatch, p.contains(where: { $0 < 0 }) {
+            throw ConfigError("inputPatch holds device channels from 1, or 0 for none")
+        }
+        if let p = outputPatch {
+            guard !p.contains(where: { $0 < 0 }) else { throw ConfigError("outputPatch holds device channels from 1, or 0 for none") }
+            var seen = Set<Int>()
+            for (k, c) in p.prefix(outputs).enumerated() where c > 0 {
+                guard seen.insert(c).inserted else {
+                    throw ConfigError("outputPatch: device channel \(c) is given to more than one output (output \(k + 1) and an earlier one)")
+                }
+            }
         }
         guard testSignalDB <= 0 else { throw ConfigError("testSignalDB must be 0 or below") }
         guard testSignalHz >= 10, testSignalHz <= 20_000 else { throw ConfigError("testSignalHz must be from 10 to 20000") }

@@ -31,6 +31,10 @@ struct FeralApp: App {
             MonitorView(model: model, monitor: model.monitor)
         }
         .defaultSize(width: 980, height: 620)
+        Window("Patch", id: "patch") {
+            PatchView(model: model, meters: model.meters)
+        }
+        .defaultSize(width: 1100, height: 720)
         Settings {
             SettingsView(model: model)
         }
@@ -116,6 +120,8 @@ struct ContentView: View {
         .toolbar {
             ToolbarItemGroup(placement: .primaryAction) {
                 SoundCardPicker(model: model)
+                Button { openWindow(id: "patch") } label: { Label("Patch", systemImage: "square.grid.3x3") }
+                    .help("Patch the sound card's inputs and outputs to Feral's (⌥⌘P)")
                 Toggle(isOn: $moveSpeakers) { Label("Move speakers", systemImage: "hifispeaker.2") }
                     .help("Let the plan move speakers too (the system layer)")
                 Toggle(isOn: $showHeight) { Label("Height", systemImage: "arrow.up.and.down.square") }
