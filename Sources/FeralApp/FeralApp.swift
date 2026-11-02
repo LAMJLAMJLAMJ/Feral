@@ -93,8 +93,12 @@ struct ContentView: View {
             SidebarView(model: model, meters: model.meters, selection: $selection)
                 .navigationSplitViewColumnWidth(min: 270, ideal: 310, max: 420)
         } detail: {
-            detail
-                .inspector(isPresented: $showInspector) {
+            // The inspector is a plain column beside the plan: SwiftUI's .inspector inside a
+            // NavigationSplitView's detail left its controls unclickable on macOS.
+            HStack(spacing: 0) {
+                detail
+                if showInspector {
+                    Divider()
                     Group {
                         if let state = model.state {
                             InspectorView(model: model, meters: model.meters, state: state, selection: $selection)
@@ -102,8 +106,9 @@ struct ContentView: View {
                             Text("Not connected").foregroundStyle(.secondary).frame(maxWidth: .infinity, maxHeight: .infinity)
                         }
                     }
-                    .inspectorColumnWidth(min: 270, ideal: 320, max: 460)
+                    .frame(width: 320)
                 }
+            }
         }
         .navigationTitle(model.state?.show.name ?? "Feral")
         .navigationSubtitle(subtitle)
