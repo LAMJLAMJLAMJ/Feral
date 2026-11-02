@@ -151,6 +151,22 @@ final class ShowTests: XCTestCase {
         XCTAssertEqual(try JSONDecoder().decode(Show.self, from: data).sources, state.show.sources)
     }
 
+    func testMultibandCompressorSettings() throws {
+        var c = Compressor(on: true, multiband: true)
+        XCTAssertEqual(c.bands.count, 3)
+        let p = InputParams(eq: nil, compressor: c, link: nil, sampleRate: 48_000)
+        XCTAssertTrue(p.multiband)
+        XCTAssertEqual(p.crossover.count, 9)
+        XCTAssertEqual(p.bands.count, 3)
+        // A compressor saved before multiband reads as single band.
+        let old = try JSONDecoder().decode(Compressor.self, from: Data(#"{"on":true,"thresholdDB":-10}"#.utf8))
+        XCTAssertFalse(old.multiband)
+        XCTAssertEqual(old.bands, Compressor.defaultBands)
+        try c.check("t")
+        c.crossoverHighHz = 300
+        XCTAssertThrowsError(try c.check("t"), "the upper crossover must be an octave above the lower")
+    }
+
     func testAnglesAreFromTheListener() throws {
         var state = ShowState(show: Show(name: "L"))
         // The listener 10 m out at ear height, facing back towards the stage at y = 0.

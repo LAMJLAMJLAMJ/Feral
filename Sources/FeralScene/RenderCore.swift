@@ -93,6 +93,28 @@ public final class RenderCore {
         return out
     }
 
+    /// The same per multiband band: for each input, low, mid and high.
+    public func readBandReduction(inputs: Int) -> [[Float]] {
+        let i = max(0, min(inputs, Routing.maxChannels)), n = Int(FERAL_COMP_BANDS)
+        var flat = [Float](repeating: 0, count: i * n)
+        flat.withUnsafeMutableBufferPointer { feral_core_read_band_reduction(pointer, $0.baseAddress, Int32(i)) }
+        return (0..<i).map { Array(flat[$0 * n ..< ($0 + 1) * n]) }
+    }
+
+    /// Picks the input (from 0) the analysis tap keeps, or none.
+    public func setAnalysisInput(_ input: Int?) { feral_core_set_analysis_input(pointer, Int32(input ?? -1)) }
+
+    /// The analysed input's newest samples before and after its EQ and compressor, and how many the
+    /// tap has taken since the input was picked.
+    public func readAnalysis(frames: Int) -> (pre: [Float], post: [Float], written: UInt64) {
+        let n = max(0, min(frames, Int(FERAL_ANALYSIS_FRAMES)))
+        var pre = [Float](repeating: 0, count: n), post = [Float](repeating: 0, count: n)
+        let written = pre.withUnsafeMutableBufferPointer { a in
+            post.withUnsafeMutableBufferPointer { b in feral_core_read_analysis(pointer, a.baseAddress, b.baseAddress, Int32(n)) }
+        }
+        return (pre, post, written)
+    }
+
     public struct Stats: Equatable {
         public var buffers: UInt64
         public var lateBuffers: UInt64

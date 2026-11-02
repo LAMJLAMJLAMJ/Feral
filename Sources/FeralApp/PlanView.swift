@@ -52,6 +52,8 @@ struct PlanView: View {
     let moveSpeakers: Bool
     @AppStorage("planLevels") private var showLevels = true
     @AppStorage("planSpeakerNames") private var speakerNames = false
+    /// Dragging a source only turns it round the listener: its distance and height stay.
+    @AppStorage("planAzimuthLock") private var azimuthLock = false
 
     private struct Drag {
         var target: Selection
@@ -59,6 +61,8 @@ struct PlanView: View {
         /// Where the source started, and where its linked group partners started.
         var start: Position
         var partners: [UUID: Position] = [:]
+        /// With the azimuth lock: degrees turned round the listener since the drag started.
+        var turn: Double?
     }
     @State private var drag: Drag?
     @State private var panning: (start: CGSize, moved: Bool)?
@@ -143,6 +147,16 @@ struct PlanView: View {
             Toggle(isOn: $speakerNames) { Image(systemName: "textformat") }
                 .toggleStyle(.button)
                 .help("Show speaker names")
+            Divider().frame(height: 14)
+            Toggle(isOn: $azimuthLock) {
+                HStack(spacing: 2) {
+                    Image(systemName: azimuthLock ? "lock.fill" : "lock.open")
+                    Text("Azimuth").font(.caption)
+                }
+            }
+            .toggleStyle(.button)
+            .help(azimuthLock ? "Azimuth lock on: dragging a source turns it round the listener, keeping its distance and elevation"
+                  : "Azimuth lock off: drag sources freely in x and y")
         }
         .buttonStyle(.borderless)
         .padding(4)
@@ -355,6 +369,22 @@ struct PlanView: View {
         }
         guard var d = drag else { return }
         let v = f.venue(g.location)
+        if azimuthLock, case .source = d.target {
+            // Only the azimuth changes: the source turns round the listener to where the mouse is,
+            // in half degree steps.
+            let listener = state.system.listener.position
+            let from = state.polar(of: d.start)
+            let mouse = state.polar(of: Position(v.x, v.y, listener.z))
+            guard from.distance > 0, mouse.distance > 0 else { return }
+            let turn = (ShowState.wrapAngle(mouse.azimuth - from.azimuth) * 2).rounded() / 2
+            d.turn = turn
+            var p = from
+            p.azimuth += turn
+            d.position = state.point(p)
+            drag = d
+            if Date().timeIntervalSince(lastSent) >= 1.0 / 60 { send(d) }
+            return
+        }
         // Snap to 10 cm.
         d.position = Position((v.x * 10).rounded() / 10, (v.y * 10).rounded() / 10, d.position.z)
         drag = d
@@ -377,7 +407,11 @@ struct PlanView: View {
         lastSent = Date()
         switch d.target {
         case .source(let id):
-            model.drag(id, from: d.start, to: d.position, partners: d.partners)
+            if let turn = d.turn {
+                model.dragPolar(id, start: d.start, turn: turn, raise: 0, partners: d.partners)
+            } else {
+                model.drag(id, from: d.start, to: d.position, partners: d.partners)
+            }
         case .speaker(let id):
             guard var s = state.speaker(id) else { return }
             s.position = d.position

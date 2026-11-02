@@ -149,6 +149,9 @@ extension ShowState {
         return out
     }
 
+    /// An angle brought into -180 to 180 degrees.
+    public static func wrapAngle(_ a: Double) -> Double { wrap(a) }
+
     static func wrap(_ a: Double) -> Double {
         var x = a.truncatingRemainder(dividingBy: 360)
         if x > 180 { x -= 360 }

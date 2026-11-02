@@ -61,6 +61,9 @@ final class Engine {
     // Meters and the control monitor, for clients that asked (Request.watch)
     private struct Watch { var meters = false, activity = false }
     private var watchers: [ControlServer.ClientID: Watch] = [:]
+    /// The input (from 1) each client wants the spectrum of, and the one the core's tap has now.
+    private var analysers: [ControlServer.ClientID: Int] = [:]
+    private var analysed: Int?
     /// OSC and MIDI received since the last `activity` event, and how many more were left out.
     private var heard: [ControlActivity] = []
     private var heardDropped = 0
@@ -91,7 +94,7 @@ final class Engine {
             startMIDI()
             every(0.05) { [self] in core.collect() }
             every(0.1) { [self] in flushJournal() }
-            every(0.05) { [self] in sendMeters() }
+            every(0.05) { [self] in sendMeters(); sendSpectrum() }
             every(0.1) { [self] in sendActivity() }
             every(10) { [self] in report(force: false) }
             every(300) { [self] in report(force: true) }
@@ -341,6 +344,7 @@ final class Engine {
             guard let self else { return }
             if let name = clientNames.removeValue(forKey: id) { log("control: \(name) disconnected") }
             watchers[id] = nil
+            if analysers.removeValue(forKey: id) != nil { pickAnalysis(newest: nil) }
         }
         server.onRequest = { [weak self] id, request in self?.handle(request, from: id) }
         do { try server.start(address: config.controlAddress, port: config.controlPort) } catch {
@@ -394,6 +398,9 @@ final class Engine {
                 try setPatch(inputs: inputs, outputs: outputs, origin: origin)
             case .setChannelCounts(let inputs, let outputs):
                 try setChannelCounts(inputs: inputs, outputs: outputs, origin: origin)
+            case .analyse(let input):
+                analysers[client] = input.flatMap { $0 >= 1 && $0 <= config.inputs ? $0 : nil }
+                pickAnalysis(newest: analysers[client])
             }
         } catch {
             server?.send(.error(message: "\(error)"), to: client)
@@ -632,6 +639,25 @@ final class Engine {
         heardDropped = 0
     }
 
+    /// Points the core's analysis tap at the newest request, or at any still wanted, or off.
+    private func pickAnalysis(newest: Int?) {
+        let input = newest ?? (analysed.flatMap { a in analysers.values.contains(a) ? a : nil }) ?? analysers.values.first
+        guard input != analysed else { return }
+        analysed = input
+        core.setAnalysisInput(input.map { $0 - 1 })
+    }
+
+    private func sendSpectrum() {
+        guard let input = analysed else { return }
+        let clients = analysers.filter { $0.value == input }.map(\.key)
+        guard !clients.isEmpty else { return }
+        let a = core.readAnalysis(frames: Spectrum.fftSize)
+        guard a.written > 0 else { return }
+        let frame = SpectrumFrame(input: input, pre: Spectrum.analyse(a.pre, sampleRate: config.sampleRate).map { ($0 * 10).rounded() / 10 },
+                                  post: Spectrum.analyse(a.post, sampleRate: config.sampleRate).map { ($0 * 10).rounded() / 10 })
+        server?.send(.spectrum(frame: frame), to: clients)
+    }
+
     private func sendMeters() {
         let clients = watchers.filter { $0.value.meters }.map(\.key)
         guard !clients.isEmpty else { return }
@@ -640,7 +666,8 @@ final class Engine {
                                outputPeak: l.outputPeak.map(MeterFrame.dB), outputRMS: l.outputRMS.map(MeterFrame.dB),
                                firstInputChannel: config.firstInputChannel, firstOutputChannel: config.firstOutputChannel,
                                load: core.stats().maxLoad,
-                               inputReduction: core.readReduction(inputs: config.inputs).map { ($0 * 10).rounded() / 10 })
+                               inputReduction: core.readReduction(inputs: config.inputs).map { ($0 * 10).rounded() / 10 },
+                               inputBandReduction: core.readBandReduction(inputs: config.inputs).map { $0.map { ($0 * 10).rounded() / 10 } })
         server?.send(.meters(frame: frame), to: clients)
     }
 

@@ -48,6 +48,13 @@ bool feral_state::finish(double maxDelay) {
         p.comp_release = unit(p.comp_release);
         if (!std::isfinite(p.comp_makeup) || p.comp_makeup < 0) p.comp_makeup = 1;
         if (p.link < 0 || p.link >= inputs || p.link == in) p.link = -1;
+        for (auto &b : p.bands) {
+            if (!std::isfinite(b.threshold) || b.threshold < 0) b.threshold = 0;
+            if (!std::isfinite(b.ratio) || b.ratio < 1) b.ratio = 1;
+            b.attack = unit(b.attack);
+            b.release = unit(b.release);
+            if (!std::isfinite(b.gain) || b.gain < 0) b.gain = 1;
+        }
     }
     return true;
 }
@@ -245,8 +252,17 @@ struct InputRuntime {
     float z1[FERAL_INPUT_EQ_BANDS], z2[FERAL_INPUT_EQ_BANDS];
     float envelope = 0;
     float makeup = 1;
+    // Multiband: the crossover's sections now and their state, each band's follower and gain.
+    bool split = false;
+    feral_biquad crossover[FERAL_CROSSOVER_SECTIONS];
+    float xz1[FERAL_CROSSOVER_SECTIONS], xz2[FERAL_CROSSOVER_SECTIONS];
+    float bandEnvelope[FERAL_COMP_BANDS] = {};
+    float bandGain[FERAL_COMP_BANDS] = {1, 1, 1};
 
     InputRuntime() {
+        for (auto &b : crossover) b = {1, 0, 0, 0, 0};
+        std::fill(xz1, xz1 + FERAL_CROSSOVER_SECTIONS, 0.0f);
+        std::fill(xz2, xz2 + FERAL_CROSSOVER_SECTIONS, 0.0f);
         for (auto &b : eq) b = {1, 0, 0, 0, 0};
         std::fill(z1, z1 + FERAL_INPUT_EQ_BANDS, 0.0f);
         std::fill(z2, z2 + FERAL_INPUT_EQ_BANDS, 0.0f);
@@ -293,6 +309,8 @@ struct feral_core {
     float *inputScratch = nullptr;
     const float *inputSources[FERAL_MAX_CHANNELS] = {};
     const float *rawInputs[FERAL_MAX_CHANNELS] = {};
+    // A linked pair's bands while its multiband compressor runs: [side][band], one block each.
+    std::vector<float> bandScratch = std::vector<float>(static_cast<size_t>(2 * FERAL_COMP_BANDS) * FERAL_MAX_FRAMES);
     float *lineMemory = nullptr;
     uint32_t lineMask = 0;
     uint32_t writeIndex = 0;   // where the next block goes in every delay line
@@ -332,6 +350,14 @@ struct feral_core {
     std::array<float, FERAL_MAX_CHANNELS> inputPowerState{}, outputPowerState{};
     // Each input compressor's deepest reduction in dB since the last read.
     std::array<std::atomic<float>, FERAL_MAX_CHANNELS> inputReduction{};
+    std::array<std::atomic<float>, static_cast<size_t>(FERAL_MAX_CHANNELS) * FERAL_COMP_BANDS> bandReduction{};
+
+    // The analysis tap: one input's samples before and after its processing, in rings the audio
+    // thread writes and one other thread reads (feral_core_read_analysis).
+    std::atomic<int> analysisInput{-1};
+    int analysisLast = -1; // audio thread: the input the rings hold
+    std::atomic<uint64_t> analysisWritten{0};
+    std::array<std::atomic<float>, FERAL_ANALYSIS_FRAMES> analysisPre{}, analysisPost{};
     int meteredInputs = 0, meteredOutputs = 0;
 
     DelayLine inputLine(int in) { return {lineMemory + static_cast<size_t>(in) * (lineMask + 1), lineMask}; }
@@ -366,6 +392,9 @@ feral_input_params feral_input_defaults(void) {
     p.comp_attack = 0;
     p.comp_release = 0;
     p.comp_makeup = 1;
+    p.multiband = 0;
+    for (auto &b : p.crossover) b = kFlat;
+    for (auto &b : p.bands) b = {0, 1, 0, 0, 1};
     p.link = -1;
     return p;
 }
@@ -493,6 +522,7 @@ void feral_core_audio_detached(feral_core *core) {
         core->inputPower[i].store(0, std::memory_order_relaxed);
         core->outputPower[i].store(0, std::memory_order_relaxed);
         core->inputReduction[i].store(0, std::memory_order_relaxed);
+        for (int b = 0; b < FERAL_COMP_BANDS; ++b) core->bandReduction[i * FERAL_COMP_BANDS + b].store(0, std::memory_order_relaxed);
     }
     core->meteredInputs = core->meteredOutputs = 0;
     RenderState *newest = core->latest.load(std::memory_order_acquire);
@@ -518,6 +548,29 @@ void feral_core_read_meters(feral_core *core, float *input_peak, float *input_rm
         if (output_peak) output_peak[o] = core->outputPeak[o].exchange(0, std::memory_order_relaxed);
         if (output_rms) output_rms[o] = std::sqrt(core->outputPower[o].load(std::memory_order_relaxed));
     }
+}
+
+void feral_core_set_analysis_input(feral_core *core, int input) {
+    core->analysisInput.store(input >= 0 && input < FERAL_MAX_CHANNELS ? input : -1, std::memory_order_relaxed);
+}
+
+uint64_t feral_core_read_analysis(feral_core *core, float *pre, float *post, int frames) {
+    frames = std::clamp(frames, 0, FERAL_ANALYSIS_FRAMES);
+    const uint64_t written = core->analysisWritten.load(std::memory_order_acquire);
+    const uint64_t have = std::min<uint64_t>(written, static_cast<uint64_t>(frames));
+    const int zeros = frames - static_cast<int>(have);
+    for (int n = 0; n < zeros; ++n) pre[n] = post[n] = 0;
+    for (uint64_t k = 0; k < have; ++k) {
+        const size_t i = static_cast<size_t>((written - have + k) & (FERAL_ANALYSIS_FRAMES - 1));
+        pre[zeros + k] = core->analysisPre[i].load(std::memory_order_relaxed);
+        post[zeros + k] = core->analysisPost[i].load(std::memory_order_relaxed);
+    }
+    return written;
+}
+
+void feral_core_read_band_reduction(feral_core *core, float *reduction_db, int inputs) {
+    inputs = std::clamp(inputs, 0, FERAL_MAX_CHANNELS);
+    for (int i = 0; i < inputs * FERAL_COMP_BANDS; ++i) reduction_db[i] = core->bandReduction[i].exchange(0, std::memory_order_relaxed);
 }
 
 void feral_core_read_reduction(feral_core *core, float *reduction_db, int inputs) {
@@ -761,18 +814,48 @@ void meterBlock(const float *x, int frames, float a, float &state, std::atomic<f
     if (p > peak.load(std::memory_order_relaxed)) peak.store(p, std::memory_order_relaxed);
 }
 
+/// Compresses y in place: the follower moves towards each sample's level (the detector's, when
+/// given) at the attack rate going up and the release rate coming down, and above the threshold the
+/// gain brings the level to threshold * (level / threshold)^(1 / ratio). Returns the lowest gain.
+float compress(float *y, const float *detector, float &envelope, float threshold, float ratio, float attack,
+               float release, int frames) {
+    const float slope = 1.0f / ratio - 1.0f;
+    float env = envelope, deepest = 1;
+    for (int n = 0; n < frames; ++n) {
+        const float level = detector ? detector[n] : std::fabs(y[n]);
+        env = level > env ? attack * env + (1 - attack) * level : release * env + (1 - release) * level;
+        if (env > threshold) {
+            const float g = std::pow(env / threshold, slope);
+            deepest = std::min(deepest, g);
+            y[n] *= g;
+        }
+    }
+    envelope = flushTiny(env);
+    return deepest;
+}
+
+/// y *= gain, ramping from `now` to `target` over the block when they differ; now becomes target.
+void rampGain(float *y, float &now, float target, int frames) {
+    if (now != target) {
+        const float g0 = now, step = (target - g0) / static_cast<float>(frames);
+        for (int n = 0; n < frames; ++n) y[n] *= g0 + step * static_cast<float>(n + 1);
+        now = target;
+    } else if (now != 1) {
+        for (int n = 0; n < frames; ++n) y[n] *= now;
+    }
+}
+
 /// Runs one processing block of the first `lines` inputs' EQ and compressor, and points
 /// core->inputSources at what each input plays: the input itself when it has no processing (and
 /// none is still settling), otherwise its processed copy. Audio thread; no allocation.
 void processInputs(feral_core *core, const RenderState *next, const float *const *raw, int lines, int frames) {
-    const float inv = 1.0f / static_cast<float>(frames);
     bool busy[FERAL_MAX_CHANNELS];
     for (int in = 0; in < lines; ++in) {
         const feral_input_params &p = next && in < next->inputs ? next->inputParams[in] : kNone;
         InputRuntime &r = core->inputRuntime[in];
         bool eq = false;
         for (int b = 0; b < FERAL_INPUT_EQ_BANDS; ++b) eq = eq || !isFlat(p.eq[b]) || !isFlat(r.eq[b]);
-        busy[in] = raw[in] && (eq || p.comp_threshold > 0 || p.comp_makeup != 1 || r.makeup != 1);
+        busy[in] = raw[in] && (eq || p.comp_threshold > 0 || p.multiband || r.split || p.comp_makeup != 1 || r.makeup != 1);
         if (!busy[in]) {
             core->inputSources[in] = raw[in];
             r = InputRuntime{};
@@ -785,7 +868,8 @@ void processInputs(feral_core *core, const RenderState *next, const float *const
     }
 
     // Compressors, after every EQ. A linked pair runs together, when its first input comes up: both
-    // followers hear the louder side, so both sides duck alike and the image stays put.
+    // followers hear the louder side, so both sides duck alike and the image stays put (band by band
+    // when multiband).
     bool done[FERAL_MAX_CHANNELS] = {};
     float *ys[2];
     int ins[2];
@@ -800,49 +884,100 @@ void processInputs(feral_core *core, const RenderState *next, const float *const
             ys[1] = core->inputScratch + static_cast<size_t>(p.link) * FERAL_MAX_FRAMES;
             count = 2;
         }
-        // The detector: each side's own level, or the louder of the pair's.
+        const feral_input_params *qs[2];
+        for (int k = 0; k < count; ++k) {
+            done[ins[k]] = true;
+            qs[k] = next && ins[k] < next->inputs ? &next->inputParams[ins[k]] : &kNone;
+        }
         float detector[FERAL_MAX_FRAMES];
-        for (int n = 0; n < frames; ++n) detector[n] = std::fabs(ys[0][n]);
-        if (count == 2)
-            for (int n = 0; n < frames; ++n) detector[n] = std::max(detector[n], std::fabs(ys[1][n]));
+        auto detect = [&](float *const *xs) -> const float * {
+            if (count == 1) return nullptr;
+            for (int n = 0; n < frames; ++n) detector[n] = std::max(std::fabs(xs[0][n]), std::fabs(xs[1][n]));
+            return detector;
+        };
+        auto note = [&](std::atomic<float> &meter, float deepest) {
+            if (deepest >= 1) return;
+            const float db = -20.0f * std::log10(deepest);
+            if (db > meter.load(std::memory_order_relaxed)) meter.store(db, std::memory_order_relaxed);
+        };
+
+        // Multiband: split each side into bands, compress each band (a pair's bands hear the louder
+        // side's same band), apply the band gains and add the bands back up.
+        float deepestAll[2] = {1, 1};
+        bool multiband[2];
+        for (int k = 0; k < count; ++k) {
+            InputRuntime &r = core->inputRuntime[ins[k]];
+            multiband[k] = qs[k]->multiband != 0;
+            if (multiband[k] && !r.split) {
+                r.split = true;
+                std::copy(qs[k]->crossover, qs[k]->crossover + FERAL_CROSSOVER_SECTIONS, r.crossover);
+                std::fill(r.xz1, r.xz1 + FERAL_CROSSOVER_SECTIONS, 0.0f);
+                std::fill(r.xz2, r.xz2 + FERAL_CROSSOVER_SECTIONS, 0.0f);
+                std::fill(r.bandEnvelope, r.bandEnvelope + FERAL_COMP_BANDS, 0.0f);
+                for (int b = 0; b < FERAL_COMP_BANDS; ++b) r.bandGain[b] = qs[k]->bands[b].gain;
+            } else if (!multiband[k]) {
+                r.split = false;
+            }
+            if (!multiband[k]) continue;
+            float *y = ys[k];
+            float *band[FERAL_COMP_BANDS];
+            for (int b = 0; b < FERAL_COMP_BANDS; ++b)
+                band[b] = core->bandScratch.data() + static_cast<size_t>(k * FERAL_COMP_BANDS + b) * FERAL_MAX_FRAMES;
+            const feral_biquad *t = qs[k]->crossover;
+            // Low: low-pass twice and the upper crossover's all-pass.
+            std::copy(y, y + frames, band[0]);
+            runEQ(r.crossover, r.xz1, r.xz2, t, 3, band[0], frames);
+            // The rest: high-pass twice, then split again into mid and high.
+            std::copy(y, y + frames, band[1]);
+            runEQ(r.crossover + 3, r.xz1 + 3, r.xz2 + 3, t + 3, 2, band[1], frames);
+            std::copy(band[1], band[1] + frames, band[2]);
+            runEQ(r.crossover + 5, r.xz1 + 5, r.xz2 + 5, t + 5, 2, band[1], frames);
+            runEQ(r.crossover + 7, r.xz1 + 7, r.xz2 + 7, t + 7, 2, band[2], frames);
+        }
+        for (int b = 0; b < FERAL_COMP_BANDS; ++b) {
+            float *bs[2];
+            for (int k = 0; k < count; ++k)
+                bs[k] = core->bandScratch.data() + static_cast<size_t>(k * FERAL_COMP_BANDS + b) * FERAL_MAX_FRAMES;
+            const float *d = count == 2 && multiband[0] && multiband[1] ? detect(bs) : nullptr;
+            for (int k = 0; k < count; ++k) {
+                if (!multiband[k]) continue;
+                InputRuntime &r = core->inputRuntime[ins[k]];
+                const feral_comp_band &cb = qs[k]->bands[b];
+                float deepest = 1;
+                if (cb.threshold > 0 && cb.ratio > 1) {
+                    deepest = compress(bs[k], d, r.bandEnvelope[b], cb.threshold, cb.ratio, cb.attack, cb.release, frames);
+                } else {
+                    r.bandEnvelope[b] = 0;
+                }
+                rampGain(bs[k], r.bandGain[b], cb.gain, frames);
+                note(core->bandReduction[ins[k] * FERAL_COMP_BANDS + b], deepest);
+                deepestAll[k] = std::min(deepestAll[k], deepest);
+            }
+        }
+        for (int k = 0; k < count; ++k) {
+            if (!multiband[k]) continue;
+            float *y = ys[k];
+            const float *b0 = core->bandScratch.data() + static_cast<size_t>(k * FERAL_COMP_BANDS) * FERAL_MAX_FRAMES;
+            for (int n = 0; n < frames; ++n) y[n] = b0[n] + b0[n + FERAL_MAX_FRAMES] + b0[n + 2 * FERAL_MAX_FRAMES];
+        }
+
+        // Single band.
+        const float *d = count == 2 && !multiband[0] && !multiband[1] ? detect(ys) : nullptr;
         for (int k = 0; k < count; ++k) {
             const int i = ins[k];
-            done[i] = true;
-            const feral_input_params &q = next && i < next->inputs ? next->inputParams[i] : kNone;
+            const feral_input_params &q = *qs[k];
             InputRuntime &r = core->inputRuntime[i];
             float *y = ys[k];
-            const float *d = count == 2 ? detector : nullptr;
-            float deepest = 1;
-            if (q.comp_threshold > 0 && q.comp_ratio > 1) {
-                const float threshold = q.comp_threshold, slope = 1.0f / q.comp_ratio - 1.0f;
-                const float attack = q.comp_attack, release = q.comp_release;
-                float env = r.envelope;
-                for (int n = 0; n < frames; ++n) {
-                    const float level = d ? d[n] : std::fabs(y[n]);
-                    env = level > env ? attack * env + (1 - attack) * level : release * env + (1 - release) * level;
-                    if (env > threshold) {
-                        const float g = std::pow(env / threshold, slope);
-                        deepest = std::min(deepest, g);
-                        y[n] *= g;
-                    }
+            if (!multiband[k]) {
+                if (q.comp_threshold > 0 && q.comp_ratio > 1) {
+                    deepestAll[k] = compress(y, d, r.envelope, q.comp_threshold, q.comp_ratio, q.comp_attack,
+                                             q.comp_release, frames);
+                } else {
+                    r.envelope = 0;
                 }
-                r.envelope = flushTiny(env);
-            } else {
-                r.envelope = 0;
             }
-            // Makeup.
-            if (r.makeup != q.comp_makeup) {
-                const float g0 = r.makeup, step = (q.comp_makeup - g0) * inv;
-                for (int n = 0; n < frames; ++n) y[n] *= g0 + step * static_cast<float>(n + 1);
-                r.makeup = q.comp_makeup;
-            } else if (r.makeup != 1) {
-                for (int n = 0; n < frames; ++n) y[n] *= r.makeup;
-            }
-            if (deepest < 1) {
-                const float db = -20.0f * std::log10(deepest);
-                if (db > core->inputReduction[i].load(std::memory_order_relaxed))
-                    core->inputReduction[i].store(db, std::memory_order_relaxed);
-            }
+            rampGain(y, r.makeup, q.comp_makeup, frames);
+            note(core->inputReduction[i], deepestAll[k]);
         }
     }
 }
@@ -871,6 +1006,24 @@ void renderBlock(feral_core *core, const float *const *inputs, int num_inputs, f
     for (int in = 0; in < lines; ++in) core->rawInputs[in] = input(in);
     processInputs(core, next, core->rawInputs, lines, frames);
     auto source = [&](int in) -> const float * { return in < lines ? core->inputSources[in] : nullptr; };
+
+    // The analysis tap.
+    if (const int a = core->analysisInput.load(std::memory_order_relaxed); a >= 0) {
+        if (a != core->analysisLast) {
+            core->analysisLast = a;
+            core->analysisWritten.store(0, std::memory_order_release);
+        }
+        const float *pre = a < lines ? core->rawInputs[a] : nullptr, *post = source(a);
+        const uint64_t w = core->analysisWritten.load(std::memory_order_relaxed);
+        for (int n = 0; n < frames; ++n) {
+            const size_t i = static_cast<size_t>((w + static_cast<uint64_t>(n)) & (FERAL_ANALYSIS_FRAMES - 1));
+            core->analysisPre[i].store(pre ? pre[n] : 0.0f, std::memory_order_relaxed);
+            core->analysisPost[i].store(post ? post[n] : 0.0f, std::memory_order_relaxed);
+        }
+        core->analysisWritten.store(w + static_cast<uint64_t>(frames), std::memory_order_release);
+    } else {
+        core->analysisLast = -1;
+    }
     for (int in = 0; in < lines; ++in) core->inputLine(in).write(block, source(in), frames);
     core->inputLinesUsed = std::max(core->inputLinesUsed, lines);
 

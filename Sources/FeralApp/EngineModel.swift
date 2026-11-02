@@ -18,6 +18,10 @@ final class EngineModel: ObservableObject {
     private(set) var host = "127.0.0.1"
     /// Levels, 20 times a second. Kept apart so meters redraw without the rest of the window.
     let meters = MeterStore()
+    /// The spectrum of the source whose EQ or compressor is open.
+    let spectrum = SpectrumStore()
+    /// Open views wanting each input's spectrum (from 1), newest last.
+    private var spectrumWanted: [Int] = []
     /// The OSC and MIDI the engine hears, and test messages the app sends.
     let monitor = ControlMonitor()
     /// The engine's launchd agent on this Mac: start, stop, start at login.
@@ -52,6 +56,7 @@ final class EngineModel: ObservableObject {
                 self.client?.send(.watch(meters: true, activity: true))
                 self.client?.send(.listDevices)
                 self.client?.send(.getPatch)
+                if let input = self.spectrumWanted.last { self.client?.send(.analyse(input: input)) }
             } else {
                 self.state = nil; self.status = nil; self.mirror = MirroredShow()
                 self.meters.reset()
@@ -85,6 +90,8 @@ final class EngineModel: ObservableObject {
             if selectedDevice != selected { selectedDevice = selected }
         case .patch(let p):
             if patch != p { patch = p; meters.patch = p }
+        case .spectrum(let frame):
+            spectrum.update(frame)
         }
     }
 
@@ -103,6 +110,19 @@ final class EngineModel: ObservableObject {
     func setChannelCounts(inputs: Int?, outputs: Int?) { send(.setChannelCounts(inputs: inputs, outputs: outputs)) }
 
     func send(_ request: Request) { client?.send(request) }
+
+    /// A view showing input n's spectrum appeared: the engine analyses the newest one wanted.
+    func wantSpectrum(input n: Int) {
+        spectrumWanted.append(n)
+        send(.analyse(input: n))
+    }
+
+    /// That view went away.
+    func dropSpectrum(input n: Int) {
+        if let i = spectrumWanted.lastIndex(of: n) { spectrumWanted.remove(at: i) }
+        send(.analyse(input: spectrumWanted.last))
+        if spectrumWanted.isEmpty { spectrum.clear() }
+    }
     func apply(_ command: Command) { send(.apply(command: command)) }
 
     func update(_ source: UUID, _ values: SourceValues) {
@@ -263,6 +283,23 @@ final class EngineModel: ObservableObject {
         var starts: [UUID: Position] = [:]
         for id in state.linkedPartners(of: source) { if let s = state.source(id) { starts[id] = s.position } }
         return starts
+    }
+
+    /// Turns a dragged source and its linked partners round the listener by `turn` degrees of azimuth
+    /// and raises them by `raise` degrees of elevation, from where they started; distances stay.
+    func dragPolar(_ source: UUID, start: Position, turn: Double, raise: Double, partners: [UUID: Position]) {
+        guard let state else { return }
+        var starts = partners
+        starts[source] = start
+        let updates = starts.compactMap { id, p -> SourceUpdate? in
+            guard state.source(id) != nil else { return nil }
+            var v = state.polar(of: p)
+            guard v.distance > 0 else { return nil }
+            v.azimuth += turn
+            v.elevation = min(max(v.elevation + raise, -90), 90)
+            return SourceUpdate(id: id, values: SourceValues(position: state.point(v)))
+        }
+        if !updates.isEmpty { apply(.updateSources(updates: updates)) }
     }
 
     /// Moves a dragged source, and its linked partners by the same amount.

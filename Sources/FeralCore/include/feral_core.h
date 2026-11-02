@@ -101,6 +101,22 @@ feral_output_params feral_output_defaults(void);
 
 #define FERAL_INPUT_EQ_BANDS 6
 
+/// Bands of the multiband compressor, and the filter sections that split them: in order, the low
+/// band's low-pass twice (a Linkwitz-Riley crossover) and an all-pass at the upper crossover (so the
+/// bands add back up flat), the high-pass at the lower crossover twice, then the upper crossover's
+/// low-pass twice (mid band) and high-pass twice (high band).
+#define FERAL_COMP_BANDS 3
+#define FERAL_CROSSOVER_SECTIONS 9
+
+/// One band of the multiband compressor.
+typedef struct feral_comp_band {
+    float threshold; // linear; 0 leaves the band uncompressed
+    float ratio;     // >= 1
+    float attack;    // per-sample follower factors 0..1
+    float release;
+    float gain;      // linear, after the band's compressor
+} feral_comp_band;
+
 /// One input's processing before it reaches any tap or its delay line: EQ, then a compressor.
 typedef struct feral_input_params {
     /// The EQ bands; {1, 0, 0, 0, 0} passes through. Coefficient changes interpolate over one buffer.
@@ -112,8 +128,13 @@ typedef struct feral_input_params {
     /// The level follower's per-sample attack and release factors (0 to 1; nearer 1 is slower).
     float comp_attack;
     float comp_release;
-    /// Gain after the compressor, linear.
+    /// Gain after the compressor, linear (single or multiband).
     float comp_makeup;
+    /// Non-zero splits the input into FERAL_COMP_BANDS bands with `crossover` and compresses each
+    /// with its own `bands` entry; comp_threshold and comp_ratio are then not used.
+    int multiband;
+    feral_biquad crossover[FERAL_CROSSOVER_SECTIONS];
+    feral_comp_band bands[FERAL_COMP_BANDS];
     /// Another input (from 0) whose level also drives this compressor, so a stereo pair is compressed
     /// alike; -1 for none. Give the two inputs the same parameters and link them to each other.
     int link;
@@ -221,6 +242,23 @@ void feral_core_read_meters(feral_core *core, float *input_peak, float *input_rm
 /// Reads each input compressor's deepest gain reduction since the last read, in dB (0 or more;
 /// reading starts it again from 0). Any thread, one reader at a time.
 void feral_core_read_reduction(feral_core *core, float *reduction_db, int inputs);
+
+/// Samples the analysis tap keeps (a power of two).
+#define FERAL_ANALYSIS_FRAMES 8192
+
+/// Picks the input (from 0) whose samples the analysis tap keeps, before and after its EQ and
+/// compressor, for a spectrum display; -1 turns it off. Any thread.
+void feral_core_set_analysis_input(feral_core *core, int input);
+
+/// Copies the analysed input's newest `frames` samples (up to FERAL_ANALYSIS_FRAMES) before (pre)
+/// and after (post) its processing, oldest first. Returns how many samples the tap has taken since
+/// the input was picked; when that is fewer than `frames`, the start of each buffer is zeros. One
+/// reader at a time.
+uint64_t feral_core_read_analysis(feral_core *core, float *pre, float *post, int frames);
+
+/// The same per multiband band: reduction_db holds FERAL_COMP_BANDS values per input, input by
+/// input (0 for an input that is not multiband).
+void feral_core_read_band_reduction(feral_core *core, float *reduction_db, int inputs);
 
 /// Reads the counters. When reset_max_load is non-zero, max_load starts again from 0.
 void feral_core_get_stats(feral_core *core, feral_core_stats *stats, int reset_max_load);

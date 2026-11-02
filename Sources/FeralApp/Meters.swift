@@ -35,6 +35,8 @@ final class MeterStore: ObservableObject {
     @Published private(set) var live = false
     /// Each input compressor's gain reduction in dB, held a moment and falling back like a peak.
     @Published private(set) var reductions: [Float] = []
+    /// The same per multiband band (low, mid, high).
+    @Published private(set) var bandReductions: [[Float]] = []
 
     func update(_ frame: MeterFrame) {
         let now = Date()
@@ -50,6 +52,16 @@ final class MeterStore: ObservableObject {
         } else if !reductions.isEmpty {
             reductions = []
         }
+        if let r = frame.inputBandReduction {
+            bandReductions = r.enumerated().map { i, bands in
+                bands.enumerated().map { b, db in
+                    let old = bandReductions.indices.contains(i) && bandReductions[i].indices.contains(b) ? bandReductions[i][b] : 0
+                    return max(db, old - Self.fallPerFrame)
+                }
+            }
+        } else if !bandReductions.isEmpty {
+            bandReductions = []
+        }
         if !live { live = true }
     }
 
@@ -58,6 +70,7 @@ final class MeterStore: ObservableObject {
         outputs = []
         load = 0
         reductions = []
+        bandReductions = []
         live = false
     }
 
@@ -87,6 +100,12 @@ final class MeterStore: ObservableObject {
     func reduction(input n: Int) -> Float? {
         guard live else { return nil }
         return reductions.indices.contains(n - 1) ? reductions[n - 1] : 0
+    }
+
+    /// Engine input n's multiband gain reduction per band in dB; none while no meters arrive.
+    func bandReduction(input n: Int) -> [Float]? {
+        guard live else { return nil }
+        return bandReductions.indices.contains(n - 1) ? bandReductions[n - 1] : [0, 0, 0]
     }
 
     /// Engine input n (from 1), if the engine has it.

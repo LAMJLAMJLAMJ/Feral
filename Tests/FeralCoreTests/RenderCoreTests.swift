@@ -68,6 +68,63 @@ final class RenderCoreTests: XCTestCase {
         XCTAssertEqual(r[1], 10.48, accuracy: 0.05)
     }
 
+    func testMultibandSumsFlatAndCompressesOneBand() throws {
+        func run(_ comp: Compressor, hz: Double) throws -> Float {
+            let core = RenderCore(sampleRate: 48_000)
+            let state = RenderState(inputs: 1, outputs: 1)
+            state.addGain(input: 0, output: 0, gain: 1)
+            state.setInput(0, InputParams(eq: nil, compressor: comp, link: nil, sampleRate: 48_000))
+            try core.publish(state)
+            var phase = 0.0, peak: Float = 0
+            let out = TestBuffers(channels: 1, frames: 256)
+            for k in 0..<400 {
+                render(core.pointer, TestBuffers(channels: 1, frames: 256) { _, _ in
+                    phase += 2 * Double.pi * hz / 48_000
+                    return Float(0.5 * sin(phase))
+                }, out)
+                if k > 300 { peak = max(peak, out[0].map(abs).max() ?? 0) }
+            }
+            return peak
+        }
+        // No band compresses (ratio 1): the bands add back up to the input's level.
+        let flat = Compressor(on: true, multiband: true, bands: Array(repeating: CompressorBand(ratio: 1), count: 3))
+        for hz in [51.0, 199.0, 1001.0, 3001.0, 9001.0] {
+            XCTAssertEqual(try run(flat, hz: hz), 0.5, accuracy: 0.01, "\(hz) Hz")
+        }
+        // Only the high band compresses: a low tone passes, a high one comes down.
+        var high = flat
+        high.bands[2] = CompressorBand(thresholdDB: -20, ratio: 10, attackMS: 1, releaseMS: 500)
+        XCTAssertEqual(try run(high, hz: 101), 0.5, accuracy: 0.01)
+        XCTAssertLessThan(try run(high, hz: 10_001), 0.2)
+    }
+
+    func testAnalysisTapKeepsBeforeAndAfter() throws {
+        let core = RenderCore(sampleRate: 48_000)
+        let state = RenderState(inputs: 2, outputs: 1)
+        state.addGain(input: 1, output: 0, gain: 1)
+        var comp = Compressor(on: true, ratio: 1.01)
+        comp.makeupDB = 6.0206
+        state.setInput(1, InputParams(eq: nil, compressor: comp, link: nil, sampleRate: 48_000))
+        try core.publish(state)
+        core.setAnalysisInput(1)
+        render(core.pointer, TestBuffers(channels: 2, frames: frames) { c, _ in c == 1 ? 0.01 : 0.3 }, TestBuffers(channels: 1, frames: frames))
+        let a = core.readAnalysis(frames: 128)
+        XCTAssertEqual(a.written, UInt64(frames))
+        XCTAssertEqual(a.pre[0], 0, "padded before the first sample")
+        XCTAssertEqual(a.pre[127], 0.01, accuracy: 1e-6)
+        XCTAssertEqual(a.post[127], 0.02, accuracy: 1e-4, "after the makeup gain")
+        core.setAnalysisInput(nil)
+    }
+
+    func testSpectrumReadsASineAtItsLevel() {
+        let samples = (0..<Spectrum.fftSize).map { Float(0.5 * sin(2 * Double.pi * 1000 * Double($0) / 48_000)) }
+        let s = Spectrum.analyse(samples, sampleRate: 48_000)
+        XCTAssertEqual(s.count, Spectrum.points)
+        let i = (0..<Spectrum.points).min { abs(Spectrum.frequency($0) - 1000) < abs(Spectrum.frequency($1) - 1000) }!
+        XCTAssertEqual(s[i], -6.02, accuracy: 1.5)
+        XCTAssertLessThan(s[0], -60, "nothing at 20 Hz")
+    }
+
     func testInputEQ() throws {
         let core = RenderCore(sampleRate: 48_000)
         let state = RenderState(inputs: 1, outputs: 1)

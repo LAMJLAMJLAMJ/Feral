@@ -44,6 +44,23 @@ public enum Request: Codable, Equatable {
     /// Sets how many inputs and outputs Feral has (engine.json's inputs and outputs, up to 256);
     /// either may be left out to keep it. The audio reopens (a short gap).
     case setChannelCounts(inputs: Int?, outputs: Int?)
+    /// Asks for the spectrum of an engine input (from 1) before and after its EQ and compressor
+    /// (`spectrum` events, 20 a second), or none to stop. The engine analyses one input at a time: the
+    /// newest request wins.
+    case analyse(input: Int?)
+}
+
+/// One input's spectrum before and after its EQ and compressor: dB per point, the points spaced
+/// evenly on a log scale from FeralScene's Spectrum.lowHz to highHz.
+public struct SpectrumFrame: Codable, Equatable {
+    /// The engine input, from 1.
+    public var input: Int
+    public var pre: [Float]
+    public var post: [Float]
+
+    public init(input: Int, pre: [Float], post: [Float]) {
+        self.input = input; self.pre = pre; self.post = post
+    }
 }
 
 /// The patch between the sound card and the engine, for the app's Patch window.
@@ -196,12 +213,16 @@ public struct MeterFrame: Codable, Equatable {
     /// Each input compressor's deepest gain reduction since the last frame, in dB (0 or more, to a
     /// tenth); none from engines before compressors.
     public var inputReduction: [Float]?
+    /// The same per multiband band (low, mid, high) per input.
+    public var inputBandReduction: [[Float]]?
 
     public init(inputPeak: [Float], inputRMS: [Float], outputPeak: [Float], outputRMS: [Float],
-                firstInputChannel: Int = 1, firstOutputChannel: Int = 1, load: Float = 0, inputReduction: [Float]? = nil) {
+                firstInputChannel: Int = 1, firstOutputChannel: Int = 1, load: Float = 0, inputReduction: [Float]? = nil,
+                inputBandReduction: [[Float]]? = nil) {
         self.inputPeak = inputPeak; self.inputRMS = inputRMS; self.outputPeak = outputPeak; self.outputRMS = outputRMS
         self.firstInputChannel = firstInputChannel; self.firstOutputChannel = firstOutputChannel; self.load = load
         self.inputReduction = inputReduction
+        self.inputBandReduction = inputBandReduction
     }
 
     /// A linear level as the frame carries it: dBFS to 0.1 dB, at least `silence`.
@@ -251,6 +272,8 @@ public enum Event: Codable, Equatable {
     /// The patch between the sound card and the engine: to the client that asked, and to everyone
     /// when it changes.
     case patch(patch: PatchInfo)
+    /// The spectrum a client asked for (`analyse`).
+    case spectrum(frame: SpectrumFrame)
 }
 
 /// Newline-framed JSON.
@@ -312,7 +335,7 @@ public struct MirroredShow {
             seq = n
         case .status(let s):
             status = s
-        case .error, .meters, .activity, .devices, .patch:
+        case .error, .meters, .activity, .devices, .patch, .spectrum:
             break
         }
         return true

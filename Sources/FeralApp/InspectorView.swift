@@ -254,7 +254,7 @@ struct SourceInspector: View {
                 }
             }
             Section {
-                EQControls(eq: source.eq ?? .flat) { model.update(source.id, SourceValues(eq: $0)) }
+                LiveEQControls(model: model, spectrum: model.spectrum, source: source)
             } header: {
                 Text("EQ")
             } footer: {
@@ -263,7 +263,7 @@ struct SourceInspector: View {
                 }
             }
             Section("Compressor") {
-                LiveCompressorControls(model: model, meters: meters, source: source)
+                LiveCompressorControls(model: model, meters: meters, spectrum: model.spectrum, source: source)
             }
             Section("Sends") {
                 ForEach(state.show.groups) { g in

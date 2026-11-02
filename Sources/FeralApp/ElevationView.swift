@@ -19,6 +19,8 @@ struct ElevationView: View {
     /// Locked: dragging changes only the height. Unlocked: it also moves across (left/right from the
     /// front, stage/audience from the side).
     @AppStorage("elevationLockAcross") private var lockAcross = true
+    /// Dragging a source only changes its elevation seen from the listener: its distance and azimuth stay.
+    @AppStorage("elevationLock") private var elevationLock = false
     @State private var resizeStart: Double?
 
     private struct Drag {
@@ -27,6 +29,8 @@ struct ElevationView: View {
         /// Where the source started, and where its linked group partners started.
         var start: Position
         var partners: [UUID: Position] = [:]
+        /// With the elevation lock: degrees raised since the drag started.
+        var raise: Double?
     }
     @State private var drag: Drag?
     @State private var frozen: Frame?
@@ -82,6 +86,16 @@ struct ElevationView: View {
                     .buttonStyle(.plain)
                     .help("Hide the height view (⇧⌘E)")
                     Spacer()
+                    Toggle(isOn: $elevationLock) {
+                        HStack(spacing: 2) {
+                            Image(systemName: elevationLock ? "lock.fill" : "lock.open")
+                            Text("Elevation").font(.caption)
+                        }
+                    }
+                    .toggleStyle(.button)
+                    .buttonStyle(.borderless)
+                    .help(elevationLock ? "Elevation lock on: dragging a source up or down changes only its elevation from the listener, keeping its distance and azimuth"
+                          : "Elevation lock off: drag sources by height")
                     Button { lockAcross.toggle() } label: {
                         Image(systemName: lockAcross ? "lock.fill" : "lock.open")
                             .foregroundStyle(lockAcross ? Color.secondary : Color.accentColor)
@@ -178,9 +192,11 @@ struct ElevationView: View {
     private var hint: String {
         if let drag {
             let p = drag.position
+            if drag.raise != nil { return String(format: "elevation %.1f°", state.polar(of: p).elevation) }
             if lockAcross { return String(format: "height %.1f m", p.z) }
             return String(format: "%@ %.1f m, height %.1f m", side ? "y" : "x", across(p), p.z)
         }
+        if elevationLock { return "Drag a source up or down to set its elevation" }
         return lockAcross ? "Drag a source up or down to set its height"
             : "Drag a source to move it " + (side ? "front to back" : "left and right") + " and up or down"
     }
@@ -300,6 +316,22 @@ struct ElevationView: View {
             frozen = f
         }
         guard var d = drag else { return }
+        if elevationLock, case .source = d.target {
+            // Only the elevation changes: the source swings up or down round the listener, keeping
+            // its distance, so its height follows the mouse. Half degree steps.
+            let from = state.polar(of: d.start)
+            guard from.distance > 0 else { return }
+            let lz = state.system.listener.position.z
+            let sine = min(max((f.z(at: g.location.y) - lz) / from.distance, -1), 1)
+            let raise = ((asin(sine) * 180 / .pi - from.elevation) * 2).rounded() / 2
+            d.raise = raise
+            var p = from
+            p.elevation = min(max(p.elevation + raise, -90), 90)
+            d.position = state.point(p)
+            drag = d
+            if Date().timeIntervalSince(lastSent) >= 1.0 / 60 { send(d) }
+            return
+        }
         // Only the height changes; snap to 10 cm, from 2 m below the floor to 50 m up.
         let z = min(max((f.z(at: g.location.y) * 10).rounded() / 10, -2), 50)
         var x = d.position.x, y = d.position.y
@@ -326,7 +358,11 @@ struct ElevationView: View {
         lastSent = Date()
         switch d.target {
         case .source(let id):
-            model.drag(id, from: d.start, to: d.position, partners: d.partners)
+            if let raise = d.raise {
+                model.dragPolar(id, start: d.start, turn: 0, raise: raise, partners: d.partners)
+            } else {
+                model.drag(id, from: d.start, to: d.position, partners: d.partners)
+            }
         case .speaker(let id):
             guard var s = state.speaker(id) else { return }
             s.position = d.position
