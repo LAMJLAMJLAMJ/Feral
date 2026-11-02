@@ -76,6 +76,23 @@ final class ShowTests: XCTestCase {
         XCTAssertEqual(Position(Polar(azimuth: 0, elevation: 90, distance: 2)).z, 2, accuracy: 1e-9)
     }
 
+    func testListenerIsTheDefaultVBAPReference() throws {
+        var state = ShowState(show: Show(name: "V"), system: SystemLayer(speakers: [
+            Speaker(number: 1, output: 1, position: Position(-4, 0, 5)), Speaker(number: 2, output: 2, position: Position(4, 4, 5)),
+        ]))
+        XCTAssertEqual(state.system.listener.position, Position(0, 2, 1.2), "no listener saved: the speakers' centre at ear height")
+        let ring = SpeakerGroup(number: 1, name: "Ring", renderer: .vbap, speakers: state.system.speakers.map(\.id))
+        try state.apply(.setGroup(group: ring))
+        XCTAssertEqual(state.engineConfig(base: EngineConfig()).groups[0].reference, Position(0, 2, 1.2))
+        let change = try state.apply(.setListener(listener: Listener(position: Position(1, 3, 1.5))))
+        XCTAssertEqual(change, .layout(crossfade: true), "moving the listener moves the VBAP panning")
+        XCTAssertEqual(state.engineConfig(base: EngineConfig()).groups[0].reference, Position(1, 3, 1.5))
+        var own = ring
+        own.reference = Position(0, 0, 3)
+        try state.apply(.setGroup(group: own))
+        XCTAssertEqual(state.engineConfig(base: EngineConfig()).groups[0].reference, Position(0, 0, 3), "a group's own reference wins")
+    }
+
     func testAnglesAreFromTheListener() throws {
         var state = ShowState(show: Show(name: "L"))
         // The listener 10 m out at ear height, facing back towards the stage at y = 0.
@@ -96,6 +113,7 @@ final class ShowTests: XCTestCase {
 
     func testMovingAGroupKeepsItsShape() throws {
         var state = ShowState(show: Show(name: "G"))
+        try state.apply(.setListener(listener: Listener(position: Position(0, 0, 0))))
         let a = Source(number: 1, input: 1, position: Position(-1, 10, 0))
         let b = Source(number: 2, input: 2, position: Position(1, 10, 0))
         try state.apply(.setSource(source: a))

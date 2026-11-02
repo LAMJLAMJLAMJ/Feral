@@ -435,15 +435,23 @@ public struct Listener: Codable, Equatable {
     /// The direction azimuth 0 points, in degrees from +y, positive to the left (towards -x).
     public var facing: Double
 
-    public init(position: Position = Position(0, 0, 0), facing: Double = 0) {
+    public init(position: Position = Position(0, 0, 1.2), facing: Double = 0) {
         self.position = position; self.facing = facing
+    }
+
+    /// At the speakers' centre in plan, at ear height (1.2 m).
+    public static func centre(of speakers: [Speaker]) -> Listener {
+        guard !speakers.isEmpty else { return Listener() }
+        let n = Double(speakers.count)
+        let x = speakers.map(\.position.x).reduce(0, +) / n, y = speakers.map(\.position.y).reduce(0, +) / n
+        return Listener(position: Position((x * 100).rounded() / 100, (y * 100).rounded() / 100, 1.2))
     }
 
     enum CodingKeys: String, CodingKey { case position, facing }
 
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
-        position = try c.decodeIfPresent(Position.self, forKey: .position) ?? Position(0, 0, 0)
+        position = try c.decodeIfPresent(Position.self, forKey: .position) ?? Position(0, 0, 1.2)
         facing = try c.decodeIfPresent(Double.self, forKey: .facing) ?? 0
     }
 }
@@ -458,9 +466,12 @@ public struct SystemLayer: Codable, Equatable {
     /// speakers' coordinates.
     public var listener: Listener
 
-    public init(speakers: [Speaker] = [], lfeSpeakers: [UUID] = [], listener: Listener = Listener()) {
+    /// No listener: one at the speakers' centre in plan, at ear height (where VBAP panned from before
+    /// there was a listener).
+    public init(speakers: [Speaker] = [], lfeSpeakers: [UUID] = [], listener: Listener? = nil) {
         schema = showSchema
-        self.speakers = speakers; self.lfeSpeakers = lfeSpeakers; self.listener = listener
+        self.speakers = speakers; self.lfeSpeakers = lfeSpeakers
+        self.listener = listener ?? Listener.centre(of: speakers)
     }
 
     enum CodingKeys: String, CodingKey { case schema, speakers, lfeSpeakers, listener }
@@ -473,7 +484,7 @@ public struct SystemLayer: Codable, Equatable {
         }
         speakers = try c.decodeIfPresent([Speaker].self, forKey: .speakers) ?? []
         lfeSpeakers = try c.decodeIfPresent([UUID].self, forKey: .lfeSpeakers) ?? []
-        listener = try c.decodeIfPresent(Listener.self, forKey: .listener) ?? Listener()
+        listener = try c.decodeIfPresent(Listener.self, forKey: .listener) ?? Listener.centre(of: speakers)
         schema = showSchema
     }
 }

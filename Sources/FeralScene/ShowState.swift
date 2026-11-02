@@ -172,7 +172,8 @@ public struct ShowState: Equatable {
             guard p.x.isFinite, p.y.isFinite, p.z.isFinite, abs(p.x) < 10_000, abs(p.y) < 10_000, abs(p.z) < 10_000,
                   l.facing.isFinite else { throw ConfigError("the listener must be finite and within 10 km") }
             system.listener = Listener(position: p, facing: Self.wrap(l.facing))
-            return .none
+            // VBAP groups without a reference of their own pan around the listener.
+            return show.groups.contains { $0.renderer == .vbap && $0.reference == nil } ? .layout(crossfade: true) : .none
 
         case .removeSourceGroup(let id):
             guard let i = show.sourceGroups.firstIndex(where: { $0.id == id }) else { throw ConfigError("no source group has id \(id)") }
@@ -378,7 +379,8 @@ public struct ShowState: Equatable {
                                speakers: g.speakers.compactMap { outputOf[$0] }.map(String.init).joined(separator: ", "),
                                gainDB: g.gainDB, weightsDB: weights, precedenceMS: g.precedenceMS, rolloff: g.rolloff,
                                referenceDistance: g.referenceDistance, distanceOffset: g.distanceOffset,
-                               reference: g.reference, dimensions: g.dimensions, blur: g.blur, rolloffDB: g.rolloffDB)
+                               reference: g.reference ?? (g.renderer == .vbap ? system.listener.position : nil),
+                               dimensions: g.dimensions, blur: g.blur, rolloffDB: g.rolloffDB)
         }
         c.sources = show.sources.map(sourceConfig)
         let lfe = system.lfeSpeakers.compactMap { outputOf[$0] }
