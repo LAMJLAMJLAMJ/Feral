@@ -166,8 +166,9 @@ struct MeterReadout: View {
     }
 }
 
-/// The meter bridge under the plan: every engine input and output, labelled with the source or speaker
-/// on it and the device channel. Click a meter to select its source or speaker.
+/// The meter bridge under the plan: every engine output a speaker uses (or all of them), labelled with
+/// the speaker and the device channel. Click a meter to select its speaker. Input levels are next to
+/// the sources (sidebar, plan, inspector).
 struct MeterBridge: View {
     @ObservedObject var meters: MeterStore
     let state: ShowState
@@ -177,9 +178,9 @@ struct MeterBridge: View {
     var body: some View {
         VStack(spacing: 0) {
             HStack(spacing: 12) {
-                Text("METERS").font(.caption2.bold()).foregroundStyle(.secondary)
+                Text("OUTPUT METERS").font(.caption2.bold()).foregroundStyle(.secondary)
                 Toggle("All channels", isOn: $allChannels).toggleStyle(.checkbox).font(.caption)
-                    .help("Show every engine input and output, not only the ones the show uses")
+                    .help("Show every engine output, not only the ones speakers use")
                 Spacer()
                 if meters.anyClipped {
                     Button("Clear clips") { meters.clearClips() }.font(.caption).buttonStyle(.borderless).foregroundStyle(.red)
@@ -192,8 +193,6 @@ struct MeterBridge: View {
             .padding(.vertical, 4)
             ScrollView(.horizontal) {
                 HStack(alignment: .top, spacing: 2) {
-                    section("IN", inputStrips)
-                    Divider().padding(.horizontal, 6)
                     section("OUT", outputStrips)
                 }
                 .padding(.horizontal, 10)
@@ -211,20 +210,6 @@ struct MeterBridge: View {
         let color: Color
         let channel: MeterStore.Channel?
         let target: Selection?
-    }
-
-    private var inputStrips: [Strip] {
-        let count = meters.inputs.count
-        guard count > 0 else { return [] }
-        var bySource: [Int: Source] = [:]
-        for s in state.show.sources where bySource[s.input] == nil { bySource[s.input] = s }
-        return (1...count).compactMap { n in
-            let s = bySource[n]
-            guard allChannels || s != nil else { return nil }
-            return Strip(id: "in\(n)", number: n, name: s.map { $0.name ?? "src \($0.number)" } ?? "",
-                         device: meters.firstInputChannel + n - 1, color: s?.color ?? .secondary,
-                         channel: meters.input(n), target: s.map { .source($0.id) })
-        }
     }
 
     private var outputStrips: [Strip] {
