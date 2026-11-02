@@ -96,8 +96,8 @@ final class ShowTests: XCTestCase {
     func testStereoSpacing() throws {
         var state = ShowState(show: Show(name: "S"))
         try state.apply(.setListener(listener: Listener(position: Position(0, 0, 0))))
-        let l = Source(number: 1, input: 1, position: Position(Polar(azimuth: 20, elevation: 0, distance: 5)))
-        let r = Source(number: 2, input: 2, position: Position(Polar(azimuth: 0, elevation: 0, distance: 5)))
+        let l = Source(number: 1, input: 1, position: state.point(Polar(azimuth: 20, elevation: 0, distance: 5)))
+        let r = Source(number: 2, input: 2, position: state.point(Polar(azimuth: 0, elevation: 0, distance: 5)))
         try state.apply(.setSource(source: l))
         try state.apply(.setSource(source: r))
         let g = SourceGroup(number: 1, name: "St", sources: [l.id, r.id], stereo: true)
@@ -167,6 +167,13 @@ final class ShowTests: XCTestCase {
         XCTAssertThrowsError(try c.check("t"), "the upper crossover must be an octave above the lower")
     }
 
+    func testANewListenerFacesTheStage() throws {
+        let state = ShowState(show: Show(name: "L"))
+        XCTAssertEqual(state.system.listener.facing, 180)
+        // Positive azimuth (left) is to the left on the plan: towards -x.
+        XCTAssertLessThan(state.point(Polar(azimuth: 15, elevation: 0, distance: 5)).x, state.system.listener.position.x)
+    }
+
     func testAnglesAreFromTheListener() throws {
         var state = ShowState(show: Show(name: "L"))
         // The listener 10 m out at ear height, facing back towards the stage at y = 0.
@@ -175,10 +182,11 @@ final class ShowTests: XCTestCase {
         XCTAssertEqual(ahead.azimuth, 0, accuracy: 1e-9, "the stage is straight ahead")
         XCTAssertEqual(ahead.distance, 10, accuracy: 1e-9)
         XCTAssertEqual(ahead.elevation, 0, accuracy: 1e-9)
-        // Stage left of the listener facing -y is +x.
-        XCTAssertEqual(state.polar(of: Position(5, 10, 1.5)).azimuth, 90, accuracy: 1e-9)
+        // Facing the stage (up the plan), the listener's left is -x, to the left on the plan.
+        XCTAssertEqual(state.polar(of: Position(-5, 10, 1.5)).azimuth, 90, accuracy: 1e-9)
+        XCTAssertEqual(state.polar(of: Position(5, 10, 1.5)).azimuth, -90, accuracy: 1e-9)
         let p = state.point(Polar(azimuth: 90, elevation: 0, distance: 5))
-        XCTAssertEqual(p.x, 5, accuracy: 0.001)
+        XCTAssertEqual(p.x, -5, accuracy: 0.001)
         XCTAssertEqual(p.y, 10, accuracy: 0.001)
         XCTAssertEqual(p.z, 1.5, accuracy: 0.001)
         let json = try JSONEncoder().encode(state.system)

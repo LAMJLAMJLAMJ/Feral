@@ -448,10 +448,11 @@ public struct Show: Codable, Equatable {
 /// azimuth, elevation and distance are measured from it; azimuth 0 is the way it faces.
 public struct Listener: Codable, Equatable {
     public var position: Position
-    /// The direction azimuth 0 points, in degrees from +y, positive to the left (towards -x).
+    /// The direction azimuth 0 points, in degrees from +y (down the plan, towards the audience),
+    /// positive towards -x; 180 faces the stage, the default.
     public var facing: Double
 
-    public init(position: Position = Position(0, 0, 1.2), facing: Double = 0) {
+    public init(position: Position = Position(0, 0, 1.2), facing: Double = 180) {
         self.position = position; self.facing = facing
     }
 
@@ -468,7 +469,7 @@ public struct Listener: Codable, Equatable {
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         position = try c.decodeIfPresent(Position.self, forKey: .position) ?? Position(0, 0, 1.2)
-        facing = try c.decodeIfPresent(Double.self, forKey: .facing) ?? 0
+        facing = try c.decodeIfPresent(Double.self, forKey: .facing) ?? 180
     }
 }
 

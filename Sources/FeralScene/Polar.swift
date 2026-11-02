@@ -3,7 +3,9 @@ import Foundation
 /// Positions as azimuth, elevation and distance, with the same convention as ADM-OSC: azimuth 0 is
 /// straight ahead, positive to the left, from -180 to 180; elevation 0 is level, 90 straight up;
 /// distance in metres. Position.polar is from the venue's origin facing +y; ShowState.polar(of:) is
-/// from the show's listener, facing its way.
+/// from the show's listener, facing its way, with left and right as the plan shows them (the plan
+/// draws x to the right and y down the screen, so seen from above, a listener's left is
+/// anticlockwise from where it faces on the plan).
 public struct Polar: Equatable {
     public var azimuth: Double
     public var elevation: Double
@@ -36,13 +38,13 @@ extension Listener {
     /// A position as seen from the listener.
     public func polar(of p: Position) -> Polar {
         var v = Position(p.x - position.x, p.y - position.y, p.z - position.z).polar
-        if v.distance > 0 { v.azimuth = ShowState.wrap(v.azimuth - facing) }
+        if v.distance > 0 { v.azimuth = ShowState.wrap(facing - v.azimuth) }
         return v
     }
 
     /// The position at a direction and distance from the listener.
     public func point(_ v: Polar) -> Position {
-        let d = Position(Polar(azimuth: v.azimuth + facing, elevation: v.elevation, distance: v.distance))
+        let d = Position(Polar(azimuth: facing - v.azimuth, elevation: v.elevation, distance: v.distance))
         return Position(position.x + d.x, position.y + d.y, position.z + d.z).tidy
     }
 }
