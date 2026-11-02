@@ -71,6 +71,53 @@ struct LiveMeter: View {
     }
 }
 
+/// A slider for a value the engine owns. While it is dragged it follows the mouse from its own copy
+/// of the value (sending changes to the engine up to 30 times a second), instead of waiting for each
+/// change to come back from the engine, which made it stick. When it is let go it sends the final
+/// value and shows the engine's again.
+struct LevelSlider: View {
+    let value: Double
+    let range: ClosedRange<Double>
+    let step: Double
+    let unit: String
+    let set: (Double) -> Void
+    @State private var dragged: Double?
+    @State private var dragging = false
+    @State private var lastSent = Date.distantPast
+
+    var body: some View {
+        let shown = dragged ?? value
+        HStack {
+            Slider(value: Binding(get: { shown }, set: { change($0) }), in: range, onEditingChanged: { active in
+                dragging = active
+                if !active {
+                    if let d = dragged { set(d) }
+                    dragged = nil
+                }
+            })
+            Text(label(shown)).monospacedDigit().frame(width: 58, alignment: .trailing)
+        }
+    }
+
+    private func change(_ raw: Double) {
+        let v = min(max((raw / step).rounded() * step, range.lowerBound), range.upperBound)
+        guard dragging else {
+            // A click or a key: no drag to follow, send it now.
+            set(v)
+            return
+        }
+        dragged = v
+        if Date().timeIntervalSince(lastSent) >= 1.0 / 30 {
+            lastSent = Date()
+            set(v)
+        }
+    }
+
+    private func label(_ v: Double) -> String {
+        unit == "°" ? "\(Int(v.rounded()))°" : String(format: step < 1 ? "%.1f %@" : "%.0f %@", v, unit)
+    }
+}
+
 /// A number field that sends its value when edited.
 struct NumberField: View {
     let title: String
@@ -123,18 +170,14 @@ struct SourceInspector: View {
             }
             Section("Level") {
                 LabeledContent("Gain") {
-                    HStack {
-                        Slider(value: Binding(get: { source.gainDB }, set: { model.update(source.id, SourceValues(gainDB: ($0 * 2).rounded() / 2)) }),
-                               in: -40...10)
-                        Text("\(source.gainDB.short) dB").monospacedDigit().frame(width: 52, alignment: .trailing)
+                    LevelSlider(value: source.gainDB, range: -40...10, step: 0.5, unit: "dB") {
+                        model.update(source.id, SourceValues(gainDB: $0))
                     }
                 }
                 Toggle("Mute", isOn: Binding(get: { source.mute }, set: { model.update(source.id, SourceValues(mute: $0)) }))
                 LabeledContent("Width (VBAP)") {
-                    HStack {
-                        Slider(value: Binding(get: { source.width }, set: { model.update(source.id, SourceValues(width: $0.rounded())) }),
-                               in: 0...180)
-                        Text("\(Int(source.width))°").monospacedDigit().frame(width: 52, alignment: .trailing)
+                    LevelSlider(value: source.width, range: 0...180, step: 1, unit: "°") {
+                        model.update(source.id, SourceValues(width: $0))
                     }
                 }
             }
@@ -155,9 +198,8 @@ struct SourceInspector: View {
                                                      set: { model.update(source.id, $0 ? SourceValues(lfeDB: -10) : SourceValues(lfeOff: true)) }))
                     if let lfe = source.lfeDB {
                         LabeledContent("LFE") {
-                            HStack {
-                                Slider(value: Binding(get: { lfe }, set: { model.update(source.id, SourceValues(lfeDB: $0.rounded())) }), in: -40...10)
-                                Text("\(lfe.short) dB").monospacedDigit().frame(width: 52, alignment: .trailing)
+                            LevelSlider(value: lfe, range: -40...10, step: 1, unit: "dB") {
+                                model.update(source.id, SourceValues(lfeDB: $0))
                             }
                         }
                     }
@@ -186,10 +228,8 @@ struct SendRow: View {
             Toggle("\(group.name) (\(group.renderer.rawValue))", isOn: Binding(
                 get: { send != nil }, set: { change($0 ? GroupSend(group: group.id) : nil) }))
             if let send {
-                HStack {
-                    Slider(value: Binding(get: { send.gainDB },
-                                          set: { change(GroupSend(group: group.id, gainDB: ($0 * 2).rounded() / 2)) }), in: -40...10)
-                    Text("\(send.gainDB.short) dB").monospacedDigit().frame(width: 52, alignment: .trailing)
+                LevelSlider(value: send.gainDB, range: -40...10, step: 0.5, unit: "dB") {
+                    change(GroupSend(group: group.id, gainDB: $0))
                 }
             }
         }
