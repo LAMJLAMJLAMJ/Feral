@@ -80,14 +80,19 @@ public struct Source: Codable, Equatable, Identifiable {
     public var sends: [GroupSend]
     /// Send to the LFE speakers in dB; none sends nothing.
     public var lfeDB: Double?
+    /// The channel EQ and compressor, before anything else (off when none).
+    public var eq: SourceEQ?
+    public var compressor: Compressor?
 
     public init(id: UUID = UUID(), number: Int, name: String? = nil, input: Int, position: Position, gainDB: Double = 0,
-                mute: Bool = false, width: Double = 0, colour: String? = nil, sends: [GroupSend] = [], lfeDB: Double? = nil) {
+                mute: Bool = false, width: Double = 0, colour: String? = nil, sends: [GroupSend] = [], lfeDB: Double? = nil,
+                eq: SourceEQ? = nil, compressor: Compressor? = nil) {
         self.id = id; self.number = number; self.name = name; self.input = input; self.position = position
         self.gainDB = gainDB; self.mute = mute; self.width = width; self.colour = colour; self.sends = sends; self.lfeDB = lfeDB
+        self.eq = eq; self.compressor = compressor
     }
 
-    enum CodingKeys: String, CodingKey { case id, number, name, input, position, gainDB, mute, width, colour, sends, lfeDB }
+    enum CodingKeys: String, CodingKey { case id, number, name, input, position, gainDB, mute, width, colour, sends, lfeDB, eq, compressor }
 
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -102,6 +107,8 @@ public struct Source: Codable, Equatable, Identifiable {
         colour = try c.decodeIfPresent(String.self, forKey: .colour)
         sends = try c.decodeIfPresent([GroupSend].self, forKey: .sends) ?? []
         lfeDB = try c.decodeIfPresent(Double.self, forKey: .lfeDB)
+        eq = try c.decodeIfPresent(SourceEQ.self, forKey: .eq)
+        compressor = try c.decodeIfPresent(Compressor.self, forKey: .compressor)
     }
 
     /// "12 Vox" or "12".
@@ -254,11 +261,15 @@ public struct SourceValues: Codable, Equatable {
     public var lfeDB: Double?
     /// True turns the LFE send off (lfeDB is then ignored).
     public var lfeOff: Bool?
+    public var eq: SourceEQ?
+    public var compressor: Compressor?
 
     public init(position: Position? = nil, gainDB: Double? = nil, mute: Bool? = nil, width: Double? = nil,
-                sends: [GroupSend]? = nil, lfeDB: Double? = nil, lfeOff: Bool? = nil) {
+                sends: [GroupSend]? = nil, lfeDB: Double? = nil, lfeOff: Bool? = nil,
+                eq: SourceEQ? = nil, compressor: Compressor? = nil) {
         self.position = position; self.gainDB = gainDB; self.mute = mute; self.width = width
         self.sends = sends; self.lfeDB = lfeDB; self.lfeOff = lfeOff
+        self.eq = eq; self.compressor = compressor
     }
 
     /// These values with `newer`'s on top.
@@ -269,6 +280,8 @@ public struct SourceValues: Codable, Equatable {
         if let m = newer.mute { v.mute = m }
         if let w = newer.width { v.width = w }
         if let s = newer.sends { v.sends = s }
+        if let e = newer.eq { v.eq = e }
+        if let c = newer.compressor { v.compressor = c }
         if newer.lfeOff == true { v.lfeOff = true; v.lfeDB = nil } else if let l = newer.lfeDB { v.lfeDB = l; v.lfeOff = nil }
         return v
     }

@@ -95,6 +95,15 @@ extension ShowState {
         return (l, r)
     }
 
+    /// The other side of a source's stereo pair, if it is in one.
+    public func stereoPartner(of id: UUID) -> UUID? {
+        for g in show.sourceGroups where g.stereo && g.sources.count >= 2 {
+            if g.sources[0] == id { return g.sources[1] }
+            if g.sources[1] == id { return g.sources[0] }
+        }
+        return nil
+    }
+
     /// The azimuth between a stereo pair's left and right, seen from the listener: 0 when they are on
     /// top of each other, positive while left is to the left of right.
     public func spacing(of group: SourceGroup) -> Double? {

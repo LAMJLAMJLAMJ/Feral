@@ -45,6 +45,48 @@ final class RenderCoreTests: XCTestCase {
         XCTAssertLessThan(quiet.outputRMS[0], 0.5 * 0.05)
     }
 
+    func testInputCompressorAndLinkedPair() throws {
+        let core = RenderCore(sampleRate: 48_000)
+        let state = RenderState(inputs: 2, outputs: 2)
+        state.addGain(input: 0, output: 0, gain: 1)
+        state.addDelay(input: 1, output: 1, gain: 1, delay: 0)
+        // -20 dB threshold, 4:1, instant attack, +6 dB makeup; the two inputs linked like a stereo pair.
+        let comp = Compressor(on: true, thresholdDB: -20, ratio: 4, attackMS: 0.01, releaseMS: 1000, makeupDB: 6.0206)
+        state.setInput(0, InputParams(eq: nil, compressor: comp, link: 1, sampleRate: 48_000))
+        state.setInput(1, InputParams(eq: nil, compressor: comp, link: 0, sampleRate: 48_000))
+        try core.publish(state)
+        let out = TestBuffers(channels: 2, frames: frames)
+        for _ in 0..<20 {
+            render(core.pointer, TestBuffers(channels: 2, frames: frames) { c, _ in c == 0 ? 0.5 : 0.01 }, out)
+        }
+        // 0.5 is 14 dB over 0.1; 4:1 leaves 3.5 dB over, and makeup doubles it.
+        XCTAssertEqual(out[0][frames - 1], 2 * 0.1 * pow(5, 0.25), accuracy: 1e-3)
+        // The quiet side ducks by the same 10.5 dB, because the loud side drives both.
+        XCTAssertEqual(out[1][frames - 1], 2 * 0.01 * pow(5, -0.75), accuracy: 1e-4)
+        let r = core.readReduction(inputs: 2)
+        XCTAssertEqual(r[0], 10.48, accuracy: 0.05)
+        XCTAssertEqual(r[1], 10.48, accuracy: 0.05)
+    }
+
+    func testInputEQ() throws {
+        let core = RenderCore(sampleRate: 48_000)
+        let state = RenderState(inputs: 1, outputs: 1)
+        state.addGain(input: 0, output: 0, gain: 1)
+        // A low shelf of -12 dB at 1 kHz: DC comes out a quarter.
+        let eq = SourceEQ(on: true, lowHz: 1000, lowDB: -12.0412)
+        state.setInput(0, InputParams(eq: eq, compressor: nil, link: nil, sampleRate: 48_000))
+        try core.publish(state)
+        let out = TestBuffers(channels: 1, frames: frames)
+        for _ in 0..<200 { render(core.pointer, TestBuffers(channels: 1, frames: frames) { _, _ in 1 }, out) }
+        XCTAssertEqual(out[0][frames - 1], 0.25, accuracy: 1e-3)
+        // EQ off passes the input untouched.
+        let plain = RenderState(inputs: 1, outputs: 1)
+        plain.addGain(input: 0, output: 0, gain: 1)
+        try core.publish(plain)
+        for _ in 0..<4 { render(core.pointer, TestBuffers(channels: 1, frames: frames) { _, _ in 1 }, out) }
+        XCTAssertEqual(out[0][frames - 1], 1, accuracy: 1e-6)
+    }
+
     func testSilentBeforeAnyRouting() {
         let core = RenderCore(sampleRate: 48_000)
         let input = TestBuffers(channels: 2, frames: frames) { _, _ in 1 }

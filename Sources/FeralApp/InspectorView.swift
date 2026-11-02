@@ -100,6 +100,8 @@ struct LevelSlider: View {
     let range: ClosedRange<Double>
     let step: Double
     let unit: String
+    /// Shows the value; none gives "3.5 dB" or "45°".
+    var format: ((Double) -> String)? = nil
     let set: (Double) -> Void
     @State private var dragged: Double?
     @State private var dragging = false
@@ -134,7 +136,8 @@ struct LevelSlider: View {
     }
 
     private func label(_ v: Double) -> String {
-        unit == "°" ? "\(Int(v.rounded()))°" : String(format: step < 1 ? "%.1f %@" : "%.0f %@", v, unit)
+        if let format { return format(v) }
+        return unit == "°" ? "\(Int(v.rounded()))°" : String(format: step < 1 ? "%.1f %@" : "%.0f %@", v, unit)
     }
 }
 
@@ -249,6 +252,18 @@ struct SourceInspector: View {
                         model.update(source.id, SourceValues(width: $0))
                     }
                 }
+            }
+            Section {
+                EQControls(eq: source.eq ?? .flat) { model.update(source.id, SourceValues(eq: $0)) }
+            } header: {
+                Text("EQ")
+            } footer: {
+                if state.stereoPartner(of: source.id) != nil {
+                    Text("A stereo pair's level, mute, EQ and compressor are always the same on both sides.")
+                }
+            }
+            Section("Compressor") {
+                LiveCompressorControls(model: model, meters: meters, source: source)
             }
             Section("Sends") {
                 ForEach(state.show.groups) { g in

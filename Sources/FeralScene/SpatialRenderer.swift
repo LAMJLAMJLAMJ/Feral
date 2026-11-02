@@ -152,6 +152,12 @@ public final class SpatialRenderer {
             }
         }
         for (o, p) in outputParams { state.setOutput(o, p) }
+        let inputs = config.inputs
+        for source in sources where source.input >= 1 && source.input <= inputs {
+            let link = source.link.flatMap { $0 >= 1 && $0 <= inputs ? $0 - 1 : nil }
+            let params = InputParams(eq: source.eq, compressor: source.compressor, link: link, sampleRate: sampleRate)
+            if !params.isPlain { state.setInput(source.input - 1, params) }
+        }
         return state
     }
 

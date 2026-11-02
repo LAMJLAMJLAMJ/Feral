@@ -133,11 +133,20 @@ public struct ShowState: Equatable {
     private mutating func applyUnchecked(_ command: Command) throws -> Change {
         switch command {
         case .updateSources(let updates):
+            var ids: [UUID] = []
             for u in updates {
                 guard let i = sourceIndex(u.id) else { throw ConfigError("no source has id \(u.id)") }
                 show.sources[i] = try applying(u.values, to: show.sources[i])
+                if !ids.contains(u.id) { ids.append(u.id) }
+                // A stereo pair's level, mute, EQ and compressor are always the same on both sides.
+                let shared = SourceValues(gainDB: u.values.gainDB, mute: u.values.mute, eq: u.values.eq,
+                                          compressor: u.values.compressor)
+                if !shared.isEmpty, let partner = stereoPartner(of: u.id), let j = sourceIndex(partner) {
+                    show.sources[j] = try applying(shared, to: show.sources[j])
+                    if !ids.contains(partner) { ids.append(partner) }
+                }
             }
-            return .sources(updates.map(\.id))
+            return .sources(ids)
 
         case .setSource(let source):
             try checkValues(source)
@@ -281,6 +290,8 @@ public struct ShowState: Equatable {
         if let w = v.width { s.width = w }
         if let sends = v.sends { s.sends = sends }
         if v.lfeOff == true { s.lfeDB = nil } else if let l = v.lfeDB { s.lfeDB = l }
+        if let e = v.eq { s.eq = e }
+        if let c = v.compressor { s.compressor = c }
         try checkValues(s)
         return s
     }
@@ -297,6 +308,8 @@ public struct ShowState: Equatable {
             guard send.gainDB.isFinite, send.gainDB <= 24 else { throw ConfigError("source \(s.label): send levels must be 24 dB or below") }
         }
         if let l = s.lfeDB { guard l.isFinite, l <= 24 else { throw ConfigError("source \(s.label): lfeDB must be 24 or below") } }
+        try s.eq?.check("source \(s.label)")
+        try s.compressor?.check("source \(s.label)")
     }
 
     /// Checks ids and references. Rendering checks (inputs and outputs in range, VBAP layouts) are
@@ -360,7 +373,9 @@ public struct ShowState: Equatable {
         let gain = groups.reduce(s.gainDB) { $0 + $1.gainDB }
         let mute = s.mute || groups.contains { $0.mute }
         return SourceConfig(input: s.input, name: s.name, position: s.position, gainDB: gain, mute: mute,
-                            width: s.width, groups: sends, lfeDB: system.lfeSpeakers.isEmpty ? nil : s.lfeDB)
+                            width: s.width, groups: sends, lfeDB: system.lfeSpeakers.isEmpty ? nil : s.lfeDB,
+                            eq: s.eq, compressor: s.compressor,
+                            link: stereoPartner(of: s.id).flatMap { source($0)?.input })
     }
 
     /// The engine's settings with this show's speakers, groups and sources in place of engine.json's.

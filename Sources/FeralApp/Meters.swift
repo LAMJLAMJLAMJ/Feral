@@ -33,6 +33,8 @@ final class MeterStore: ObservableObject {
     @Published private(set) var load: Float = 0
     /// Frames are arriving.
     @Published private(set) var live = false
+    /// Each input compressor's gain reduction in dB, held a moment and falling back like a peak.
+    @Published private(set) var reductions: [Float] = []
 
     func update(_ frame: MeterFrame) {
         let now = Date()
@@ -41,6 +43,13 @@ final class MeterStore: ObservableObject {
         if firstInputChannel != frame.firstInputChannel { firstInputChannel = frame.firstInputChannel }
         if firstOutputChannel != frame.firstOutputChannel { firstOutputChannel = frame.firstOutputChannel }
         load = frame.load
+        if let r = frame.inputReduction {
+            reductions = r.enumerated().map { i, db in
+                max(db, (reductions.indices.contains(i) ? reductions[i] : 0) - Self.fallPerFrame)
+            }
+        } else if !reductions.isEmpty {
+            reductions = []
+        }
         if !live { live = true }
     }
 
@@ -48,6 +57,7 @@ final class MeterStore: ObservableObject {
         inputs = []
         outputs = []
         load = 0
+        reductions = []
         live = false
     }
 
@@ -71,6 +81,12 @@ final class MeterStore: ObservableObject {
     func cardOutput(_ n: Int) -> Int {
         if let p = patch { return p.outputs.indices.contains(n - 1) ? p.outputs[n - 1] : 0 }
         return firstOutputChannel + n - 1
+    }
+
+    /// Engine input n's (from 1) compressor gain reduction in dB; none while no meters arrive.
+    func reduction(input n: Int) -> Float? {
+        guard live else { return nil }
+        return reductions.indices.contains(n - 1) ? reductions[n - 1] : 0
     }
 
     /// Engine input n (from 1), if the engine has it.

@@ -34,6 +34,8 @@ struct feral_state {
     /// (the usual case) costs only what it routes.
     std::vector<std::vector<feral::Tap>> taps;
     std::vector<feral_output_params> outputParams;
+    /// Per input, its EQ and compressor.
+    std::vector<feral_input_params> inputParams;
     /// Per output, the limiter's per-sample release factor, worked out when the state is published.
     std::vector<float> limiterRelease;
     feral_motion_params motion;

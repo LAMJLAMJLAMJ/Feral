@@ -639,7 +639,8 @@ final class Engine {
         let frame = MeterFrame(inputPeak: l.inputPeak.map(MeterFrame.dB), inputRMS: l.inputRMS.map(MeterFrame.dB),
                                outputPeak: l.outputPeak.map(MeterFrame.dB), outputRMS: l.outputRMS.map(MeterFrame.dB),
                                firstInputChannel: config.firstInputChannel, firstOutputChannel: config.firstOutputChannel,
-                               load: core.stats().maxLoad)
+                               load: core.stats().maxLoad,
+                               inputReduction: core.readReduction(inputs: config.inputs).map { ($0 * 10).rounded() / 10 })
         server?.send(.meters(frame: frame), to: clients)
     }
 

@@ -213,14 +213,20 @@ public struct SourceConfig: Codable, Equatable {
     public var groups: [String: Double]?
     /// Send to the LFE outputs in dB; none sends nothing.
     public var lfeDB: Double?
+    public var eq: SourceEQ?
+    public var compressor: Compressor?
+    /// A stereo partner's input (from 1), whose level also drives this compressor.
+    public var link: Int?
 
     public init(input: Int, name: String? = nil, position: Position, gainDB: Double = 0, mute: Bool = false,
-                width: Double = 0, groups: [String: Double]? = nil, lfeDB: Double? = nil) {
+                width: Double = 0, groups: [String: Double]? = nil, lfeDB: Double? = nil,
+                eq: SourceEQ? = nil, compressor: Compressor? = nil, link: Int? = nil) {
         self.input = input; self.name = name; self.position = position; self.gainDB = gainDB; self.mute = mute
         self.width = width; self.groups = groups; self.lfeDB = lfeDB
+        self.eq = eq; self.compressor = compressor; self.link = link
     }
 
-    enum CodingKeys: String, CodingKey { case input, name, position, gainDB, mute, width, groups, lfeDB }
+    enum CodingKeys: String, CodingKey { case input, name, position, gainDB, mute, width, groups, lfeDB, eq, compressor, link }
 
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -237,6 +243,9 @@ public struct SourceConfig: Codable, Equatable {
             groups = try c.decodeIfPresent([String: Double].self, forKey: .groups)
         }
         lfeDB = try c.decodeIfPresent(Double.self, forKey: .lfeDB)
+        eq = try c.decodeIfPresent(SourceEQ.self, forKey: .eq)
+        compressor = try c.decodeIfPresent(Compressor.self, forKey: .compressor)
+        link = try c.decodeIfPresent(Int.self, forKey: .link)
     }
 
     /// "Vox (input 1)" or "input 1".

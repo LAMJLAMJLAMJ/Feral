@@ -99,6 +99,29 @@ typedef struct feral_output_params {
 /// The parameters of an output with no processing: no delay, flat, unity gain, no limiter, not muted.
 feral_output_params feral_output_defaults(void);
 
+#define FERAL_INPUT_EQ_BANDS 4
+
+/// One input's processing before it reaches any tap or its delay line: EQ, then a compressor.
+typedef struct feral_input_params {
+    /// The EQ bands; {1, 0, 0, 0, 0} passes through. Coefficient changes interpolate over one buffer.
+    feral_biquad eq[FERAL_INPUT_EQ_BANDS];
+    /// The compressor's threshold as a linear level; 0 turns it off.
+    float comp_threshold;
+    /// 1 or more: 4 brings 4 dB over the threshold down to 1 dB over.
+    float comp_ratio;
+    /// The level follower's per-sample attack and release factors (0 to 1; nearer 1 is slower).
+    float comp_attack;
+    float comp_release;
+    /// Gain after the compressor, linear.
+    float comp_makeup;
+    /// Another input (from 0) whose level also drives this compressor, so a stereo pair is compressed
+    /// alike; -1 for none. Give the two inputs the same parameters and link them to each other.
+    int link;
+} feral_input_params;
+
+/// An input with no processing: flat EQ, no compressor, no link.
+feral_input_params feral_input_defaults(void);
+
 /// Starts an empty state for inputs by outputs (each up to FERAL_MAX_CHANNELS). Every output starts
 /// with no taps and feral_output_defaults(), and the motion is feral_motion_defaults(48000).
 /// Returns null when the sizes are out of range.
@@ -120,6 +143,9 @@ int feral_state_add_delay(feral_state *state, int input, int output, float gain,
 int feral_state_set_output(feral_state *state, int output, const feral_output_params *params);
 
 void feral_state_set_motion(feral_state *state, const feral_motion_params *motion);
+
+/// Sets one input's processing. Returns 0, or -1 when the input is out of range.
+int feral_state_set_input(feral_state *state, int input, const feral_input_params *params);
 
 /// Taps in the state so far.
 size_t feral_state_tap_count(const feral_state *state);
@@ -191,6 +217,10 @@ typedef struct feral_core_stats {
 /// Any thread, but one reader at a time (the peaks are reset by whoever reads them).
 void feral_core_read_meters(feral_core *core, float *input_peak, float *input_rms, int inputs,
                             float *output_peak, float *output_rms, int outputs);
+
+/// Reads each input compressor's deepest gain reduction since the last read, in dB (0 or more;
+/// reading starts it again from 0). Any thread, one reader at a time.
+void feral_core_read_reduction(feral_core *core, float *reduction_db, int inputs);
 
 /// Reads the counters. When reset_max_load is non-zero, max_load starts again from 0.
 void feral_core_get_stats(feral_core *core, feral_core_stats *stats, int reset_max_load);

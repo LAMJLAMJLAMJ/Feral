@@ -84,6 +84,15 @@ public final class RenderCore {
         return Levels(inputPeak: inPeak, inputRMS: inRMS, outputPeak: outPeak, outputRMS: outRMS)
     }
 
+    /// Each input compressor's deepest gain reduction in dB since the last read (0 or more), for the
+    /// first `inputs` inputs. One reader at a time.
+    public func readReduction(inputs: Int) -> [Float] {
+        let i = max(0, min(inputs, Routing.maxChannels))
+        var out = [Float](repeating: 0, count: i)
+        out.withUnsafeMutableBufferPointer { feral_core_read_reduction(pointer, $0.baseAddress, Int32(i)) }
+        return out
+    }
+
     public struct Stats: Equatable {
         public var buffers: UInt64
         public var lateBuffers: UInt64
@@ -142,6 +151,12 @@ public final class RenderState {
     public func setOutput(_ output: Int, _ params: OutputParams) {
         var p = params.cValue
         precondition(feral_state_set_output(live, Int32(output), &p) == 0, "output out of range")
+    }
+
+    /// An input's EQ and compressor (input from 0).
+    public func setInput(_ input: Int, _ params: InputParams) {
+        var p = params.cValue
+        precondition(feral_state_set_input(live, Int32(input), &p) == 0, "input out of range")
     }
 
     public func setMotion(_ motion: DelayMotion) {

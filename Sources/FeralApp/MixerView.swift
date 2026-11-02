@@ -87,7 +87,9 @@ struct MixerView: View {
                     if state.show.sources.isEmpty {
                         Text("No sources yet. Add one with + in the Sources list (⇧⌘N).").foregroundStyle(.secondary).padding()
                     }
-                    ForEach(state.show.sources) { s in
+                    // A stereo pair is one strip, on its left side: level, mute, EQ and compressor are
+                    // always the same on both sides.
+                    ForEach(state.show.sources.filter { !isRightOfPair($0.id, state) }) { s in
                         SourceStrip(model: model, meters: meters, source: s, state: state, selected: selection == .source(s.id)) {
                             selection = .source(s.id)
                         }
@@ -98,6 +100,10 @@ struct MixerView: View {
             .padding(.bottom, 6)
             .frame(maxHeight: .infinity, alignment: .top)
         }
+    }
+
+    private func isRightOfPair(_ id: UUID, _ state: ShowState) -> Bool {
+        state.show.sourceGroups.contains { $0.stereo && $0.sources.count >= 2 && $0.sources[1] == id && state.source($0.sources[0]) != nil }
     }
 }
 
@@ -114,18 +120,33 @@ private struct SourceStrip: View {
         let groups = state.sourceGroups(of: source.id)
         let groupGain = groups.reduce(0) { $0 + $1.gainDB }
         let groupMuted = groups.contains { $0.mute }
+        let pair = state.show.sourceGroups.first { $0.stereo && $0.sources.first == source.id }
+        let right = pair.flatMap { $0.sources.count >= 2 ? state.source($0.sources[1]) : nil }
+        let comp = source.compressor ?? .off
         StripFrame(selected: selected) {
-            StripTitle(number: "\(source.number)", name: source.name ?? "Source \(source.number)", color: source.color, select: select)
+            if let pair, let right {
+                StripTitle(number: "\(source.number)·\(right.number)", name: pair.name, color: source.color, select: select)
+            } else {
+                StripTitle(number: "\(source.number)", name: source.name ?? "Source \(source.number)", color: source.color, select: select)
+            }
+            ProcessingButtons(model: model, source: source)
             HStack(spacing: 2) {
                 ForEach(groups) { g in
                     RoundedRectangle(cornerRadius: 2).fill(g.color).frame(width: 10, height: 4).help(g.label)
                 }
             }
             .frame(height: 4)
-            HStack(spacing: 4) {
+            HStack(spacing: 3) {
                 Fader(value: source.gainDB) { model.update(source.id, SourceValues(gainDB: $0)) }
                 MeterBar(channel: meters.input(source.input), vertical: true, clear: { meters.clearClip(input: source.input) })
-                    .frame(width: 7)
+                    .frame(width: right == nil ? 7 : 5)
+                if let right {
+                    MeterBar(channel: meters.input(right.input), vertical: true, clear: { meters.clearClip(input: right.input) })
+                        .frame(width: 5)
+                }
+                if comp.on {
+                    ReductionBar(db: meters.reduction(input: source.input) ?? 0, vertical: true).frame(width: 4)
+                }
             }
             .frame(maxHeight: .infinity)
             Text(Fader.text(source.gainDB)).font(.caption.monospacedDigit())
@@ -134,7 +155,7 @@ private struct SourceStrip: View {
                     .font(.system(size: 8).monospacedDigit()).foregroundStyle(groupMuted ? Color.red : Color.secondary)
             }
             MuteButton(on: source.mute) { model.update(source.id, SourceValues(mute: !source.mute)) }
-            Text("in \(source.input)").font(.system(size: 8)).foregroundStyle(.secondary)
+            Text(right.map { "in \(source.input)·\($0.input)" } ?? "in \(source.input)").font(.system(size: 8)).foregroundStyle(.secondary)
         }
     }
 }

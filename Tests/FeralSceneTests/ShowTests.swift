@@ -111,6 +111,46 @@ final class ShowTests: XCTestCase {
         XCTAssertEqual(state.spacing(of: g)!, 0, accuracy: 0.01, "on top of each other")
     }
 
+    func testStereoPairsShareLevelEQAndCompressor() throws {
+        var state = ShowState(show: Show(name: "S"))
+        let l = Source(number: 1, input: 1, position: Position(-1, 5, 1))
+        let r = Source(number: 2, input: 2, position: Position(1, 5, 1))
+        let other = Source(number: 3, input: 3, position: Position(0, 5, 1))
+        for s in [l, r, other] { try state.apply(.setSource(source: s)) }
+        try state.apply(.setSourceGroup(group: SourceGroup(number: 1, name: "St", sources: [l.id, r.id], stereo: true)))
+        // A stereo pair can be in another group too.
+        try state.apply(.setSourceGroup(group: SourceGroup(number: 2, name: "Band", sources: [r.id, other.id], gainDB: -3)))
+        let eq = SourceEQ(on: true, highPassHz: 80, midDB: -4)
+        let comp = Compressor(on: true, thresholdDB: -18, ratio: 4)
+        let change = try state.apply(.updateSources(updates: [
+            SourceUpdate(id: r.id, values: SourceValues(gainDB: -6, mute: true, eq: eq, compressor: comp)),
+        ]))
+        XCTAssertEqual(change, .sources([r.id, l.id]))
+        for id in [l.id, r.id] {
+            let s = state.source(id)!
+            XCTAssertEqual(s.gainDB, -6)
+            XCTAssertTrue(s.mute)
+            XCTAssertEqual(s.eq, eq)
+            XCTAssertEqual(s.compressor, comp)
+        }
+        // Position is the pair's own business per side.
+        try state.apply(.updateSources(updates: [SourceUpdate(id: l.id, values: SourceValues(position: Position(-2, 5, 1)))]))
+        XCTAssertEqual(state.source(r.id)!.position, Position(1, 5, 1))
+        XCTAssertNil(state.source(other.id)!.eq)
+        // The renderer links each side's compressor to the other's input.
+        XCTAssertEqual(state.sourceConfig(state.source(l.id)!).link, 2)
+        XCTAssertEqual(state.sourceConfig(state.source(r.id)!).link, 1)
+        XCTAssertNil(state.sourceConfig(state.source(other.id)!).link)
+        XCTAssertEqual(state.sourceConfig(state.source(r.id)!).gainDB, -9, "the other group's gain still adds")
+        // Out-of-range values are refused.
+        XCTAssertThrowsError(try state.apply(.updateSources(updates: [
+            SourceUpdate(id: other.id, values: SourceValues(compressor: Compressor(ratio: 0.5))),
+        ])))
+        // Shows round-trip with the new fields.
+        let data = try JSONEncoder().encode(state.show)
+        XCTAssertEqual(try JSONDecoder().decode(Show.self, from: data).sources, state.show.sources)
+    }
+
     func testAnglesAreFromTheListener() throws {
         var state = ShowState(show: Show(name: "L"))
         // The listener 10 m out at ear height, facing back towards the stage at y = 0.

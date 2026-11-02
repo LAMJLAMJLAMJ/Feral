@@ -193,11 +193,15 @@ public struct MeterFrame: Codable, Equatable {
     public var firstOutputChannel: Int
     /// The render's highest share of a buffer's time in the last few seconds (1 is 100 %).
     public var load: Float
+    /// Each input compressor's deepest gain reduction since the last frame, in dB (0 or more, to a
+    /// tenth); none from engines before compressors.
+    public var inputReduction: [Float]?
 
     public init(inputPeak: [Float], inputRMS: [Float], outputPeak: [Float], outputRMS: [Float],
-                firstInputChannel: Int = 1, firstOutputChannel: Int = 1, load: Float = 0) {
+                firstInputChannel: Int = 1, firstOutputChannel: Int = 1, load: Float = 0, inputReduction: [Float]? = nil) {
         self.inputPeak = inputPeak; self.inputRMS = inputRMS; self.outputPeak = outputPeak; self.outputRMS = outputRMS
         self.firstInputChannel = firstInputChannel; self.firstOutputChannel = firstOutputChannel; self.load = load
+        self.inputReduction = inputReduction
     }
 
     /// A linear level as the frame carries it: dBFS to 0.1 dB, at least `silence`.
