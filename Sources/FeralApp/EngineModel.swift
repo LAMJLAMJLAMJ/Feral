@@ -223,11 +223,14 @@ final class EngineModel: ObservableObject {
 
     func setSourceGroup(_ group: SourceGroup) { apply(.setSourceGroup(group: group)) }
 
-    func setMember(_ source: UUID, of group: SourceGroup, _ member: Bool) {
+    func setMember(_ source: UUID, of group: SourceGroup, _ member: Bool) { setMembers([source], of: group, member) }
+
+    /// Puts several sources in a group, or takes them out.
+    func setMembers(_ sources: [UUID], of group: SourceGroup, _ member: Bool) {
         var g = group
-        g.sources.removeAll { $0 == source }
+        g.sources.removeAll { sources.contains($0) }
         if member, let state {
-            g.sources.append(source)
+            g.sources.append(contentsOf: sources)
             // Keep the show's order of sources.
             let order = state.show.sources.map(\.id)
             g.sources.sort { (order.firstIndex(of: $0) ?? 0) < (order.firstIndex(of: $1) ?? 0) }

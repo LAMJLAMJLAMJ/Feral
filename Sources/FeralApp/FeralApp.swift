@@ -204,6 +204,10 @@ struct SidebarView: View {
     @AppStorage("sidebarTab") private var tab = Tab.cues
     /// A source waiting for the person to confirm deleting it.
     @State private var deleting: Source?
+    /// Several sources waiting for the person to confirm deleting them.
+    @State private var deletingMany: [Source] = []
+    /// The rows selected when there are more than one (⌘-click or ⇧-click); otherwise `selection` is it.
+    @State private var multiple: Set<Selection> = []
 
     enum Tab: String, CaseIterable {
         case cues = "Cues", snapshots = "Snapshots", sources = "Sources", speakers = "Speakers"
@@ -220,7 +224,7 @@ struct SidebarView: View {
                 .padding(.vertical, 8)
             if let state = model.state {
                 listHeader(state)
-                List(selection: $selection) {
+                List(selection: listSelection) {
                     switch tab {
                     case .cues:
                         ForEach(state.orderedCues) { cue in
@@ -280,6 +284,10 @@ struct SidebarView: View {
                     }
                 }
                 .listStyle(.inset)
+                .onDeleteCommand {
+                    let targets = selectedSources(state)
+                    if targets.count == 1 { deleting = targets[0] } else if targets.count > 1 { deletingMany = targets }
+                }
             } else {
                 Spacer()
             }
@@ -287,6 +295,51 @@ struct SidebarView: View {
             EngineStatusBar(model: model, meters: meters)
         }
         .modifier(DeleteSourceConfirmation(model: model, source: $deleting, selection: $selection))
+        .confirmationDialog("Delete \(deletingMany.count) sources?",
+                            isPresented: Binding(get: { !deletingMany.isEmpty }, set: { if !$0 { deletingMany = [] } }),
+                            titleVisibility: .visible) {
+            Button("Delete \(deletingMany.count) sources", role: .destructive) {
+                for s in deletingMany { model.apply(.removeSource(id: s.id)) }
+                multiple = []
+                if case .source(let id) = selection, deletingMany.contains(where: { $0.id == id }) { selection = nil }
+                deletingMany = []
+            }
+            Button("Cancel", role: .cancel) { deletingMany = [] }
+        } message: {
+            Text(deletingMany.map(\.label).joined(separator: ", ") + ". They stop playing at once.")
+        }
+        .onChange(of: selection) { _, new in
+            // Something picked elsewhere (the plan, the mixer) ends a multiple selection.
+            if let new, !multiple.contains(new) { multiple = [] }
+        }
+    }
+
+    /// The list's selection: one row is `selection` (what the inspector shows); with more, `multiple`.
+    private var listSelection: Binding<Set<Selection>> {
+        Binding(
+            get: { multiple.count > 1 ? multiple : (selection.map { [$0] } ?? []) },
+            set: { new in
+                if new.count > 1 {
+                    multiple = new
+                    selection = nil
+                } else {
+                    multiple = []
+                    selection = new.first
+                }
+            }
+        )
+    }
+
+    /// The selected sources, in the show's order.
+    private func selectedSources(_ state: ShowState) -> [Source] {
+        let rows: Set<Selection> = multiple.count > 1 ? multiple : (selection.map { [$0] } ?? [])
+        return state.show.sources.filter { rows.contains(.source($0.id)) }
+    }
+
+    /// What a right-click on a source acts on: the whole selection if the source is in it, else just it.
+    private func targets(for s: Source, _ state: ShowState) -> [Source] {
+        let selected = selectedSources(state)
+        return selected.count > 1 && selected.contains(where: { $0.id == s.id }) ? selected : [s]
     }
 
     /// Column titles and the list's add button.
@@ -330,15 +383,15 @@ struct SidebarView: View {
                 .keyboardShortcut("n", modifiers: [.command, .option])
                 .help("Add a stereo source: left and right on two free Feral inputs, paired, 30° apart (⌥⌘N)")
                 Button {
-                    var members: [UUID] = []
-                    if case .source(let id) = selection { members = [id] }
+                    let members = selectedSources(state).map(\.id)
+                    multiple = []
                     if let id = model.addSourceGroup(with: members) { selection = .sourceGroup(id) }
                 } label: {
                     Label("Group", systemImage: "square.stack.3d.up")
                 }
                 .buttonStyle(.borderless)
                 .keyboardShortcut("g", modifiers: [.command, .shift])
-                .help("Make a source group (with the selected source in it), then tick its members in the inspector (⇧⌘G)")
+                .help("Make a source group with the selected sources in it (⌘-click to select several), then tick more in the inspector (⇧⌘G)")
             case .speakers:
                 Text("Speaker")
                 Spacer()
@@ -354,19 +407,32 @@ struct SidebarView: View {
     /// A source's right-click menu.
     @ViewBuilder
     private func sourceMenu(_ s: Source, _ state: ShowState) -> some View {
-        Button("Duplicate") { if let id = model.addSource(like: s) { selection = .source(id) } }
-        Menu("Groups") {
-            ForEach(state.show.sourceGroups) { g in
-                let member = g.sources.contains(s.id)
-                Button { model.setMember(s.id, of: g, !member) } label: {
-                    if member { Label(g.label, systemImage: "checkmark") } else { Text(g.label) }
+        let targets = targets(for: s, state)
+        let ids = targets.map(\.id)
+        let many = targets.count > 1
+        if !many {
+            Button("Duplicate") { if let id = model.addSource(like: s) { selection = .source(id) } }
+        }
+        Menu(many ? "Groups (\(targets.count) sources)" : "Groups") {
+            // Stereo pairs keep their two sides; they are changed from the pair's inspector.
+            ForEach(state.show.sourceGroups.filter { !$0.stereo }) { g in
+                let all = ids.allSatisfy { g.sources.contains($0) }
+                Button { model.setMembers(ids, of: g, !all) } label: {
+                    if all { Label(g.label, systemImage: "checkmark") } else { Text(g.label) }
                 }
             }
-            if !state.show.sourceGroups.isEmpty { Divider() }
-            Button("New group with this source") { if let id = model.addSourceGroup(with: [s.id]) { selection = .sourceGroup(id) } }
+            if state.show.sourceGroups.contains(where: { !$0.stereo }) { Divider() }
+            Button(many ? "New group with these \(targets.count) sources" : "New group with this source") {
+                multiple = []
+                if let id = model.addSourceGroup(with: ids) { selection = .sourceGroup(id) }
+            }
         }
         Divider()
-        Button("Delete…", role: .destructive) { deleting = s }
+        if many {
+            Button("Delete \(targets.count) sources…", role: .destructive) { deletingMany = targets }
+        } else {
+            Button("Delete…", role: .destructive) { deleting = s }
+        }
     }
 
     private func selectedSnapshot(_ state: ShowState) -> Snapshot? {
