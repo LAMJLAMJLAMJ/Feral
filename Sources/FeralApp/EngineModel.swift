@@ -227,6 +227,8 @@ final class EngineModel: ObservableObject {
 
     /// Puts several sources in a group, or takes them out.
     func setMembers(_ sources: [UUID], of group: SourceGroup, _ member: Bool) {
+        // A stereo pair goes in or out of a group as one.
+        let sources = withStereoPartners(sources)
         var g = group
         g.sources.removeAll { sources.contains($0) }
         if member, let state {
@@ -236,6 +238,30 @@ final class EngineModel: ObservableObject {
             g.sources.sort { (order.firstIndex(of: $0) ?? 0) < (order.firstIndex(of: $1) ?? 0) }
         }
         setSourceGroup(g)
+    }
+
+    /// These sources and the other side of any stereo pair among them, in the show's order.
+    func withStereoPartners(_ ids: [UUID]) -> [UUID] {
+        guard let state else { return ids }
+        var all = Set(ids)
+        for id in ids { if let p = state.stereoPartner(of: id) { all.insert(p) } }
+        return state.show.sources.map(\.id).filter { all.contains($0) }
+    }
+
+    /// The stereo pair a source is a side of: the pair's group, its left and right.
+    func stereoPair(of source: UUID) -> (group: SourceGroup, left: Source, right: Source)? {
+        guard let state, let g = state.show.sourceGroups.first(where: { $0.stereo && $0.sources.prefix(2).contains(source) }),
+              let pair = state.stereoPair(g) else { return nil }
+        return (g, pair.left, pair.right)
+    }
+
+    /// Deletes sources; a stereo pair goes as a whole, its pairing with it.
+    func deleteSources(_ ids: [UUID]) {
+        guard let state else { return }
+        let all = withStereoPartners(ids)
+        let pairs = state.show.sourceGroups.filter { g in g.stereo && g.sources.prefix(2).allSatisfy { all.contains($0) } }
+        for id in all { apply(.removeSource(id: id)) }
+        for g in pairs { apply(.removeSourceGroup(id: g.id)) }
     }
 
     /// Adds a stereo source: a left and a right source on two free Feral inputs (side by side when it

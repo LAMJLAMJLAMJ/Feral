@@ -24,7 +24,13 @@ struct InspectorView: View {
                 case .listener:
                     ListenerInspector(model: model, state: state)
                 case .sourceGroup(let id):
-                    if let g = state.sourceGroup(id) { SourceGroupInspector(model: model, state: state, group: g, selection: $selection) }
+                    if let g = state.sourceGroup(id) {
+                        if g.stereo, let left = state.stereoPair(g)?.left {
+                            SourceInspector(model: model, meters: meters, state: state, source: left, selection: $selection)
+                        } else {
+                            SourceGroupInspector(model: model, state: state, group: g, selection: $selection)
+                        }
+                    }
                 case .cue(let id):
                     if let c = state.cue(id) { CueInspector(model: model, state: state, cue: c, selection: $selection) }
                 case nil:
@@ -224,7 +230,7 @@ struct SourceInspector: View {
                 PolarControls(listener: state.system.listener, position: source.position) { p in
                     model.drag(source.id, from: source.position, to: p, partners: model.dragPartners(of: source.id))
                 }
-                let groups = state.sourceGroups(of: source.id)
+                let groups = state.sourceGroups(of: source.id).filter { !$0.stereo }
                 if !groups.isEmpty {
                     LabeledContent("Groups") {
                         Text(groups.map(\.label).joined(separator: ", ")).foregroundStyle(.secondary)
@@ -252,6 +258,9 @@ struct SourceInspector: View {
                         model.update(source.id, SourceValues(width: $0))
                     }
                 }
+            }
+            if let pair = model.stereoPair(of: source.id) {
+                StereoSection(model: model, state: state, group: pair.group, current: source.id, selection: $selection)
             }
             Section("Input") {
                 LabeledContent("Trim") {
@@ -510,14 +519,15 @@ struct DeleteSourceConfirmation: ViewModifier {
 
     func body(content: Content) -> some View {
         content.confirmationDialog(
-            "Delete source \(source?.label ?? "")?",
+            source.flatMap { model.stereoPair(of: $0.id) }.map { "Delete stereo source \($0.group.name) (both sides)?" }
+                ?? "Delete source \(source?.label ?? "")?",
             isPresented: Binding(get: { source != nil }, set: { if !$0 { source = nil } }),
             titleVisibility: .visible
         ) {
             Button("Delete", role: .destructive) {
                 if let s = source {
-                    model.apply(.removeSource(id: s.id))
-                    if selection == .source(s.id) { selection = nil }
+                    model.deleteSources([s.id])
+                    selection = nil
                 }
                 source = nil
             }
@@ -697,10 +707,17 @@ struct StereoSection: View {
     @ObservedObject var model: EngineModel
     let state: ShowState
     let group: SourceGroup
+    /// The side the inspector shows.
+    var current: UUID? = nil
     @Binding var selection: Selection?
+    @State private var name = ""
 
     var body: some View {
         Section {
+            TextField("Pair name", text: $name)
+                .onSubmit { var g = group; g.name = name.isEmpty ? "Stereo \(group.number)" : name; model.setSourceGroup(g) }
+                .onAppear { name = group.name }
+                .onChange(of: group.name) { _, n in name = n }
             Toggle("Paired", isOn: Binding(get: { group.linked }, set: { var g = group; g.linked = $0; model.setSourceGroup(g) }))
                 .help("Paired: left and right move together. Unpair to place each side on its own; pair again and they move together from there.")
             if let spacing = state.spacing(of: group) {
@@ -710,22 +727,22 @@ struct StereoSection: View {
                 .help("The azimuth between left and right, seen from the listener; 0 puts them on top of each other")
             }
             if let pair = state.stereoPair(group) {
-                LabeledContent("Left") {
-                    Button(pair.left.name ?? "Source \(pair.left.number)") { selection = .source(pair.left.id) }.buttonStyle(.link)
+                // Which side the position fields below edit (level and processing are always both).
+                Picker("Editing", selection: Binding(get: { current == pair.right.id ? 1 : 0 },
+                                                     set: { selection = .source($0 == 1 ? pair.right.id : pair.left.id) })) {
+                    Text("Left (in \(pair.left.input))").tag(0)
+                    Text("Right (in \(pair.right.input))").tag(1)
                 }
-                LabeledContent("Right") {
-                    Button(pair.right.name ?? "Source \(pair.right.number)") { selection = .source(pair.right.id) }.buttonStyle(.link)
-                }
+                .pickerStyle(.segmented)
             } else {
                 Text("A stereo pair needs its left and right sources.").foregroundStyle(.secondary)
             }
         } header: {
             Text("Stereo")
         } footer: {
-            if !group.linked {
-                Text("Unpaired: drag or edit each side on its own. Pair again to move them together from where they are.")
-                    .font(.caption).foregroundStyle(.secondary)
-            }
+            Text(group.linked ? "Level, trim, delay, EQ and compressor are always the same on both sides. The name, Feral input and position below are this side's."
+                 : "Unpaired: drag or edit each side's position on its own. Pair again to move them together from where they are.")
+                .font(.caption).foregroundStyle(.secondary)
         }
     }
 }

@@ -74,11 +74,11 @@ struct MixerView: View {
         ScrollView(.horizontal) {
             HStack(alignment: .top, spacing: 2) {
                 if groupsFirst {
-                    if state.show.sourceGroups.isEmpty {
+                    if !state.show.sourceGroups.contains(where: { !$0.stereo }) {
                         Text("No source groups yet. Make one with the Group button in the Sources list (⇧⌘G).")
                             .foregroundStyle(.secondary).padding()
                     }
-                    ForEach(state.show.sourceGroups) { g in
+                    ForEach(state.show.sourceGroups.filter { !$0.stereo }) { g in
                         GroupStrip(model: model, group: g, state: state, selected: selection == .sourceGroup(g.id)) {
                             selection = .sourceGroup(g.id)
                         }
@@ -132,7 +132,7 @@ private struct SourceStrip: View {
             InputControls(model: model, source: source)
             ProcessingButtons(model: model, source: source)
             HStack(spacing: 2) {
-                ForEach(groups) { g in
+                ForEach(groups.filter { !$0.stereo }) { g in
                     RoundedRectangle(cornerRadius: 2).fill(g.color).frame(width: 10, height: 4).help(g.label)
                 }
             }

@@ -250,9 +250,11 @@ struct SidebarView: View {
                                 }
                         }
                     case .sources:
-                        if !state.show.sourceGroups.isEmpty {
+                        // Stereo pairs are sources here, not groups.
+                        let groups = state.show.sourceGroups.filter { !$0.stereo }
+                        if !groups.isEmpty {
                             Section("Groups") {
-                                ForEach(state.show.sourceGroups) { g in
+                                ForEach(groups) { g in
                                     SourceGroupRow(group: g, state: state)
                                         .tag(Selection.sourceGroup(g.id))
                                         .contextMenu {
@@ -267,13 +269,16 @@ struct SidebarView: View {
                             }
                         }
                         Section {
-                            ForEach(state.show.sources) { s in
-                                SourceRow(source: s, owner: model.status?.owner(of: s.id) ?? .cues, meters: meters)
+                            // A stereo pair is one row, on its left side.
+                            ForEach(state.show.sources.filter { !isRightOfPair($0.id, state) }) { s in
+                                let pair = model.stereoPair(of: s.id)
+                                SourceRow(source: s, owner: model.status?.owner(of: s.id) ?? .cues, meters: meters,
+                                          pair: pair.map { (group: $0.group, right: $0.right) })
                                     .tag(Selection.source(s.id))
                                     .contextMenu { sourceMenu(s, state) }
                             }
                         } header: {
-                            if !state.show.sourceGroups.isEmpty { Text("Sources") }
+                            if !groups.isEmpty { Text("Sources") }
                         }
                     case .speakers:
                         let groups = groupOf(state)
@@ -299,7 +304,7 @@ struct SidebarView: View {
                             isPresented: Binding(get: { !deletingMany.isEmpty }, set: { if !$0 { deletingMany = [] } }),
                             titleVisibility: .visible) {
             Button("Delete \(deletingMany.count) sources", role: .destructive) {
-                for s in deletingMany { model.apply(.removeSource(id: s.id)) }
+                model.deleteSources(deletingMany.map(\.id))
                 multiple = []
                 if case .source(let id) = selection, deletingMany.contains(where: { $0.id == id }) { selection = nil }
                 deletingMany = []
@@ -328,6 +333,10 @@ struct SidebarView: View {
                 }
             }
         )
+    }
+
+    private func isRightOfPair(_ id: UUID, _ state: ShowState) -> Bool {
+        state.show.sourceGroups.contains { $0.stereo && $0.sources.count >= 2 && $0.sources[1] == id && state.source($0.sources[0]) != nil }
     }
 
     /// The selected sources, in the show's order.
@@ -376,7 +385,9 @@ struct SidebarView: View {
                 .buttonStyle(.borderless)
                 .keyboardShortcut("n", modifiers: [.command, .shift])
                 .help("Add a source on the next free Feral input (⇧⌘N)")
-                Button { if let id = model.addStereoSource() { selection = .sourceGroup(id) } } label: {
+                Button {
+                    if let id = model.addStereoSource(), let left = model.state?.sourceGroup(id)?.sources.first { selection = .source(left) }
+                } label: {
                     Label("Stereo", systemImage: "square.split.2x1")
                 }
                 .buttonStyle(.borderless)
@@ -556,6 +567,8 @@ struct SourceRow: View {
     let source: Source
     let owner: PositionOwner
     @ObservedObject var meters: MeterStore
+    /// For a stereo pair's row: the pair and its right side.
+    var pair: (group: SourceGroup, right: Source)? = nil
 
     var body: some View {
         HStack(spacing: 8) {
@@ -566,16 +579,28 @@ struct SourceRow: View {
             }
             .frame(width: 20, height: 20)
             VStack(alignment: .leading, spacing: 1) {
-                Text(source.name ?? "Source \(source.number)").lineLimit(1)
+                Text(pair?.group.name ?? source.name ?? "Source \(source.number)").lineLimit(1)
                 HStack(spacing: 4) {
-                    Text("in \(source.input)")
+                    if let pair {
+                        Text("stereo · in \(source.input)·\(pair.right.input)")
+                        if !pair.group.linked { Text("· unpaired") }
+                    } else {
+                        Text("in \(source.input)")
+                    }
                     if source.mute { Text("· muted") }
                     if owner != .cues { Text("· \(owner == .osc ? "OSC" : owner.label)").foregroundStyle(.orange) }
                 }
                 .font(.caption).foregroundStyle(.secondary)
             }
             Spacer(minLength: 4)
-            MeterBar(channel: meters.input(source.input), vertical: false, clear: { meters.clearClip(input: source.input) }).frame(width: 70, height: 7)
+            if let pair {
+                VStack(spacing: 2) {
+                    MeterBar(channel: meters.input(source.input), vertical: false, clear: { meters.clearClip(input: source.input) }).frame(width: 70, height: 4)
+                    MeterBar(channel: meters.input(pair.right.input), vertical: false, clear: { meters.clearClip(input: pair.right.input) }).frame(width: 70, height: 4)
+                }
+            } else {
+                MeterBar(channel: meters.input(source.input), vertical: false, clear: { meters.clearClip(input: source.input) }).frame(width: 70, height: 7)
+            }
         }
         .padding(.vertical, 1)
     }
