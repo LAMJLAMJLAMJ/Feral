@@ -188,11 +188,62 @@ final class EngineModel: ObservableObject {
     }
 
     func save() { send(.save) }
+
+    // MARK: Source groups
+
+    /// Makes a source group, with some sources in it; returns its id.
+    @discardableResult
+    func addSourceGroup(with sources: [UUID] = []) -> UUID? {
+        guard let state else { return nil }
+        let n = state.nextSourceGroupNumber
+        let group = SourceGroup(number: n, name: "Group \(n)", sources: sources)
+        apply(.setSourceGroup(group: group))
+        return group.id
+    }
+
+    func setSourceGroup(_ group: SourceGroup) { apply(.setSourceGroup(group: group)) }
+
+    func setMember(_ source: UUID, of group: SourceGroup, _ member: Bool) {
+        var g = group
+        g.sources.removeAll { $0 == source }
+        if member, let state {
+            g.sources.append(source)
+            // Keep the show's order of sources.
+            let order = state.show.sources.map(\.id)
+            g.sources.sort { (order.firstIndex(of: $0) ?? 0) < (order.firstIndex(of: $1) ?? 0) }
+        }
+        setSourceGroup(g)
+    }
+
+    /// Moves a group's centre to a new azimuth, elevation or distance, keeping its shape.
+    func moveGroup(_ group: SourceGroup, azimuth: Double? = nil, elevation: Double? = nil, distance: Double? = nil) {
+        guard let state else { return }
+        let updates = state.moveGroup(group, azimuth: azimuth, elevation: elevation, distance: distance)
+        if !updates.isEmpty { apply(.updateSources(updates: updates)) }
+    }
+
+    /// Where a dragged source's linked partners start, for moving them with it.
+    func dragPartners(of source: UUID) -> [UUID: Position] {
+        guard let state else { return [:] }
+        var starts: [UUID: Position] = [:]
+        for id in state.linkedPartners(of: source) { if let s = state.source(id) { starts[id] = s.position } }
+        return starts
+    }
+
+    /// Moves a dragged source, and its linked partners by the same amount.
+    func drag(_ source: UUID, from: Position, to: Position, partners: [UUID: Position]) {
+        guard let state else { return }
+        if partners.isEmpty {
+            update(source, SourceValues(position: to))
+        } else {
+            apply(.updateSources(updates: state.moveTogether(source, from: from, to: to, starts: partners)))
+        }
+    }
 }
 
 /// What is selected, in the sidebar or on the plan.
 enum Selection: Hashable {
-    case source(UUID), speaker(UUID), snapshot(UUID), cue(UUID)
+    case source(UUID), speaker(UUID), snapshot(UUID), cue(UUID), sourceGroup(UUID)
 }
 
 extension Color {
@@ -216,6 +267,10 @@ extension Color {
 
 extension Source {
     var color: Color { Color(hex: colour) ?? .pick(number) }
+}
+
+extension SourceGroup {
+    var color: Color { Color(hex: colour) ?? .pick(number + 5) }
 }
 
 extension SpeakerGroup {

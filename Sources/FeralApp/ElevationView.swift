@@ -24,6 +24,9 @@ struct ElevationView: View {
     private struct Drag {
         var target: Selection
         var position: Position
+        /// Where the source started, and where its linked group partners started.
+        var start: Position
+        var partners: [UUID: Position] = [:]
     }
     @State private var drag: Drag?
     @State private var frozen: Frame?
@@ -273,10 +276,10 @@ struct ElevationView: View {
             switch target {
             case .source(let id):
                 guard let s = state.source(id) else { return }
-                drag = Drag(target: target, position: s.position)
+                drag = Drag(target: target, position: s.position, start: s.position, partners: model.dragPartners(of: id))
             case .speaker(let id):
                 guard moveSpeakers, let s = state.speaker(id) else { return }
-                drag = Drag(target: target, position: s.position)
+                drag = Drag(target: target, position: s.position, start: s.position)
             default:
                 return
             }
@@ -309,7 +312,7 @@ struct ElevationView: View {
         lastSent = Date()
         switch d.target {
         case .source(let id):
-            model.update(id, SourceValues(position: d.position))
+            model.drag(id, from: d.start, to: d.position, partners: d.partners)
         case .speaker(let id):
             guard var s = state.speaker(id) else { return }
             s.position = d.position

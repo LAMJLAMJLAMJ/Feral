@@ -234,14 +234,30 @@ struct SidebarView: View {
                                 }
                         }
                     case .sources:
-                        ForEach(state.show.sources) { s in
-                            SourceRow(source: s, owner: model.status?.owner(of: s.id) ?? .cues, meters: meters)
-                                .tag(Selection.source(s.id))
-                                .contextMenu {
-                                    Button("Duplicate") { if let id = model.addSource(like: s) { selection = .source(id) } }
-                                    Divider()
-                                    Button("Delete…", role: .destructive) { deleting = s }
+                        if !state.show.sourceGroups.isEmpty {
+                            Section("Groups") {
+                                ForEach(state.show.sourceGroups) { g in
+                                    SourceGroupRow(group: g, state: state)
+                                        .tag(Selection.sourceGroup(g.id))
+                                        .contextMenu {
+                                            Button(g.mute ? "Unmute" : "Mute") { var c = g; c.mute.toggle(); model.setSourceGroup(c) }
+                                            Divider()
+                                            Button("Delete group", role: .destructive) {
+                                                model.apply(.removeSourceGroup(id: g.id))
+                                                if selection == .sourceGroup(g.id) { selection = nil }
+                                            }
+                                        }
                                 }
+                            }
+                        }
+                        Section {
+                            ForEach(state.show.sources) { s in
+                                SourceRow(source: s, owner: model.status?.owner(of: s.id) ?? .cues, meters: meters)
+                                    .tag(Selection.source(s.id))
+                                    .contextMenu { sourceMenu(s, state) }
+                            }
+                        } header: {
+                            if !state.show.sourceGroups.isEmpty { Text("Sources") }
                         }
                     case .speakers:
                         let groups = groupOf(state)
@@ -295,6 +311,16 @@ struct SidebarView: View {
                 .buttonStyle(.borderless)
                 .keyboardShortcut("n", modifiers: [.command, .shift])
                 .help("Add a source on the next free Feral input (⇧⌘N)")
+                Button {
+                    var members: [UUID] = []
+                    if case .source(let id) = selection { members = [id] }
+                    if let id = model.addSourceGroup(with: members) { selection = .sourceGroup(id) }
+                } label: {
+                    Label("Group", systemImage: "square.stack.3d.up")
+                }
+                .buttonStyle(.borderless)
+                .keyboardShortcut("g", modifiers: [.command, .shift])
+                .help("Make a source group (with the selected source in it), then tick its members in the inspector (⇧⌘G)")
             case .speakers:
                 Text("Speaker")
                 Spacer()
@@ -305,6 +331,24 @@ struct SidebarView: View {
         .foregroundStyle(.secondary)
         .padding(.horizontal, 16)
         .padding(.bottom, 4)
+    }
+
+    /// A source's right-click menu.
+    @ViewBuilder
+    private func sourceMenu(_ s: Source, _ state: ShowState) -> some View {
+        Button("Duplicate") { if let id = model.addSource(like: s) { selection = .source(id) } }
+        Menu("Groups") {
+            ForEach(state.show.sourceGroups) { g in
+                let member = g.sources.contains(s.id)
+                Button { model.setMember(s.id, of: g, !member) } label: {
+                    if member { Label(g.label, systemImage: "checkmark") } else { Text(g.label) }
+                }
+            }
+            if !state.show.sourceGroups.isEmpty { Divider() }
+            Button("New group with this source") { if let id = model.addSourceGroup(with: [s.id]) { selection = .sourceGroup(id) } }
+        }
+        Divider()
+        Button("Delete…", role: .destructive) { deleting = s }
     }
 
     private func selectedSnapshot(_ state: ShowState) -> Snapshot? {
@@ -450,6 +494,35 @@ struct SourceRow: View {
             MeterBar(channel: meters.input(source.input), vertical: false, clear: { meters.clearClip(input: source.input) }).frame(width: 70, height: 7)
         }
         .padding(.vertical, 1)
+    }
+}
+
+struct SourceGroupRow: View {
+    let group: SourceGroup
+    let state: ShowState
+
+    var body: some View {
+        HStack(spacing: 8) {
+            RoundedRectangle(cornerRadius: 4).fill(group.mute ? Color.clear : group.color)
+                .overlay(RoundedRectangle(cornerRadius: 4).stroke(group.color, lineWidth: 1.5))
+                .overlay(Text("\(group.number)").font(.system(size: 9, weight: .bold)).foregroundStyle(group.mute ? group.color : Color.white))
+                .frame(width: 20, height: 20)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(group.name).lineLimit(1)
+                Text(detail).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+            }
+            Spacer(minLength: 4)
+            Text(String(format: "%+.1f dB", group.gainDB)).font(.caption.monospacedDigit()).foregroundStyle(.secondary)
+        }
+        .padding(.vertical, 1)
+    }
+
+    private var detail: String {
+        let n = group.sources.filter { state.source($0) != nil }.count
+        var parts = ["\(n) source\(n == 1 ? "" : "s")"]
+        if group.mute { parts.append("muted") }
+        if group.linked { parts.append("move together") }
+        return parts.joined(separator: " · ")
     }
 }
 

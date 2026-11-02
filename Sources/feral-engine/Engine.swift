@@ -762,6 +762,8 @@ final class Engine {
         case .setGroup(let g): return "set group \(g.name)"
         case .removeGroup: return "removed a group"
         case .setLFESpeakers(let s): return "set \(s.count) LFE speaker(s)"
+        case .setSourceGroup(let g): return "set source group \(g.label)"
+        case .removeSourceGroup: return "removed a source group"
         case .captureSnapshot(let c): return "stored snapshot \(c.number) \(c.name)"
         case .setSnapshot(let s): return "set snapshot \(s.label)"
         case .removeSnapshot: return "removed a snapshot"

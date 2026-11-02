@@ -41,6 +41,77 @@ final class ShowTests: XCTestCase {
             .appendingPathComponent("Test.feralshow")
     }
 
+    // MARK: Source groups
+
+    func testSourceGroupsActLikeVCAs() throws {
+        var state = try imported()
+        let vox = state.show.sources[1], keys = state.show.sources[2]
+        let group = SourceGroup(number: 1, name: "Band", sources: [vox.id, keys.id], gainDB: -6)
+        let change = try state.apply(.setSourceGroup(group: group))
+        XCTAssertEqual(change, .sources([vox.id, keys.id]))
+        XCTAssertEqual(state.sourceConfig(state.source(keys.id)!).gainDB, -10, "the group's gain adds to the source's")
+        XCTAssertFalse(state.sourceConfig(state.source(vox.id)!).mute)
+        var muted = group
+        muted.mute = true
+        try state.apply(.setSourceGroup(group: muted))
+        XCTAssertTrue(state.sourceConfig(state.source(vox.id)!).mute, "a muted group mutes its members")
+        XCTAssertFalse(state.sourceConfig(state.show.sources[0]).mute, "sources outside it play on")
+        try state.apply(.removeSource(id: keys.id))
+        XCTAssertEqual(state.show.sourceGroups[0].sources, [vox.id], "a deleted source leaves its groups")
+        XCTAssertThrowsError(try state.apply(.setSourceGroup(group: SourceGroup(number: 2, name: "X", sources: [UUID()]))))
+        try state.apply(.removeSourceGroup(id: group.id))
+        XCTAssertEqual(state.sourceConfig(state.source(vox.id)!).gainDB, vox.gainDB)
+
+        let json = try JSONEncoder().encode(Command.setSourceGroup(group: group))
+        XCTAssertEqual(try JSONDecoder().decode(Command.self, from: json), .setSourceGroup(group: group))
+    }
+
+    func testPolarRoundTrip() {
+        let p = Position(-3, 4, 0)
+        XCTAssertEqual(p.polar.azimuth, atan2(3.0, 4.0) * 180 / .pi, accuracy: 1e-9, "positive azimuth is to the left (-x)")
+        XCTAssertEqual(p.polar.distance, 5, accuracy: 1e-9)
+        let back = Position(p.polar)
+        XCTAssertEqual(back.x, -3, accuracy: 1e-9)
+        XCTAssertEqual(back.y, 4, accuracy: 1e-9)
+        XCTAssertEqual(Position(Polar(azimuth: 0, elevation: 90, distance: 2)).z, 2, accuracy: 1e-9)
+    }
+
+    func testMovingAGroupKeepsItsShape() throws {
+        var state = ShowState(show: Show(name: "G"))
+        let a = Source(number: 1, input: 1, position: Position(-1, 10, 0))
+        let b = Source(number: 2, input: 2, position: Position(1, 10, 0))
+        try state.apply(.setSource(source: a))
+        try state.apply(.setSource(source: b))
+        let g = SourceGroup(number: 1, name: "Pair", sources: [a.id, b.id])
+        try state.apply(.setSourceGroup(group: g))
+        XCTAssertEqual(state.centre(of: g), Position(0, 10, 0))
+
+        // Turn the pair 90 degrees to the left: the centre goes to (-10, 0), the pair stays 2 m apart.
+        try state.apply(.updateSources(updates: state.moveGroup(g, azimuth: 90)))
+        let c = state.centre(of: g)!
+        XCTAssertEqual(c.polar.azimuth, 90, accuracy: 0.01)
+        let pa = state.source(a.id)!.position, pb = state.source(b.id)!.position
+        XCTAssertEqual(hypot(pa.x - pb.x, pa.y - pb.y), 2, accuracy: 0.01)
+
+        // Twice the distance.
+        let before = state.centre(of: g)!.polar.distance
+        try state.apply(.updateSources(updates: state.moveGroup(g, distance: before * 2)))
+        XCTAssertEqual(state.centre(of: g)!.polar.distance, before * 2, accuracy: 0.01)
+
+        // Up 30 degrees.
+        try state.apply(.updateSources(updates: state.moveGroup(g, elevation: 30)))
+        XCTAssertEqual(state.source(a.id)!.position.polar.elevation, 30, accuracy: 0.01)
+
+        // Dragging one member of a linked group moves the other by the same amount.
+        let start = state.source(b.id)!.position
+        XCTAssertEqual(state.linkedPartners(of: a.id), [b.id])
+        let from = state.source(a.id)!.position
+        let to = Position(from.x + 1, from.y - 2, from.z)
+        try state.apply(.updateSources(updates: state.moveTogether(a.id, from: from, to: to, starts: [b.id: start])))
+        XCTAssertEqual(state.source(b.id)!.position.x, start.x + 1, accuracy: 0.001)
+        XCTAssertEqual(state.source(b.id)!.position.y, start.y - 2, accuracy: 0.001)
+    }
+
     // MARK: The show and the renderer
 
     /// A show imported from engine.json renders exactly what engine.json did.

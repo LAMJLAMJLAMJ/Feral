@@ -21,6 +21,8 @@ struct InspectorView: View {
                     if let s = state.speaker(id) { SpeakerInspector(model: model, meters: meters, state: state, speaker: s) }
                 case .snapshot(let id):
                     if let s = state.snapshot(id) { SnapshotInspector(model: model, state: state, snapshot: s, selection: $selection) }
+                case .sourceGroup(let id):
+                    if let g = state.sourceGroup(id) { SourceGroupInspector(model: model, state: state, group: g, selection: $selection) }
                 case .cue(let id):
                     if let c = state.cue(id) { CueInspector(model: model, state: state, cue: c, selection: $selection) }
                 case nil:
@@ -184,6 +186,15 @@ struct SourceInspector: View {
                 NumberField(title: "x (m)", value: source.position.x) { v in move(x: v) }
                 NumberField(title: "y (m)", value: source.position.y) { v in move(y: v) }
                 NumberField(title: "z (m)", value: source.position.z) { v in move(z: v) }
+                PolarControls(position: source.position) { p in
+                    model.drag(source.id, from: source.position, to: p, partners: model.dragPartners(of: source.id))
+                }
+                let groups = state.sourceGroups(of: source.id)
+                if !groups.isEmpty {
+                    LabeledContent("Groups") {
+                        Text(groups.map(\.label).joined(separator: ", ")).foregroundStyle(.secondary)
+                    }
+                }
                 let owner = model.status?.owner(of: source.id) ?? .cues
                 LabeledContent("Position from") {
                     HStack {
@@ -446,6 +457,131 @@ struct DeleteSourceConfirmation: ViewModifier {
         } message: {
             Text("It stops playing at once. Snapshots that hold it skip it from then on.")
         }
+    }
+}
+/// Azimuth, elevation and distance from the venue's origin, as sliders. Azimuth 0 is straight ahead
+/// (towards +y), positive to the left; elevation 90 is straight up.
+struct PolarControls: View {
+    let position: Position
+    let set: (Position) -> Void
+
+    var body: some View {
+        let p = position.polar
+        LabeledContent("Azimuth") {
+            LevelSlider(value: p.azimuth, range: -180...180, step: 1, unit: "°") { a in
+                set(Position(Polar(azimuth: a, elevation: p.elevation, distance: p.distance)).rounded)
+            }
+        }
+        .help("Degrees from straight ahead, positive to the left (as ADM-OSC)")
+        LabeledContent("Elevation") {
+            LevelSlider(value: p.elevation, range: -90...90, step: 1, unit: "°") { e in
+                set(Position(Polar(azimuth: p.azimuth, elevation: e, distance: p.distance)).rounded)
+            }
+        }
+        LabeledContent("Distance") {
+            LevelSlider(value: p.distance, range: 0...max(50, (p.distance * 1.5).rounded()), step: 0.1, unit: "m") { d in
+                set(Position(Polar(azimuth: p.azimuth, elevation: p.elevation, distance: d)).rounded)
+            }
+        }
+    }
+}
+
+extension Position {
+    /// To the millimetre.
+    var rounded: Position { Position((x * 1000).rounded() / 1000, (y * 1000).rounded() / 1000, (z * 1000).rounded() / 1000) }
+}
+
+/// A source group: name, VCA-style gain and mute, moving together, its centre as azimuth, elevation
+/// and distance, and which sources are in it.
+struct SourceGroupInspector: View {
+    @ObservedObject var model: EngineModel
+    let state: ShowState
+    let group: SourceGroup
+    @Binding var selection: Selection?
+    @State private var name = ""
+
+    var body: some View {
+        Form {
+            Section {
+                TextField("Name", text: $name)
+                    .onSubmit { var g = group; g.name = name.isEmpty ? "Group \(group.number)" : name; model.setSourceGroup(g) }
+            } header: {
+                HStack(spacing: 8) {
+                    RoundedRectangle(cornerRadius: 3).fill(group.color).frame(width: 12, height: 12)
+                    Text("Source group \(group.number)").font(.headline)
+                }
+            }
+            Section("Level") {
+                LabeledContent("Group gain") {
+                    LevelSlider(value: group.gainDB, range: -40...10, step: 0.5, unit: "dB") { v in
+                        var g = group; g.gainDB = v; model.setSourceGroup(g)
+                    }
+                }
+                .help("Adds to every member's own gain, like a VCA")
+                Toggle("Mute", isOn: Binding(get: { group.mute }, set: { var g = group; g.mute = $0; model.setSourceGroup(g) }))
+            }
+            Section("Position") {
+                Toggle("Move together", isOn: Binding(get: { group.linked }, set: { var g = group; g.linked = $0; model.setSourceGroup(g) }))
+                    .help("Dragging one member on the plan or the height view moves the others with it")
+                if let c = state.centre(of: group) {
+                    GroupPolarControls(model: model, group: group, centre: c)
+                    LabeledContent("Centre") {
+                        Text(String(format: "x %.1f  y %.1f  z %.1f m", c.x, c.y, c.z)).font(.callout.monospacedDigit()).foregroundStyle(.secondary)
+                    }
+                } else {
+                    Text("Add sources to move the group.").foregroundStyle(.secondary)
+                }
+            }
+            Section("Sources in the group") {
+                if state.show.sources.isEmpty { Text("The show has no sources.").foregroundStyle(.secondary) }
+                ForEach(state.show.sources) { s in
+                    Toggle(isOn: Binding(get: { group.sources.contains(s.id) }, set: { model.setMember(s.id, of: group, $0) })) {
+                        HStack(spacing: 6) {
+                            Circle().fill(s.color).frame(width: 9, height: 9)
+                            Text(s.name ?? "Source \(s.number)")
+                            Text("\(s.number)").foregroundStyle(.secondary)
+                        }
+                    }
+                }
+            }
+            Section {
+                Button("Delete group", role: .destructive) {
+                    model.apply(.removeSourceGroup(id: group.id))
+                    selection = nil
+                }
+                .help("Deletes the group only; its sources stay")
+            }
+        }
+        .formStyle(.grouped)
+        .onAppear { name = group.name }
+        .onChange(of: group.id) { _, _ in name = group.name }
+        .onChange(of: group.name) { _, n in name = n }
+    }
+}
+
+/// A group's centre as azimuth, elevation and distance: moving one turns, raises or spreads the
+/// whole group, keeping its shape.
+struct GroupPolarControls: View {
+    @ObservedObject var model: EngineModel
+    let group: SourceGroup
+    let centre: Position
+
+    var body: some View {
+        let p = centre.polar
+        LabeledContent("Azimuth") {
+            LevelSlider(value: p.azimuth, range: -180...180, step: 1, unit: "°") { model.moveGroup(group, azimuth: $0) }
+        }
+        .help("Turns the whole group round the origin; 0 is straight ahead, positive to the left")
+        LabeledContent("Elevation") {
+            LevelSlider(value: p.elevation, range: -90...90, step: 1, unit: "°") { model.moveGroup(group, elevation: $0) }
+        }
+        .help("Raises or lowers every member by the same angle")
+        LabeledContent("Distance") {
+            LevelSlider(value: p.distance, range: 0...max(50, (p.distance * 1.5).rounded()), step: 0.1, unit: "m") {
+                model.moveGroup(group, distance: $0)
+            }
+        }
+        .help("Moves the whole group nearer or further, scaling each member's distance")
     }
 }
 #endif

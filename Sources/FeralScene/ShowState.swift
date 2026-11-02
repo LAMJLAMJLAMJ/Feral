@@ -17,6 +17,9 @@ public enum Command: Codable, Equatable {
     case setGroup(group: SpeakerGroup)
     case removeGroup(id: UUID)
     case setLFESpeakers(speakers: [UUID])
+    /// Adds a source group, or replaces the one with the same id (members, gain, mute, name).
+    case setSourceGroup(group: SourceGroup)
+    case removeSourceGroup(id: UUID)
     /// Stores the sources' current values as a snapshot (adding it, or updating the one with that id).
     case captureSnapshot(capture: SnapshotCapture)
     /// Adds a snapshot as given, or replaces the one with the same id (a rename or a new fade time).
@@ -66,6 +69,10 @@ public struct ShowState: Equatable {
     public func source(_ id: UUID) -> Source? { show.sources.first { $0.id == id } }
     public func speaker(_ id: UUID) -> Speaker? { system.speakers.first { $0.id == id } }
     public func group(_ id: UUID) -> SpeakerGroup? { show.groups.first { $0.id == id } }
+    public func sourceGroup(_ id: UUID) -> SourceGroup? { show.sourceGroups.first { $0.id == id } }
+    /// The source groups a source is in.
+    public func sourceGroups(of source: UUID) -> [SourceGroup] { show.sourceGroups.filter { $0.sources.contains(source) } }
+    public var nextSourceGroupNumber: Int { (show.sourceGroups.map(\.number).max() ?? 0) + 1 }
     public func snapshot(_ id: UUID) -> Snapshot? { show.snapshots.first { $0.id == id } }
     public func cue(_ id: UUID) -> Cue? { show.cues.first { $0.id == id } }
 
@@ -143,7 +150,26 @@ public struct ShowState: Equatable {
         case .removeSource(let id):
             guard let i = sourceIndex(id) else { throw ConfigError("no source has id \(id)") }
             show.sources.remove(at: i)
+            for g in show.sourceGroups.indices { show.sourceGroups[g].sources.removeAll { $0 == id } }
             return .layout(crossfade: true)
+
+        case .setSourceGroup(let group):
+            guard group.gainDB.isFinite, group.gainDB <= 24 else { throw ConfigError("group \(group.label): gainDB must be 24 or below") }
+            for m in group.sources where sourceIndex(m) == nil { throw ConfigError("group \(group.label) lists source \(m), which does not exist") }
+            var touched = Set(group.sources)
+            if let i = show.sourceGroups.firstIndex(where: { $0.id == group.id }) {
+                touched.formUnion(show.sourceGroups[i].sources)
+                show.sourceGroups[i] = group
+            } else {
+                show.sourceGroups.append(group)
+            }
+            return .sources(show.sources.map(\.id).filter { touched.contains($0) })
+
+        case .removeSourceGroup(let id):
+            guard let i = show.sourceGroups.firstIndex(where: { $0.id == id }) else { throw ConfigError("no source group has id \(id)") }
+            let members = Set(show.sourceGroups[i].sources)
+            show.sourceGroups.remove(at: i)
+            return .sources(show.sources.map(\.id).filter { members.contains($0) })
 
         case .setSpeaker(let speaker):
             if let i = system.speakers.firstIndex(where: { $0.id == speaker.id }) {
@@ -272,6 +298,7 @@ public struct ShowState: Equatable {
         }
         try unique(show.sources.map(\.id), "sources have the id")
         try unique(show.groups.map(\.id), "groups have the id")
+        try unique(show.sourceGroups.map(\.id), "source groups have the id")
         try unique(system.speakers.map(\.id), "speakers have the id")
         try unique(show.snapshots.map(\.id), "snapshots have the id")
         try unique(show.cues.map(\.id), "cues have the id")
@@ -318,7 +345,11 @@ public struct ShowState: Equatable {
     public func sourceConfig(_ s: Source) -> SourceConfig {
         var sends: [String: Double] = [:]
         for send in s.sends { if let g = group(send.group) { sends[g.name] = send.gainDB } }
-        return SourceConfig(input: s.input, name: s.name, position: s.position, gainDB: s.gainDB, mute: s.mute,
+        // Source groups act like VCAs: their gains add, and any muted group mutes the source.
+        let groups = sourceGroups(of: s.id)
+        let gain = groups.reduce(s.gainDB) { $0 + $1.gainDB }
+        let mute = s.mute || groups.contains { $0.mute }
+        return SourceConfig(input: s.input, name: s.name, position: s.position, gainDB: gain, mute: mute,
                             width: s.width, groups: sends, lfeDB: system.lfeSpeakers.isEmpty ? nil : s.lfeDB)
     }
 

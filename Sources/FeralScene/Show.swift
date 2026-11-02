@@ -10,6 +10,45 @@ import Foundation
 /// ones are refused.
 public let showSchema = 1
 
+/// A group of sources, like a VCA: its gain adds to each member's and its mute mutes them all, and
+/// with `linked` on the app moves its members together as a block. A source may be in several
+/// groups; their gains add up.
+public struct SourceGroup: Codable, Equatable, Identifiable {
+    public var id: UUID
+    public var number: Int
+    public var name: String
+    public var sources: [UUID]
+    public var gainDB: Double
+    public var mute: Bool
+    /// Dragging one member moves the others by the same amount.
+    public var linked: Bool
+    /// "#RRGGBB" for the app; none picks one from the number.
+    public var colour: String?
+
+    public init(id: UUID = UUID(), number: Int, name: String, sources: [UUID] = [], gainDB: Double = 0,
+                mute: Bool = false, linked: Bool = true, colour: String? = nil) {
+        self.id = id; self.number = number; self.name = name; self.sources = sources; self.gainDB = gainDB
+        self.mute = mute; self.linked = linked; self.colour = colour
+    }
+
+    enum CodingKeys: String, CodingKey { case id, number, name, sources, gainDB, mute, linked, colour }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(UUID.self, forKey: .id)
+        number = try c.decodeIfPresent(Int.self, forKey: .number) ?? 1
+        name = try c.decodeIfPresent(String.self, forKey: .name) ?? "Group"
+        sources = try c.decodeIfPresent([UUID].self, forKey: .sources) ?? []
+        gainDB = try c.decodeIfPresent(Double.self, forKey: .gainDB) ?? 0
+        mute = try c.decodeIfPresent(Bool.self, forKey: .mute) ?? false
+        linked = try c.decodeIfPresent(Bool.self, forKey: .linked) ?? true
+        colour = try c.decodeIfPresent(String.self, forKey: .colour)
+    }
+
+    /// "2 Band".
+    public var label: String { "\(number) \(name)" }
+}
+
 /// A source's send to one speaker group.
 public struct GroupSend: Codable, Equatable, Hashable {
     public var group: UUID
@@ -354,6 +393,8 @@ public struct Show: Codable, Equatable {
     public var schema: Int
     public var name: String
     public var sources: [Source]
+    /// Groups of sources (VCA-like level and mute, moving together).
+    public var sourceGroups: [SourceGroup]
     public var groups: [SpeakerGroup]
     public var snapshots: [Snapshot]
     public var cues: [Cue]
@@ -364,9 +405,10 @@ public struct Show: Codable, Equatable {
         schema = showSchema
         self.name = name; self.sources = sources; self.groups = groups; self.snapshots = snapshots; self.cues = cues
         self.control = control
+        sourceGroups = []
     }
 
-    enum CodingKeys: String, CodingKey { case schema, name, sources, groups, snapshots, cues, control }
+    enum CodingKeys: String, CodingKey { case schema, name, sources, sourceGroups, groups, snapshots, cues, control }
 
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -376,6 +418,7 @@ public struct Show: Codable, Equatable {
         }
         name = try c.decodeIfPresent(String.self, forKey: .name) ?? "Untitled"
         sources = try c.decodeIfPresent([Source].self, forKey: .sources) ?? []
+        sourceGroups = try c.decodeIfPresent([SourceGroup].self, forKey: .sourceGroups) ?? []
         groups = try c.decodeIfPresent([SpeakerGroup].self, forKey: .groups) ?? []
         snapshots = try c.decodeIfPresent([Snapshot].self, forKey: .snapshots) ?? []
         cues = try c.decodeIfPresent([Cue].self, forKey: .cues) ?? []
