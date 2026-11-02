@@ -231,7 +231,6 @@ struct SourceInspector: View {
                     }
                 }
             }
-        }
             Section {
                 HStack {
                     Button("Duplicate") { if let id = model.addSource(like: source) { selection = .source(id) } }
