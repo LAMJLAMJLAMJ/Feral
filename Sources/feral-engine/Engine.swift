@@ -392,6 +392,8 @@ final class Engine {
                 server?.send(.patch(patch: patchInfo), to: client)
             case .setPatch(let inputs, let outputs):
                 try setPatch(inputs: inputs, outputs: outputs, origin: origin)
+            case .setChannelCounts(let inputs, let outputs):
+                try setChannelCounts(inputs: inputs, outputs: outputs, origin: origin)
             }
         } catch {
             server?.send(.error(message: "\(error)"), to: client)
@@ -453,6 +455,35 @@ final class Engine {
         return PatchInfo(inputs: config.inputChannels, outputs: config.outputChannels, device: dev?.name,
                          deviceInputs: dev?.inputChannels ?? 0, deviceOutputs: dev?.outputChannels ?? 0,
                          customInputs: config.inputPatch != nil, customOutputs: config.outputPatch != nil)
+    }
+
+    /// Writes Feral's input and output counts into engine.json and reopens the audio with them.
+    private func setChannelCounts(inputs: Int?, outputs: Int?, origin: String) throws {
+        var trial = config
+        if let inputs {
+            let used = scene.show.sources.map(\.input).max() ?? 0
+            guard inputs >= used else { throw ConfigError("source on input \(used) needs at least \(used) inputs; move or delete it first") }
+            trial.inputs = inputs
+        }
+        if let outputs {
+            let used = scene.system.speakers.map(\.output).max() ?? 0
+            guard outputs >= used else { throw ConfigError("speaker on output \(used) needs at least \(used) outputs; move or delete it first") }
+            trial.outputs = outputs
+        }
+        try trial.validate()
+        var json = try readConfigJSON()
+        if inputs != nil { json["inputs"] = trial.inputs }
+        if outputs != nil { json["outputs"] = trial.outputs }
+        try writeConfig(json)
+        log("\(origin): Feral now has \(trial.inputs) inputs and \(trial.outputs) outputs")
+        reload()
+        server?.broadcast(.patch(patch: patchInfo))
+        for delay in [0.5, 2.0] {
+            queue.asyncAfter(deadline: .now() + delay) { [self] in
+                broadcastStatus()
+                server?.broadcast(.patch(patch: patchInfo))
+            }
+        }
     }
 
     /// Writes inputPatch and outputPatch into engine.json and reopens the audio on them.

@@ -23,6 +23,7 @@ final class MessageTests: XCTestCase {
             .go(cue: nil), .go(cue: "12.5"), .stopFades, .save, .refresh,
             .watch(meters: true, activity: false),
             .getPatch, .setPatch(inputs: [33, 34, 0], outputs: nil), .setPatch(inputs: nil, outputs: [1, 2]),
+            .setChannelCounts(inputs: 32, outputs: nil),
         ]
         for r in requests { try roundTrip(r) }
         let status = EngineStatus(version: "0.3", showPath: "/x.feralshow", unsaved: 2, currentCue: id, fading: [id], audio: "running")

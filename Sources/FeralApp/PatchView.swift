@@ -59,6 +59,13 @@ struct PatchView: View {
             .frame(width: 180)
             Text(deviceLine).font(.callout).foregroundStyle(.secondary).lineLimit(1)
             Spacer()
+            if let patch = model.patch {
+                ChannelCount(outputs: outputsTab, count: outputsTab ? patch.outputs.count : patch.inputs.count,
+                             card: outputsTab ? patch.deviceOutputs : patch.deviceInputs) { n in
+                    if outputsTab { model.setChannelCounts(inputs: nil, outputs: n) } else { model.setChannelCounts(inputs: n, outputs: nil) }
+                }
+                .id(outputsTab)
+            }
             Button("Patch a block…") { showBlock = true }
                 .popover(isPresented: $showBlock, arrowEdge: .bottom) {
                     if let patch = model.patch {
@@ -175,6 +182,40 @@ struct PatchView: View {
             }
         }
         return names
+    }
+}
+
+/// How many inputs (or outputs) Feral has: a number to type, and Set once it differs.
+private struct ChannelCount: View {
+    let outputs: Bool
+    let count: Int
+    let card: Int
+    let set: (Int) -> Void
+    @State private var value = 0
+
+    var body: some View {
+        HStack(spacing: 6) {
+            Text(outputs ? "Feral outputs" : "Feral inputs").font(.callout)
+            TextField("Count", value: $value, format: .number)
+                .labelsHidden()
+                .multilineTextAlignment(.trailing)
+                .frame(width: 48)
+                .onSubmit(apply)
+            Stepper("Count", value: $value, in: 1...256).labelsHidden()
+            if value != count {
+                Button("Set", action: apply)
+                    .help("Feral gets \(value) \(outputs ? "outputs" : "inputs"); the audio reopens, a short gap")
+            }
+        }
+        .help("How many \(outputs ? "outputs" : "inputs") Feral has (up to 256)" + (card > 0 ? "; the card has \(card)" : ""))
+        .onAppear { value = count }
+        .onChange(of: count) { _, n in value = n }
+    }
+
+    private func apply() {
+        let n = min(max(value, 1), 256)
+        value = n
+        if n != count { set(n) }
     }
 }
 

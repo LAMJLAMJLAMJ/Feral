@@ -41,6 +41,9 @@ public enum Request: Codable, Equatable {
     /// Either may be left out to keep it. Written to engine.json as inputPatch and outputPatch; the
     /// audio reopens on the new patch at once (a short gap).
     case setPatch(inputs: [Int]?, outputs: [Int]?)
+    /// Sets how many inputs and outputs Feral has (engine.json's inputs and outputs, up to 256);
+    /// either may be left out to keep it. The audio reopens (a short gap).
+    case setChannelCounts(inputs: Int?, outputs: Int?)
 }
 
 /// The patch between the sound card and the engine, for the app's Patch window.

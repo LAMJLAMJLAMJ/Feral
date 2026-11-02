@@ -100,6 +100,8 @@ final class EngineModel: ObservableObject {
 
     func setPatch(inputs: [Int]?, outputs: [Int]?) { send(.setPatch(inputs: inputs, outputs: outputs)) }
 
+    func setChannelCounts(inputs: Int?, outputs: Int?) { send(.setChannelCounts(inputs: inputs, outputs: outputs)) }
+
     func send(_ request: Request) { client?.send(request) }
     func apply(_ command: Command) { send(.apply(command: command)) }
 
