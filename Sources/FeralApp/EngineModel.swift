@@ -22,6 +22,12 @@ final class EngineModel: ObservableObject {
     let monitor = ControlMonitor()
     /// The engine's launchd agent on this Mac: start, stop, start at login.
     let service = EngineService()
+    /// The audio devices on the engine's Mac, and engine.json's `device`.
+    @Published private(set) var devices: [AudioDeviceSummary] = []
+    @Published private(set) var selectedDevice: String?
+    /// A device chosen in a menu, waiting for the person to confirm the switch.
+    @Published var pendingDevice: AudioDeviceSummary?
+    private var deviceTimer: Timer?
 
     private var mirror = MirroredShow()
     private var client: ControlClient?
@@ -42,6 +48,7 @@ final class EngineModel: ObservableObject {
             if up {
                 // Meters and the control monitor are off until a client asks.
                 self.client?.send(.watch(meters: true, activity: true))
+                self.client?.send(.listDevices)
             } else {
                 self.state = nil; self.status = nil; self.mirror = MirroredShow()
                 self.meters.reset()
@@ -49,6 +56,11 @@ final class EngineModel: ObservableObject {
         }
         c.start()
         client = c
+        deviceTimer?.invalidate()
+        deviceTimer = Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { [weak self] _ in
+            guard let self, self.connected else { return }
+            self.refreshDevices()
+        }
     }
 
     private func handle(_ event: Event) {
@@ -65,8 +77,19 @@ final class EngineModel: ObservableObject {
             meters.update(frame)
         case .activity(let lines, let dropped):
             monitor.heard(lines, dropped: dropped)
+        case .devices(let list, let selected):
+            if devices != list { devices = list }
+            if selectedDevice != selected { selectedDevice = selected }
         }
     }
+
+    /// The device engine.json names, if it is on the engine's Mac now.
+    var currentDevice: AudioDeviceSummary? { devices.first { $0.matches(selectedDevice) } }
+
+    /// Asks again for the device list (cards come and go).
+    func refreshDevices() { send(.listDevices) }
+
+    func setDevice(_ device: AudioDeviceSummary) { send(.setDevice(device: device.uid)) }
 
     func send(_ request: Request) { client?.send(request) }
     func apply(_ command: Command) { send(.apply(command: command)) }

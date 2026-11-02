@@ -244,6 +244,22 @@ func runEngineCommand(_ command: String, _ args: [String]) {
         guard let frame else { fail("the engine sent no meters") }
         printMeters(frame, state, all: args.contains("all"))
 
+    case "device":
+        // The audio devices on the engine's Mac, or switch the engine to one.
+        let isDevices: (Event) -> Bool = { e in
+            if case .devices = e { return true }
+            return false
+        }
+        let request: Request = args.isEmpty ? .listDevices : .setDevice(device: args.joined(separator: " "))
+        guard case .devices(let list, let selected) = session.send(request, timeout: 5, until: isDevices) else { return }
+        if !args.isEmpty { print("the engine now uses \(list.first { $0.matches(selected) }?.name ?? selected ?? "?")") }
+        for d in list {
+            let mark = d.matches(selected) ? "*" : " "
+            print("\(mark) \(pad(d.name, 34)) in \(pad(String(d.inputChannels), 4)) out \(pad(String(d.outputChannels), 4)) "
+                  + "\(Int(d.sampleRate)) Hz  \(d.transport)" + (d.isAggregate ? "  (aggregate: refused)" : ""))
+        }
+        if args.isEmpty { print("\n* is the one in engine.json. Switch with: feral-cli device \"NAME\"") }
+
     case "monitor":
         // Every OSC and MIDI message the engine receives, and what it did, as the app's control monitor shows them.
         session.send(.watch(meters: false, activity: true), waiting: 0.3)

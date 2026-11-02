@@ -30,6 +30,39 @@ public enum Request: Codable, Equatable {
     /// Asks for the level meters (`meters` events, 20 a second) and for the OSC and MIDI the engine
     /// receives (`activity` events). Both are off until a client asks.
     case watch(meters: Bool, activity: Bool)
+    /// Asks for the audio devices on the engine's Mac (answered with `devices`).
+    case listDevices
+    /// Switches the engine to an audio device (its UID, or part of its name) for both inputs and
+    /// outputs: written to engine.json as `device`, and the device is reopened at once.
+    case setDevice(device: String)
+}
+
+/// An audio device on the engine's Mac, as the app's sound card menu lists it.
+public struct AudioDeviceSummary: Codable, Equatable, Identifiable {
+    public var uid: String
+    public var name: String
+    /// "USB", "Thunderbolt", "PCI", "Virtual", "Aggregate", ...
+    public var transport: String
+    public var inputChannels: Int
+    public var outputChannels: Int
+    public var sampleRate: Double
+    public var sampleRates: [Double]
+    public var isAggregate: Bool
+
+    public var id: String { uid }
+
+    public init(uid: String, name: String, transport: String, inputChannels: Int, outputChannels: Int,
+                sampleRate: Double, sampleRates: [Double], isAggregate: Bool) {
+        self.uid = uid; self.name = name; self.transport = transport; self.inputChannels = inputChannels
+        self.outputChannels = outputChannels; self.sampleRate = sampleRate; self.sampleRates = sampleRates
+        self.isAggregate = isAggregate
+    }
+
+    /// engine.json's `device` names this device (its UID, or part of its name, as the engine matches it).
+    public func matches(_ setting: String?) -> Bool {
+        guard let setting, !setting.isEmpty else { return false }
+        return uid == setting || name.localizedCaseInsensitiveContains(setting)
+    }
 }
 
 /// The engine's state besides the show itself.
@@ -179,6 +212,8 @@ public enum Event: Codable, Equatable {
     /// OSC and MIDI received in the last moment, to clients that asked. `dropped` counts messages
     /// left out because too many came at once (a tracker streaming positions).
     case activity(lines: [ControlActivity], dropped: Int)
+    /// The audio devices on the engine's Mac, and engine.json's `device` setting.
+    case devices(list: [AudioDeviceSummary], selected: String?)
 }
 
 /// Newline-framed JSON.
@@ -240,7 +275,7 @@ public struct MirroredShow {
             seq = n
         case .status(let s):
             status = s
-        case .error, .meters, .activity:
+        case .error, .meters, .activity, .devices:
             break
         }
         return true

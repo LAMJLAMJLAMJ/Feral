@@ -261,7 +261,7 @@ case "midi":
     fail("MIDI needs macOS")
     #endif
 
-case "status", "go", "recall", "move", "store", "cue", "stop", "save", "trigger", "admbox", "release", "meters", "monitor":
+case "status", "go", "recall", "move", "store", "cue", "stop", "save", "trigger", "admbox", "release", "meters", "monitor", "device":
     #if canImport(Network)
     runEngineCommand(command, files)
     #else
@@ -293,6 +293,7 @@ default:
     feral-cli meters [all] [--seconds S]              input and output levels (loudest over S seconds, default 2);
                                                       all: every channel, not only the ones the show uses
     feral-cli monitor [--seconds S]                   every OSC and MIDI message the engine gets, and what it did
+    feral-cli device [NAME]                           the audio devices on the engine's Mac, or switch the engine to one
 
     The trigger map (console and QLab messages that fire cues) and the ADM-OSC box:
     feral-cli trigger list

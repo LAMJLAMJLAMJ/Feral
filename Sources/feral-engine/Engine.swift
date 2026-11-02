@@ -384,10 +384,51 @@ final class Engine {
                 broadcastStatus()
             case .watch(let meters, let activity):
                 watchers[client] = meters || activity ? Watch(meters: meters, activity: activity) : nil
+            case .listDevices:
+                server?.send(.devices(list: deviceList(), selected: config.device), to: client)
+            case .setDevice(let device):
+                try setDevice(device, origin: origin)
             }
         } catch {
             server?.send(.error(message: "\(error)"), to: client)
         }
+    }
+
+    // MARK: - The audio device
+
+    private func deviceList() -> [AudioDeviceSummary] {
+        ((try? AudioDevices.all()) ?? []).map {
+            AudioDeviceSummary(uid: $0.uid, name: $0.name, transport: $0.transport, inputChannels: $0.inputChannels,
+                               outputChannels: $0.outputChannels, sampleRate: $0.sampleRate,
+                               sampleRates: $0.availableSampleRates, isAggregate: $0.isAggregate)
+        }
+    }
+
+    /// Writes `device` into engine.json (keeping everything else in it) and reopens the audio on it.
+    private func setDevice(_ device: String, origin: String) throws {
+        let list = deviceList()
+        guard let chosen = list.first(where: { $0.uid == device }) ?? list.first(where: { $0.matches(device) }) else {
+            throw ConfigError("no audio device \(device) on this Mac")
+        }
+        if chosen.isAggregate && config.refuseAggregateDevices {
+            throw ConfigError("\(chosen.name) is an aggregate device; aggregates drift or resample between clocks, so the engine refuses them")
+        }
+        let url = options.configURL
+        var json: [String: Any] = [:]
+        if FileManager.default.fileExists(atPath: url.path) {
+            guard let object = try JSONSerialization.jsonObject(with: Data(contentsOf: url)) as? [String: Any] else {
+                throw ConfigError("\(url.path) is not a JSON object")
+            }
+            json = object
+        }
+        json["device"] = chosen.uid
+        try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try JSONSerialization.data(withJSONObject: json, options: [.prettyPrinted, .sortedKeys]).write(to: url, options: .atomic)
+        log("\(origin): audio device set to \(chosen.name) (\(chosen.uid)) in \(url.path)")
+        reload()
+        server?.broadcast(.devices(list: list, selected: config.device))
+        // The device opens in the background; tell clients how it went.
+        for delay in [0.5, 2.0] { queue.asyncAfter(deadline: .now() + delay) { [self] in broadcastStatus() } }
     }
 
     private var status: EngineStatus {

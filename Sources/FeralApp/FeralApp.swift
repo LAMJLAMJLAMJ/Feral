@@ -23,6 +23,9 @@ struct FeralApp: App {
             CommandMenu("Engine") {
                 EngineMenu(service: model.service)
             }
+            CommandMenu("Audio") {
+                AudioMenu(model: model)
+            }
         }
         Window("Control monitor", id: "monitor") {
             MonitorView(model: model, monitor: model.monitor)
@@ -106,6 +109,7 @@ struct ContentView: View {
         .navigationSubtitle(subtitle)
         .toolbar {
             ToolbarItemGroup(placement: .primaryAction) {
+                SoundCardPicker(model: model)
                 Toggle(isOn: $moveSpeakers) { Label("Move speakers", systemImage: "hifispeaker.2") }
                     .help("Let the plan move speakers too (the system layer)")
                 Toggle(isOn: $showMeters) { Label("Meters", systemImage: "chart.bar.xaxis") }
@@ -129,6 +133,7 @@ struct ContentView: View {
             Text(model.lastError ?? "")
         }
         .modifier(ServiceAlert(service: model.service))
+        .modifier(DeviceSwitchConfirmation(model: model))
     }
 
     @ViewBuilder
