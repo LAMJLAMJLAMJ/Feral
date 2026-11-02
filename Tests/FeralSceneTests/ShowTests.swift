@@ -573,9 +573,9 @@ final class ShowTests: XCTestCase {
         try state.apply(.updateSources(updates: state.snappedToNearestSpeakers([vox.id, keys.id])))
         XCTAssertEqual(state.source(vox.id)?.position, Position(-4, 0, 5))
         XCTAssertEqual(state.source(keys.id)?.position, Position(0, 5, 8), "Keys sends to Top, whose only speaker is 5")
-        // Two sources never land on one speaker.
+        // Two sources nearest one speaker both land on it.
         let both = state.snappedToNearestSpeakers([vox.id, vox.id])
-        XCTAssertNotEqual(both[0].values.position, both[1].values.position)
+        XCTAssertEqual(both[0].values.position, both[1].values.position)
     }
 
     func testCuesRunInNumberOrder() throws {

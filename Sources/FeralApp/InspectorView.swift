@@ -233,7 +233,7 @@ struct SourceInspector: View {
                     model.drag(source.id, from: source.position, to: p, partners: model.dragPartners(of: source.id))
                 }
                 Button("Snap to nearest speaker") { model.snapToNearestSpeakers([source.id]) }
-                    .help("Moves the source onto the nearest speaker of the groups it sends to (a stereo pair: each side to its own)")
+                    .help("Moves the source onto the nearest speaker of the groups it sends to (a stereo pair: each side)")
                 let groups = state.sourceGroups(of: source.id).filter { !$0.stereo }
                 if !groups.isEmpty {
                     LabeledContent("Groups") {

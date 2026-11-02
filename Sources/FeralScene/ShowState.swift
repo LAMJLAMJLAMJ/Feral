@@ -386,21 +386,19 @@ public struct ShowState: Equatable {
     // MARK: To and from the renderer's settings
 
     /// Moves sources onto their nearest speakers: of the speakers in the groups each one sends to
-    /// (any speaker when it sends nowhere), not LFE speakers, and not one another source here took.
+    /// (any speaker when it sends nowhere), not LFE speakers. Several can land on one speaker.
     public func snappedToNearestSpeakers(_ ids: [UUID]) -> [SourceUpdate] {
-        var taken = Set<UUID>()
-        return ids.compactMap { id -> SourceUpdate? in
+        ids.compactMap { id -> SourceUpdate? in
             guard let s = source(id) else { return nil }
             let groups = Set(s.sends.map(\.group))
             let inGroups = Set(show.groups.filter { groups.contains($0.id) }.flatMap(\.speakers))
-            var candidates = system.speakers.filter { !system.lfeSpeakers.contains($0.id) && !taken.contains($0.id) }
+            var candidates = system.speakers.filter { !system.lfeSpeakers.contains($0.id) }
             if !inGroups.isEmpty, candidates.contains(where: { inGroups.contains($0.id) }) {
                 candidates = candidates.filter { inGroups.contains($0.id) }
             }
             guard let nearest = candidates.min(by: { $0.position.distance(to: s.position) < $1.position.distance(to: s.position) }) else {
                 return nil
             }
-            taken.insert(nearest.id)
             return SourceUpdate(id: id, values: SourceValues(position: nearest.position))
         }
     }
