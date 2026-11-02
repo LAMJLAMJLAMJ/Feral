@@ -19,6 +19,7 @@ struct FeralApp: App {
         .commands {
             CommandGroup(after: .windowArrangement) {
                 OpenMonitorButton()
+                OpenMixerButton()
             }
             CommandMenu("Engine") {
                 EngineMenu(service: model.service)
@@ -31,6 +32,10 @@ struct FeralApp: App {
             MonitorView(model: model, monitor: model.monitor)
         }
         .defaultSize(width: 980, height: 620)
+        Window("Mixer", id: "mixer") {
+            MixerWindow(model: model)
+        }
+        .defaultSize(width: 900, height: 420)
         Window("Patch", id: "patch") {
             PatchView(model: model, meters: model.meters)
         }
@@ -90,6 +95,7 @@ struct ContentView: View {
     @State private var selection: Selection?
     @State private var moveSpeakers = false
     @AppStorage("showMeters") private var showMeters = true
+    @AppStorage("showMixer") private var showMixer = false
     @AppStorage("showHeight") private var showHeight = true
     @AppStorage("showInspector") private var showInspector = true
 
@@ -127,6 +133,9 @@ struct ContentView: View {
                 Toggle(isOn: $showHeight) { Label("Height", systemImage: "arrow.up.and.down.square") }
                     .keyboardShortcut("e", modifiers: [.command, .shift])
                     .help("Show or hide the height view beside the plan (⇧⌘E)")
+                Toggle(isOn: $showMixer) { Label("Mixer", systemImage: "slider.vertical.3") }
+                    .keyboardShortcut("x", modifiers: [.command, .shift])
+                    .help("Show or hide the mixer under the plan (⇧⌘X); Window > Mixer (⌥⌘X) opens it in its own window")
                 Toggle(isOn: $showMeters) { Label("Meters", systemImage: "chart.bar.xaxis") }
                     .keyboardShortcut("m", modifiers: [.command, .shift])
                     .help("Show or hide the output meters under the plan (⇧⌘M)")
@@ -162,6 +171,8 @@ struct ContentView: View {
                     ElevationView(model: model, meters: model.meters, state: state, selection: $selection,
                                   moveSpeakers: moveSpeakers, shown: $showHeight)
                 }
+                Divider()
+                MixerView(model: model, meters: model.meters, selection: $selection, docked: $showMixer)
                 Divider()
                 MeterBridge(meters: model.meters, state: state, selection: $selection, shown: $showMeters)
             }
