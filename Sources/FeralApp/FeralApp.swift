@@ -138,7 +138,7 @@ struct ContentView: View {
                     .help("Show or hide the mixer under the plan (⇧⌘X); Window > Mixer (⌥⌘X) opens it in its own window")
                 Toggle(isOn: $showMeters) { Label("Meters", systemImage: "chart.bar.xaxis") }
                     .keyboardShortcut("m", modifiers: [.command, .shift])
-                    .help("Show or hide the output meters under the plan (⇧⌘M)")
+                    .help("Show or hide the output meters above the plan (⇧⌘M)")
                 Button { openWindow(id: "monitor") } label: {
                     Label("Control monitor", systemImage: "antenna.radiowaves.left.and.right")
                 }
@@ -165,6 +165,9 @@ struct ContentView: View {
     private var detail: some View {
         if let state = model.state {
             VStack(spacing: 0) {
+                // Outputs at the top, the input mixer at the bottom, so they never look alike.
+                MeterBridge(meters: model.meters, state: state, selection: $selection, shown: $showMeters)
+                Divider()
                 HStack(spacing: 0) {
                     PlanView(model: model, meters: model.meters, state: state, selection: $selection, moveSpeakers: moveSpeakers)
                     Divider()
@@ -173,8 +176,6 @@ struct ContentView: View {
                 }
                 Divider()
                 MixerView(model: model, meters: model.meters, selection: $selection, docked: $showMixer)
-                Divider()
-                MeterBridge(meters: model.meters, state: state, selection: $selection, shown: $showMeters)
             }
         } else {
             VStack(spacing: 10) {
