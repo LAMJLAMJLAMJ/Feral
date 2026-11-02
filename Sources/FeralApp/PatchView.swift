@@ -190,26 +190,50 @@ private struct BlockPatch: View {
     @State private var loaded = false
 
     var body: some View {
-        Form {
-            TextField("Feral \(outputs ? "outputs" : "inputs") from", value: $from, format: .number)
-            TextField("to", value: $to, format: .number)
-            TextField(outputs ? "onto card output" : "from card input", value: $first, format: .number)
-            Text(summary).font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+        VStack(alignment: .leading, spacing: 12) {
+            Text(outputs ? "Patch Feral outputs in order" : "Patch Feral inputs in order").font(.headline)
+            Grid(alignment: .leading, horizontalSpacing: 10, verticalSpacing: 8) {
+                GridRow {
+                    Text(outputs ? "Feral outputs" : "Feral inputs").gridColumnAlignment(.trailing)
+                    HStack(spacing: 6) {
+                        number($from)
+                        Text("to")
+                        number($to)
+                    }
+                }
+                GridRow {
+                    Text(outputs ? "Onto card output" : "From card input")
+                    HStack(spacing: 6) {
+                        number($first)
+                        Text("onwards").foregroundStyle(.secondary)
+                    }
+                }
+            }
+            Text(summary).font(.callout).foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
             HStack {
-                Button("Unpatch them") { apply(lo, hi, 0) }
+                Button("Unpatch") { apply(lo, hi, 0) }
+                    .help("Unpatch these Feral \(outputs ? "outputs" : "inputs")")
                 Spacer()
                 Button("Patch") { apply(lo, hi, max(first, 1)) }
                     .buttonStyle(.borderedProminent)
                     .keyboardShortcut(.defaultAction)
             }
         }
-        .padding()
-        .frame(width: 300)
+        .padding(16)
+        .frame(width: 340)
         .onAppear {
             guard !loaded else { return }
             loaded = true
             to = max(1, min(rows, available > 0 ? available : rows))
         }
+    }
+
+    private func number(_ value: Binding<Int>) -> some View {
+        TextField("", value: value, format: .number)
+            .labelsHidden()
+            .multilineTextAlignment(.trailing)
+            .frame(width: 56)
     }
 
     private var lo: Int { min(max(min(from, to), 1), max(rows, 1)) }
