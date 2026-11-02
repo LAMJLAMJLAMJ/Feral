@@ -20,6 +20,7 @@ struct FeralApp: App {
             CommandGroup(after: .windowArrangement) {
                 OpenMonitorButton()
                 OpenMixerButton()
+                OpenSendsButton()
             }
             CommandMenu("Engine") {
                 EngineMenu(service: model.service)
@@ -36,6 +37,10 @@ struct FeralApp: App {
             MixerWindow(model: model)
         }
         .defaultSize(width: 900, height: 420)
+        Window("Sends", id: "sends") {
+            SendsView(model: model)
+        }
+        .defaultSize(width: 760, height: 520)
         Window("Patch", id: "patch") {
             PatchView(model: model, meters: model.meters)
         }
@@ -139,6 +144,8 @@ struct ContentView: View {
                 Toggle(isOn: $showMeters) { Label("Meters", systemImage: "chart.bar.xaxis") }
                     .keyboardShortcut("m", modifiers: [.command, .shift])
                     .help("Show or hide the output meters above the plan (⇧⌘M)")
+                Button { openWindow(id: "sends") } label: { Label("Sends", systemImage: "tablecells") }
+                    .help("Every source's sends to every speaker group, as one grid (⌥⌘S)")
                 Button { openWindow(id: "monitor") } label: {
                     Label("Control monitor", systemImage: "antenna.radiowaves.left.and.right")
                 }
