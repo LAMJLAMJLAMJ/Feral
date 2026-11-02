@@ -86,6 +86,7 @@ struct ContentView: View {
     @State private var selection: Selection?
     @State private var moveSpeakers = false
     @AppStorage("showMeters") private var showMeters = true
+    @AppStorage("showHeight") private var showHeight = true
     @AppStorage("showInspector") private var showInspector = true
 
     var body: some View {
@@ -117,6 +118,9 @@ struct ContentView: View {
                 SoundCardPicker(model: model)
                 Toggle(isOn: $moveSpeakers) { Label("Move speakers", systemImage: "hifispeaker.2") }
                     .help("Let the plan move speakers too (the system layer)")
+                Toggle(isOn: $showHeight) { Label("Height", systemImage: "arrow.up.and.down.square") }
+                    .keyboardShortcut("e", modifiers: [.command, .shift])
+                    .help("Show or hide the height view beside the plan (⇧⌘E)")
                 Toggle(isOn: $showMeters) { Label("Meters", systemImage: "chart.bar.xaxis") }
                     .keyboardShortcut("m", modifiers: [.command, .shift])
                     .help("Show or hide the output meters under the plan (⇧⌘M)")
@@ -146,7 +150,12 @@ struct ContentView: View {
     private var detail: some View {
         if let state = model.state {
             VStack(spacing: 0) {
-                PlanView(model: model, meters: model.meters, state: state, selection: $selection, moveSpeakers: moveSpeakers)
+                HStack(spacing: 0) {
+                    PlanView(model: model, meters: model.meters, state: state, selection: $selection, moveSpeakers: moveSpeakers)
+                    Divider()
+                    ElevationView(model: model, meters: model.meters, state: state, selection: $selection,
+                                  moveSpeakers: moveSpeakers, shown: $showHeight)
+                }
                 Divider()
                 MeterBridge(meters: model.meters, state: state, selection: $selection, shown: $showMeters)
             }
