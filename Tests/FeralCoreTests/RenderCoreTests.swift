@@ -85,6 +85,10 @@ final class RenderCoreTests: XCTestCase {
         try core.publish(plain)
         for _ in 0..<4 { render(core.pointer, TestBuffers(channels: 1, frames: frames) { _, _ in 1 }, out) }
         XCTAssertEqual(out[0][frames - 1], 1, accuracy: 1e-6)
+        // Every band in use: high-pass, two shelves and three peaks fit the core's sections.
+        let full = SourceEQ(on: true, highPassHz: 80, lowDB: 2, lowMidDB: -3, midDB: 1, highMidDB: -2, highDB: 3)
+        XCTAssertEqual(full.bands.count, InputParams.bands)
+        XCTAssertEqual(InputParams(eq: full, compressor: nil, link: nil, sampleRate: 48_000).eq.count, 6)
     }
 
     func testSilentBeforeAnyRouting() {

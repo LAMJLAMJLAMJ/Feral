@@ -3,7 +3,7 @@ import FeralControl
 import FeralScene
 import SwiftUI
 
-/// A source's channel EQ: on, high-pass, and low shelf, mid peak and high shelf, with its curve.
+/// A source's channel EQ: on, high-pass, low shelf, three peak bands and high shelf, with its curve.
 struct EQControls: View {
     let eq: SourceEQ
     let set: (SourceEQ) -> Void
@@ -20,14 +20,9 @@ struct EQControls: View {
             Divider()
             row("Low") { GainSlider(db: eq.lowDB) { var e = eq; e.lowDB = $0; set(e) } }
             row("") { FrequencySlider(hz: eq.lowHz) { var e = eq; e.lowHz = $0; set(e) } }
-            Divider()
-            row("Mid") { GainSlider(db: eq.midDB) { var e = eq; e.midDB = $0; set(e) } }
-            row("") { FrequencySlider(hz: eq.midHz) { var e = eq; e.midHz = $0; set(e) } }
-            row("Q") {
-                LevelSlider(value: eq.midQ, range: 0.3...8, step: 0.1, unit: "", format: { String(format: "Q %.1f", $0) }) {
-                    var e = eq; e.midQ = $0; set(e)
-                }
-            }
+            peak("Lo mid", db: \.lowMidDB, hz: \.lowMidHz, q: \.lowMidQ)
+            peak("Mid", db: \.midDB, hz: \.midHz, q: \.midQ)
+            peak("Hi mid", db: \.highMidDB, hz: \.highMidHz, q: \.highMidQ)
             Divider()
             row("High") { GainSlider(db: eq.highDB) { var e = eq; e.highDB = $0; set(e) } }
             row("") { FrequencySlider(hz: eq.highHz) { var e = eq; e.highHz = $0; set(e) } }
@@ -39,9 +34,23 @@ struct EQControls: View {
         }
     }
 
+    /// A peak band: gain, frequency and Q.
+    @ViewBuilder
+    private func peak(_ title: String, db: WritableKeyPath<SourceEQ, Double>, hz: WritableKeyPath<SourceEQ, Double>,
+                      q: WritableKeyPath<SourceEQ, Double>) -> some View {
+        Divider()
+        row(title) { GainSlider(db: eq[keyPath: db]) { var e = eq; e[keyPath: db] = $0; set(e) } }
+        row("") { FrequencySlider(hz: eq[keyPath: hz]) { var e = eq; e[keyPath: hz] = $0; set(e) } }
+        row("") {
+            LevelSlider(value: eq[keyPath: q], range: 0.3...8, step: 0.1, unit: "", format: { String(format: "Q %.1f", $0) }) {
+                var e = eq; e[keyPath: q] = $0; set(e)
+            }
+        }
+    }
+
     private func row<C: View>(_ title: String, @ViewBuilder _ content: () -> C) -> some View {
         HStack(spacing: 6) {
-            Text(title).font(.caption).foregroundStyle(.secondary).frame(width: 34, alignment: .leading)
+            Text(title).font(.caption).foregroundStyle(.secondary).frame(width: 40, alignment: .leading)
             content()
         }
     }

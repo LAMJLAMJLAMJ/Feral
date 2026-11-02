@@ -99,7 +99,7 @@ typedef struct feral_output_params {
 /// The parameters of an output with no processing: no delay, flat, unity gain, no limiter, not muted.
 feral_output_params feral_output_defaults(void);
 
-#define FERAL_INPUT_EQ_BANDS 4
+#define FERAL_INPUT_EQ_BANDS 6
 
 /// One input's processing before it reaches any tap or its delay line: EQ, then a compressor.
 typedef struct feral_input_params {

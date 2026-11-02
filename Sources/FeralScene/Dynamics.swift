@@ -1,29 +1,43 @@
 import FeralCore
 import Foundation
 
-/// A source's channel EQ, as on a console: a high-pass filter and three bands (low shelf, a mid
-/// peak, high shelf). Off passes the input through untouched.
+/// A source's channel EQ, as on a console: a high-pass filter, a low shelf, three peak bands (low
+/// mid, mid, high mid) and a high shelf. Off passes the input through untouched.
 public struct SourceEQ: Codable, Equatable {
     public var on: Bool
     /// The high-pass filter's corner; none is off.
     public var highPassHz: Double?
     public var lowHz: Double
     public var lowDB: Double
+    public var lowMidHz: Double
+    public var lowMidDB: Double
+    public var lowMidQ: Double
     public var midHz: Double
     public var midDB: Double
     public var midQ: Double
+    public var highMidHz: Double
+    public var highMidDB: Double
+    public var highMidQ: Double
     public var highHz: Double
     public var highDB: Double
 
     public init(on: Bool = false, highPassHz: Double? = nil, lowHz: Double = 100, lowDB: Double = 0,
-                midHz: Double = 1000, midDB: Double = 0, midQ: Double = 1, highHz: Double = 8000, highDB: Double = 0) {
+                lowMidHz: Double = 250, lowMidDB: Double = 0, lowMidQ: Double = 1,
+                midHz: Double = 1000, midDB: Double = 0, midQ: Double = 1,
+                highMidHz: Double = 4000, highMidDB: Double = 0, highMidQ: Double = 1,
+                highHz: Double = 8000, highDB: Double = 0) {
         self.on = on; self.highPassHz = highPassHz; self.lowHz = lowHz; self.lowDB = lowDB
-        self.midHz = midHz; self.midDB = midDB; self.midQ = midQ; self.highHz = highHz; self.highDB = highDB
+        self.lowMidHz = lowMidHz; self.lowMidDB = lowMidDB; self.lowMidQ = lowMidQ
+        self.midHz = midHz; self.midDB = midDB; self.midQ = midQ
+        self.highMidHz = highMidHz; self.highMidDB = highMidDB; self.highMidQ = highMidQ
+        self.highHz = highHz; self.highDB = highDB
     }
 
     public static let flat = SourceEQ()
 
-    enum CodingKeys: String, CodingKey { case on, highPassHz, lowHz, lowDB, midHz, midDB, midQ, highHz, highDB }
+    enum CodingKeys: String, CodingKey {
+        case on, highPassHz, lowHz, lowDB, lowMidHz, lowMidDB, lowMidQ, midHz, midDB, midQ, highMidHz, highMidDB, highMidQ, highHz, highDB
+    }
 
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -32,6 +46,12 @@ public struct SourceEQ: Codable, Equatable {
         highPassHz = try c.decodeIfPresent(Double.self, forKey: .highPassHz)
         lowHz = try c.decodeIfPresent(Double.self, forKey: .lowHz) ?? d.lowHz
         lowDB = try c.decodeIfPresent(Double.self, forKey: .lowDB) ?? d.lowDB
+        lowMidHz = try c.decodeIfPresent(Double.self, forKey: .lowMidHz) ?? d.lowMidHz
+        lowMidDB = try c.decodeIfPresent(Double.self, forKey: .lowMidDB) ?? d.lowMidDB
+        lowMidQ = try c.decodeIfPresent(Double.self, forKey: .lowMidQ) ?? d.lowMidQ
+        highMidHz = try c.decodeIfPresent(Double.self, forKey: .highMidHz) ?? d.highMidHz
+        highMidDB = try c.decodeIfPresent(Double.self, forKey: .highMidDB) ?? d.highMidDB
+        highMidQ = try c.decodeIfPresent(Double.self, forKey: .highMidQ) ?? d.highMidQ
         midHz = try c.decodeIfPresent(Double.self, forKey: .midHz) ?? d.midHz
         midDB = try c.decodeIfPresent(Double.self, forKey: .midDB) ?? d.midDB
         midQ = try c.decodeIfPresent(Double.self, forKey: .midQ) ?? d.midQ
@@ -45,21 +65,23 @@ public struct SourceEQ: Codable, Equatable {
         var out: [EQBand] = []
         if let hp = highPassHz { out.append(EQBand(.highPass, hz: hp)) }
         if lowDB != 0 { out.append(EQBand(.lowShelf, hz: lowHz, gainDB: lowDB)) }
+        if lowMidDB != 0 { out.append(EQBand(.peak, hz: lowMidHz, q: lowMidQ, gainDB: lowMidDB)) }
         if midDB != 0 { out.append(EQBand(.peak, hz: midHz, q: midQ, gainDB: midDB)) }
+        if highMidDB != 0 { out.append(EQBand(.peak, hz: highMidHz, q: highMidQ, gainDB: highMidDB)) }
         if highDB != 0 { out.append(EQBand(.highShelf, hz: highHz, gainDB: highDB)) }
         return out
     }
 
     /// Frequencies 20 Hz to 20 kHz, gains ±24 dB, Q 0.1 to 10.
     func check(_ who: String) throws {
-        let freqs = [lowHz, midHz, highHz] + (highPassHz.map { [$0] } ?? [])
+        let freqs = [lowHz, lowMidHz, midHz, highMidHz, highHz] + (highPassHz.map { [$0] } ?? [])
         guard freqs.allSatisfy({ $0.isFinite && (20...20_000).contains($0) }) else {
             throw ConfigError("\(who): EQ frequencies must be from 20 Hz to 20 kHz")
         }
-        guard [lowDB, midDB, highDB].allSatisfy({ $0.isFinite && abs($0) <= 24 }) else {
+        guard [lowDB, lowMidDB, midDB, highMidDB, highDB].allSatisfy({ $0.isFinite && abs($0) <= 24 }) else {
             throw ConfigError("\(who): EQ gains must be within ±24 dB")
         }
-        guard midQ.isFinite, (0.1...10).contains(midQ) else { throw ConfigError("\(who): EQ Q must be from 0.1 to 10") }
+        guard [lowMidQ, midQ, highMidQ].allSatisfy({ $0.isFinite && (0.1...10).contains($0) }) else { throw ConfigError("\(who): EQ Q must be from 0.1 to 10") }
     }
 }
 
