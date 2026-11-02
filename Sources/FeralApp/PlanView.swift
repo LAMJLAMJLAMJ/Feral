@@ -31,7 +31,8 @@ struct PlanFrame {
 
     /// The speakers and sources with 2 m around them, at least 12 m by 12 m.
     static func bounds(_ state: ShowState) -> (minX: Double, maxX: Double, minY: Double, maxY: Double) {
-        let points = state.system.speakers.map(\.position) + state.show.sources.map(\.position) + [Position(0, 0, 0)]
+        let points = state.system.speakers.map(\.position) + state.show.sources.map(\.position)
+            + [Position(0, 0, 0), state.system.listener.position]
         var minX = points.map(\.x).min()! - 2, maxX = points.map(\.x).max()! + 2
         var minY = points.map(\.y).min()! - 2, maxY = points.map(\.y).max()! + 2
         if maxX - minX < 12 { let c = (minX + maxX) / 2; minX = c - 6; maxX = c + 6 }
@@ -73,6 +74,7 @@ struct PlanView: View {
             Canvas { ctx, size in
                 drawGrid(ctx, frame, size)
                 drawSpeakers(ctx, frame)
+                drawListener(ctx, frame)
                 drawSources(ctx, frame)
             }
             .contentShape(Rectangle())
@@ -223,6 +225,36 @@ struct PlanView: View {
         }
     }
 
+    /// The listening point that azimuth, elevation and distance are measured from: a head with a
+    /// nose pointing the way it faces.
+    private func drawListener(_ ctx: GraphicsContext, _ f: PlanFrame) {
+        let l = state.system.listener
+        var at = l.position
+        if let drag, drag.target == .listener { at = drag.position }
+        let c = f.point(at)
+        let a = l.facing * Double.pi / 180
+        let ahead = f.point(Position(at.x - sin(a), at.y + cos(a), at.z))
+        let len = max(hypot(ahead.x - c.x, ahead.y - c.y), 0.001)
+        let dir = CGPoint(x: (ahead.x - c.x) / len, y: (ahead.y - c.y) / len)
+        let r: CGFloat = 8
+        var nose = Path()
+        nose.move(to: CGPoint(x: c.x + dir.x * (r + 7), y: c.y + dir.y * (r + 7)))
+        nose.addLine(to: CGPoint(x: c.x - dir.y * 5 + dir.x * (r - 2), y: c.y + dir.x * 5 + dir.y * (r - 2)))
+        nose.addLine(to: CGPoint(x: c.x + dir.y * 5 + dir.x * (r - 2), y: c.y - dir.x * 5 + dir.y * (r - 2)))
+        nose.closeSubpath()
+        let colour = Color.primary.opacity(0.75)
+        ctx.fill(nose, with: .color(colour))
+        let head = Path(ellipseIn: CGRect(x: c.x - r, y: c.y - r, width: 2 * r, height: 2 * r))
+        ctx.stroke(head, with: .color(colour), lineWidth: 2)
+        ctx.fill(Path(ellipseIn: CGRect(x: c.x - 2, y: c.y - 2, width: 4, height: 4)), with: .color(colour))
+        if selection == .listener {
+            ctx.stroke(Path(ellipseIn: CGRect(x: c.x - r - 4, y: c.y - r - 4, width: 2 * r + 8, height: 2 * r + 8)),
+                       with: .color(.accentColor), lineWidth: 2)
+        }
+        ctx.draw(Text("LISTENER").font(.system(size: 8, weight: .semibold)).foregroundColor(.secondary),
+                 at: CGPoint(x: c.x, y: c.y + r + 9))
+    }
+
     private func drawSources(_ ctx: GraphicsContext, _ f: PlanFrame) {
         let fading = Set(model.status?.fading ?? [])
         for s in state.show.sources {
@@ -279,6 +311,7 @@ struct PlanView: View {
         if let s = state.system.speakers.min(by: { distance($0.position) < distance($1.position) }), distance(s.position) <= 10 {
             return .speaker(s.id)
         }
+        if distance(state.system.listener.position) <= 12 { return .listener }
         return nil
     }
 
@@ -293,6 +326,10 @@ struct PlanView: View {
                 case .speaker(let id):
                     guard moveSpeakers, let s = state.speaker(id) else { return }
                     drag = Drag(target: target, position: s.position, start: s.position)
+                case .listener:
+                    guard moveSpeakers else { return }
+                    let p = state.system.listener.position
+                    drag = Drag(target: target, position: p, start: p)
                 default:
                     return
                 }
@@ -336,6 +373,10 @@ struct PlanView: View {
             guard var s = state.speaker(id) else { return }
             s.position = d.position
             model.apply(.setSpeaker(speaker: s))
+        case .listener:
+            var l = state.system.listener
+            l.position = d.position
+            model.apply(.setListener(listener: l))
         default:
             break
         }

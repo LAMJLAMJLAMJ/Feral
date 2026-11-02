@@ -428,19 +428,42 @@ public struct Show: Codable, Equatable {
     }
 }
 
+/// The listening point: where it is in the speakers' coordinates and which way it faces. Sources'
+/// azimuth, elevation and distance are measured from it; azimuth 0 is the way it faces.
+public struct Listener: Codable, Equatable {
+    public var position: Position
+    /// The direction azimuth 0 points, in degrees from +y, positive to the left (towards -x).
+    public var facing: Double
+
+    public init(position: Position = Position(0, 0, 0), facing: Double = 0) {
+        self.position = position; self.facing = facing
+    }
+
+    enum CodingKeys: String, CodingKey { case position, facing }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        position = try c.decodeIfPresent(Position.self, forKey: .position) ?? Position(0, 0, 0)
+        facing = try c.decodeIfPresent(Double.self, forKey: .facing) ?? 0
+    }
+}
+
 /// system.json: the speakers and which of them take the sources' LFE sends.
 public struct SystemLayer: Codable, Equatable {
     public var schema: Int
     public var speakers: [Speaker]
     /// The speakers a source's lfeDB send feeds.
     public var lfeSpeakers: [UUID]
+    /// The listening point that sources' azimuth, elevation and distance are measured from, in the
+    /// speakers' coordinates.
+    public var listener: Listener
 
-    public init(speakers: [Speaker] = [], lfeSpeakers: [UUID] = []) {
+    public init(speakers: [Speaker] = [], lfeSpeakers: [UUID] = [], listener: Listener = Listener()) {
         schema = showSchema
-        self.speakers = speakers; self.lfeSpeakers = lfeSpeakers
+        self.speakers = speakers; self.lfeSpeakers = lfeSpeakers; self.listener = listener
     }
 
-    enum CodingKeys: String, CodingKey { case schema, speakers, lfeSpeakers }
+    enum CodingKeys: String, CodingKey { case schema, speakers, lfeSpeakers, listener }
 
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -450,6 +473,7 @@ public struct SystemLayer: Codable, Equatable {
         }
         speakers = try c.decodeIfPresent([Speaker].self, forKey: .speakers) ?? []
         lfeSpeakers = try c.decodeIfPresent([UUID].self, forKey: .lfeSpeakers) ?? []
+        listener = try c.decodeIfPresent(Listener.self, forKey: .listener) ?? Listener()
         schema = showSchema
     }
 }

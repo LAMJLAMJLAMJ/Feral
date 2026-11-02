@@ -1,8 +1,9 @@
 import Foundation
 
-/// Positions as azimuth, elevation and distance from the venue's origin (0, 0, 0), with the same
-/// convention as ADM-OSC: azimuth 0 is straight ahead (+y), positive to the left (-x), from -180 to
-/// 180; elevation 0 is level, 90 straight up; distance in metres.
+/// Positions as azimuth, elevation and distance, with the same convention as ADM-OSC: azimuth 0 is
+/// straight ahead, positive to the left, from -180 to 180; elevation 0 is level, 90 straight up;
+/// distance in metres. Position.polar is from the venue's origin facing +y; ShowState.polar(of:) is
+/// from the show's listener, facing its way.
 public struct Polar: Equatable {
     public var azimuth: Double
     public var elevation: Double
@@ -31,7 +32,28 @@ extension Position {
     }
 }
 
+extension Listener {
+    /// A position as seen from the listener.
+    public func polar(of p: Position) -> Polar {
+        var v = Position(p.x - position.x, p.y - position.y, p.z - position.z).polar
+        if v.distance > 0 { v.azimuth = ShowState.wrap(v.azimuth - facing) }
+        return v
+    }
+
+    /// The position at a direction and distance from the listener.
+    public func point(_ v: Polar) -> Position {
+        let d = Position(Polar(azimuth: v.azimuth + facing, elevation: v.elevation, distance: v.distance))
+        return Position(position.x + d.x, position.y + d.y, position.z + d.z).tidy
+    }
+}
+
 extension ShowState {
+    /// A position's azimuth, elevation and distance from the show's listener.
+    public func polar(of p: Position) -> Polar { system.listener.polar(of: p) }
+
+    /// The position at an azimuth, elevation and distance from the show's listener.
+    public func point(_ v: Polar) -> Position { system.listener.point(v) }
+
     /// A source group's centre: the average of its members' positions.
     public func centre(of group: SourceGroup) -> Position? {
         let members = group.sources.compactMap { source($0)?.position }
@@ -40,27 +62,28 @@ extension ShowState {
         return Position(members.map(\.x).reduce(0, +) / n, members.map(\.y).reduce(0, +) / n, members.map(\.z).reduce(0, +) / n)
     }
 
-    /// Moves a group's centre to a new azimuth, elevation or distance (each optional), keeping its
-    /// shape: a new azimuth turns every member round the origin by the same angle, a new elevation
+    /// Moves a group's centre to a new azimuth, elevation or distance from the listener (each
+    /// optional), keeping its shape: a new azimuth turns every member round the listener by the same angle, a new elevation
     /// raises every member by the same angle, a new distance scales every member's distance by the
     /// same factor.
     public func moveGroup(_ group: SourceGroup, azimuth: Double? = nil, elevation: Double? = nil,
                           distance: Double? = nil) -> [SourceUpdate] {
-        guard let c = centre(of: group)?.polar else { return [] }
+        guard let centre = centre(of: group) else { return [] }
+        let c = polar(of: centre)
         let turn = azimuth.map { $0 - c.azimuth } ?? 0
         let raise = elevation.map { $0 - c.elevation } ?? 0
         let scale = distance.map { c.distance > 0 ? max($0, 0) / c.distance : 1 } ?? 1
         return group.sources.compactMap { id -> SourceUpdate? in
             guard let s = source(id) else { return nil }
-            var p = s.position.polar
+            var p = polar(of: s.position)
             if p.distance == 0 && distance != nil && c.distance == 0 {
-                // Everything at the origin: push it out straight ahead.
+                // Everything on the listener: push it out straight ahead.
                 p = Polar(azimuth: 0, elevation: 0, distance: max(distance ?? 0, 0))
             }
             p.azimuth = Self.wrap(p.azimuth + turn)
             p.elevation = min(max(p.elevation + raise, -90), 90)
             p.distance *= scale
-            return SourceUpdate(id: id, values: SourceValues(position: Position(p).tidy))
+            return SourceUpdate(id: id, values: SourceValues(position: point(p)))
         }
     }
 

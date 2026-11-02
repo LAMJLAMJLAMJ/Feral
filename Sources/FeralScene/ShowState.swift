@@ -17,6 +17,8 @@ public enum Command: Codable, Equatable {
     case setGroup(group: SpeakerGroup)
     case removeGroup(id: UUID)
     case setLFESpeakers(speakers: [UUID])
+    /// Moves or turns the listening point that azimuth, elevation and distance are measured from.
+    case setListener(listener: Listener)
     /// Adds a source group, or replaces the one with the same id (members, gain, mute, name).
     case setSourceGroup(group: SourceGroup)
     case removeSourceGroup(id: UUID)
@@ -164,6 +166,13 @@ public struct ShowState: Equatable {
                 show.sourceGroups.append(group)
             }
             return .sources(show.sources.map(\.id).filter { touched.contains($0) })
+
+        case .setListener(let l):
+            let p = l.position
+            guard p.x.isFinite, p.y.isFinite, p.z.isFinite, abs(p.x) < 10_000, abs(p.y) < 10_000, abs(p.z) < 10_000,
+                  l.facing.isFinite else { throw ConfigError("the listener must be finite and within 10 km") }
+            system.listener = Listener(position: p, facing: Self.wrap(l.facing))
+            return .none
 
         case .removeSourceGroup(let id):
             guard let i = show.sourceGroups.firstIndex(where: { $0.id == id }) else { throw ConfigError("no source group has id \(id)") }

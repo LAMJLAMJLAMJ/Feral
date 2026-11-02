@@ -76,6 +76,24 @@ final class ShowTests: XCTestCase {
         XCTAssertEqual(Position(Polar(azimuth: 0, elevation: 90, distance: 2)).z, 2, accuracy: 1e-9)
     }
 
+    func testAnglesAreFromTheListener() throws {
+        var state = ShowState(show: Show(name: "L"))
+        // The listener 10 m out at ear height, facing back towards the stage at y = 0.
+        try state.apply(.setListener(listener: Listener(position: Position(0, 10, 1.5), facing: 180)))
+        let ahead = state.polar(of: Position(0, 0, 1.5))
+        XCTAssertEqual(ahead.azimuth, 0, accuracy: 1e-9, "the stage is straight ahead")
+        XCTAssertEqual(ahead.distance, 10, accuracy: 1e-9)
+        XCTAssertEqual(ahead.elevation, 0, accuracy: 1e-9)
+        // Stage left of the listener facing -y is +x.
+        XCTAssertEqual(state.polar(of: Position(5, 10, 1.5)).azimuth, 90, accuracy: 1e-9)
+        let p = state.point(Polar(azimuth: 90, elevation: 0, distance: 5))
+        XCTAssertEqual(p.x, 5, accuracy: 0.001)
+        XCTAssertEqual(p.y, 10, accuracy: 0.001)
+        XCTAssertEqual(p.z, 1.5, accuracy: 0.001)
+        let json = try JSONEncoder().encode(state.system)
+        XCTAssertEqual(try JSONDecoder().decode(SystemLayer.self, from: json).listener.facing, 180)
+    }
+
     func testMovingAGroupKeepsItsShape() throws {
         var state = ShowState(show: Show(name: "G"))
         let a = Source(number: 1, input: 1, position: Position(-1, 10, 0))

@@ -56,7 +56,8 @@ struct ElevationView: View {
     private func across(_ p: Position) -> Double { side ? p.y : p.x }
 
     private func frame(_ size: CGSize) -> Frame {
-        let points = state.system.speakers.map(\.position) + state.show.sources.map(\.position) + [Position(0, 0, 0)]
+        let points = state.system.speakers.map(\.position) + state.show.sources.map(\.position)
+            + [Position(0, 0, 0), state.system.listener.position]
         var lo = points.map(across).min()! - 2, hi = points.map(across).max()! + 2
         if hi - lo < 12 { let c = (lo + hi) / 2; lo = c - 6; hi = c + 6 }
         let top = max(points.map(\.z).max()! + 2, 6)
@@ -105,6 +106,7 @@ struct ElevationView: View {
                     Canvas { ctx, size in
                         drawGrid(ctx, f, size)
                         drawSpeakers(ctx, f)
+                        drawListener(ctx, f)
                         drawSources(ctx, f)
                     }
                     .contentShape(Rectangle())
@@ -228,6 +230,18 @@ struct ElevationView: View {
             if selection == .speaker(sp.id) {
                 ctx.stroke(Path(ellipseIn: CGRect(x: c.x - 9, y: c.y - 9, width: 18, height: 18)), with: .color(.accentColor), lineWidth: 2)
             }
+        }
+    }
+
+    /// The listener as a ring at its height.
+    private func drawListener(_ ctx: GraphicsContext, _ f: Frame) {
+        let p = state.system.listener.position
+        let c = f.point(across(p), p.z)
+        let colour = Color.primary.opacity(0.7)
+        ctx.stroke(Path(ellipseIn: CGRect(x: c.x - 6, y: c.y - 6, width: 12, height: 12)), with: .color(colour), lineWidth: 2)
+        ctx.fill(Path(ellipseIn: CGRect(x: c.x - 2, y: c.y - 2, width: 4, height: 4)), with: .color(colour))
+        if selection == .listener {
+            ctx.stroke(Path(ellipseIn: CGRect(x: c.x - 10, y: c.y - 10, width: 20, height: 20)), with: .color(.accentColor), lineWidth: 2)
         }
     }
 

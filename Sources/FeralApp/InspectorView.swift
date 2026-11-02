@@ -21,6 +21,8 @@ struct InspectorView: View {
                     if let s = state.speaker(id) { SpeakerInspector(model: model, meters: meters, state: state, speaker: s) }
                 case .snapshot(let id):
                     if let s = state.snapshot(id) { SnapshotInspector(model: model, state: state, snapshot: s, selection: $selection) }
+                case .listener:
+                    ListenerInspector(model: model, state: state)
                 case .sourceGroup(let id):
                     if let g = state.sourceGroup(id) { SourceGroupInspector(model: model, state: state, group: g, selection: $selection) }
                 case .cue(let id):
@@ -48,6 +50,12 @@ struct ShowSummary: View {
                 LabeledContent("Snapshots", value: "\(state.show.snapshots.count)")
                 LabeledContent("Cues", value: "\(state.show.cues.count)")
                 LabeledContent("OSC and MIDI triggers", value: "\(state.show.control.triggers.count)")
+            }
+            Section("Listener") {
+                let l = state.system.listener
+                LabeledContent("Position", value: String(format: "%.1f, %.1f, %.1f m", l.position.x, l.position.y, l.position.z))
+                LabeledContent("Facing", value: String(format: "%.0f°", l.facing))
+                Text("Click the listener on the plan to move or turn it.").font(.caption).foregroundStyle(.secondary)
             }
             Section {
                 Text("Select a cue, snapshot, source or speaker in the list, on the plan or on the meter bridge to edit it.")
@@ -186,7 +194,7 @@ struct SourceInspector: View {
                 NumberField(title: "x (m)", value: source.position.x) { v in move(x: v) }
                 NumberField(title: "y (m)", value: source.position.y) { v in move(y: v) }
                 NumberField(title: "z (m)", value: source.position.z) { v in move(z: v) }
-                PolarControls(position: source.position) { p in
+                PolarControls(listener: state.system.listener, position: source.position) { p in
                     model.drag(source.id, from: source.position, to: p, partners: model.dragPartners(of: source.id))
                 }
                 let groups = state.sourceGroups(of: source.id)
@@ -462,34 +470,69 @@ struct DeleteSourceConfirmation: ViewModifier {
 /// Azimuth, elevation and distance from the venue's origin, as sliders. Azimuth 0 is straight ahead
 /// (towards +y), positive to the left; elevation 90 is straight up.
 struct PolarControls: View {
+    let listener: Listener
     let position: Position
     let set: (Position) -> Void
 
     var body: some View {
-        let p = position.polar
+        let p = listener.polar(of: position)
         LabeledContent("Azimuth") {
             LevelSlider(value: p.azimuth, range: -180...180, step: 1, unit: "°") { a in
-                set(Position(Polar(azimuth: a, elevation: p.elevation, distance: p.distance)).rounded)
+                set(listener.point(Polar(azimuth: a, elevation: p.elevation, distance: p.distance)))
             }
         }
-        .help("Degrees from straight ahead, positive to the left (as ADM-OSC)")
+        .help("Degrees from the way the listener faces, positive to the left (as ADM-OSC)")
         LabeledContent("Elevation") {
             LevelSlider(value: p.elevation, range: -90...90, step: 1, unit: "°") { e in
-                set(Position(Polar(azimuth: p.azimuth, elevation: e, distance: p.distance)).rounded)
+                set(listener.point(Polar(azimuth: p.azimuth, elevation: e, distance: p.distance)))
             }
         }
+        .help("Degrees up from the listener's height")
         LabeledContent("Distance") {
             LevelSlider(value: p.distance, range: 0...max(50, (p.distance * 1.5).rounded()), step: 0.1, unit: "m") { d in
-                set(Position(Polar(azimuth: p.azimuth, elevation: p.elevation, distance: d)).rounded)
+                set(listener.point(Polar(azimuth: p.azimuth, elevation: p.elevation, distance: d)))
             }
         }
+        .help("Metres from the listener")
     }
 }
 
-extension Position {
-    /// To the millimetre.
-    var rounded: Position { Position((x * 1000).rounded() / 1000, (y * 1000).rounded() / 1000, (z * 1000).rounded() / 1000) }
+/// The listening point: where it is among the speakers and which way it faces.
+struct ListenerInspector: View {
+    @ObservedObject var model: EngineModel
+    let state: ShowState
+
+    var body: some View {
+        let l = state.system.listener
+        Form {
+            Section {
+                NumberField(title: "x (m)", value: l.position.x) { v in set(Position(v, l.position.y, l.position.z), l.facing) }
+                NumberField(title: "y (m)", value: l.position.y) { v in set(Position(l.position.x, v, l.position.z), l.facing) }
+                NumberField(title: "z (m)", value: l.position.z) { v in set(Position(l.position.x, l.position.y, v), l.facing) }
+                LabeledContent("Facing") {
+                    LevelSlider(value: l.facing, range: -180...180, step: 1, unit: "°") { set(l.position, $0) }
+                }
+                .help("The way azimuth 0 points, in degrees from +y, positive to the left. 180 faces -y.")
+                HStack {
+                    Button("Face +y (0°)") { set(l.position, 0) }
+                    Button("Face −y (180°)") { set(l.position, 180) }
+                }
+            } header: {
+                Text("Listener").font(.headline)
+            } footer: {
+                Text("Sources' azimuth, elevation and distance are measured from here, in the speakers' coordinates. "
+                     + "Speakers stay where they are. Turn on Move speakers to drag the listener on the plan.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+        }
+        .formStyle(.grouped)
+    }
+
+    private func set(_ p: Position, _ facing: Double) {
+        model.apply(.setListener(listener: Listener(position: p, facing: facing)))
+    }
 }
+
 
 /// A source group: name, VCA-style gain and mute, moving together, its centre as azimuth, elevation
 /// and distance, and which sources are in it.
@@ -567,11 +610,11 @@ struct GroupPolarControls: View {
     let centre: Position
 
     var body: some View {
-        let p = centre.polar
+        let p = model.state?.polar(of: centre) ?? centre.polar
         LabeledContent("Azimuth") {
             LevelSlider(value: p.azimuth, range: -180...180, step: 1, unit: "°") { model.moveGroup(group, azimuth: $0) }
         }
-        .help("Turns the whole group round the origin; 0 is straight ahead, positive to the left")
+        .help("Turns the whole group round the listener; 0 is the way the listener faces, positive to the left")
         LabeledContent("Elevation") {
             LevelSlider(value: p.elevation, range: -90...90, step: 1, unit: "°") { model.moveGroup(group, elevation: $0) }
         }
