@@ -293,7 +293,10 @@ public struct EngineConfig: Codable, Equatable {
                 }
                 guard (0...200).contains(g.precedenceMS) else { throw ConfigError("group \(g.name): precedenceMS must be from 0 to 200") }
             }
-            if g.renderer == .vbap, let d = g.dimensions, d != 2 && d != 3 { throw ConfigError("group \(g.name): dimensions must be 2 or 3") }
+            if let d = g.dimensions, d != 2 && d != 3 { throw ConfigError("group \(g.name): dimensions must be 2 or 3") }
+            guard g.neighbours >= 1, (0...360).contains(g.spread), (1...100).contains(g.tightness) else {
+                throw ConfigError("group \(g.name): neighbours must be 1 or more, spread from 0 to 360 and tightness from 1 to 100")
+            }
             guard g.rolloff >= 0, g.blur >= 0, g.rolloffDB >= 0 else {
                 throw ConfigError("group \(g.name): rolloff, blur and rolloffDB must be 0 or more")
             }

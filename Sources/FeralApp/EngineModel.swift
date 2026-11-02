@@ -225,6 +225,37 @@ final class EngineModel: ObservableObject {
 
     func setSourceGroup(_ group: SourceGroup) { apply(.setSourceGroup(group: group)) }
 
+    /// Adds an output (speaker) group with these speakers; returns its id. It starts as Delay, or as
+    /// VBAP when one of the speakers is already in a Delay group (a speaker can be in one only).
+    func addSpeakerGroup(with speakers: [UUID] = []) -> UUID? {
+        guard let state else { return nil }
+        let n = state.nextGroupNumber
+        var name = "Group \(n)", k = 2
+        while state.show.groups.contains(where: { $0.name == name }) { name = "Group \(n) (\(k))"; k += 1 }
+        let inDelay = state.show.groups.contains { $0.renderer == .delay && !Set($0.speakers).isDisjoint(with: speakers) }
+        let group = SpeakerGroup(number: n, name: name, renderer: inDelay ? .vbap : .delay, speakers: sortedSpeakers(speakers))
+        apply(.setGroup(group: group))
+        return group.id
+    }
+
+    /// Puts speakers in an output group, or takes them out (with their trims in it).
+    func setSpeakers(_ speakers: [UUID], of group: SpeakerGroup, _ member: Bool) {
+        var g = group
+        if member {
+            g.speakers = sortedSpeakers(g.speakers + speakers.filter { !g.speakers.contains($0) })
+        } else {
+            g.speakers.removeAll { speakers.contains($0) }
+            for id in speakers { g.weightsDB[id.uuidString] = nil }
+        }
+        if g != group { apply(.setGroup(group: g)) }
+    }
+
+    /// In speaker-number order.
+    private func sortedSpeakers(_ ids: [UUID]) -> [UUID] {
+        guard let state else { return ids }
+        return ids.sorted { (state.speaker($0)?.number ?? 0) < (state.speaker($1)?.number ?? 0) }
+    }
+
     func setMember(_ source: UUID, of group: SourceGroup, _ member: Bool) { setMembers([source], of: group, member) }
 
     /// Puts several sources in a group, or takes them out.
@@ -346,7 +377,7 @@ final class EngineModel: ObservableObject {
 
 /// What is selected, in the sidebar or on the plan.
 enum Selection: Hashable {
-    case source(UUID), speaker(UUID), snapshot(UUID), cue(UUID), sourceGroup(UUID), listener
+    case source(UUID), speaker(UUID), snapshot(UUID), cue(UUID), sourceGroup(UUID), speakerGroup(UUID), listener
 }
 
 extension Color {

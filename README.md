@@ -8,7 +8,7 @@ This is **milestone 4, control**, on top of milestone 1's engine skeleton, miles
 
 | Part | Contents |
 | --- | --- |
-| `Sources/FeralCore` | The real-time render core in C++20: render states, per-source delay lines, gain ramps, delay glides and crossfades, per-output processing, and the lock-free swap between the control and audio threads. Also the renderers' geometry (`include/feral_geometry.h`): Delay, VBAP (2D pairs, 3D triangulation with virtual speakers, MDAP width) and DBAP, and EQ design. No Apple APIs, so it builds and tests on Linux. Swift reaches it through the C API in `include/feral_core.h`. |
+| `Sources/FeralCore` | The real-time render core in C++20: render states, per-source delay lines, gain ramps, delay glides and crossfades, per-output processing, and the lock-free swap between the control and audio threads. Also the renderers' geometry (`include/feral_geometry.h`): Delay, VBAP (2D pairs, 3D triangulation with virtual speakers, MDAP width), DBAP, KNN and SPCAP, and EQ design. No Apple APIs, so it builds and tests on Linux. Swift reaches it through the C API in `include/feral_core.h`. |
 | `Sources/FeralCoreAudio` | The Core Audio IOProc, in C++ so no Swift runs on the audio thread. It maps the device's streams (mono or interleaved) to engine channels. macOS only. |
 | `Sources/FeralScene` | Engine settings (`engine.json`), the fixed routing, the show (sources, speakers, groups, snapshots, cues), its `.feralshow` package and journal, the commands that change it, snapshot fades, and `SpatialRenderer`, which turns the layout into render states. |
 | `Sources/FeralControl` | The control link between the engine and the app or `feral-cli`: one JSON message per line over TCP, port 9100. OSC (reading and writing packets, the UDP server on port 9200), MIDI (a byte-stream parser with MIDI Show Control, and Core MIDI input with a virtual "Feral" destination), and `ControlMapper`, which turns OSC, ADM-OSC, MIDI and the trigger map into engine actions and changes back into OSC for subscribers. |
@@ -39,6 +39,11 @@ Every source feeds each group it sends to, and each group's renderer turns the s
 - **Delay** (the main one for live, TiMax and Soundscape style): every speaker plays the source with the delay and level it would have if the sound came from the source's position, plus a precedence offset, so the first arrival at every seat is from the stage. Delay = (distance - nearest speaker's distance) / c + precedence; level = 6 dB less per doubling of distance beyond the nearest speaker (`rolloff` 1). Delays are read with 4-point Lagrange interpolation.
 - **VBAP** (overheads, domes, rings, lines): direction from the group's reference point; pairs in 2D, convex-hull triangles in 3D, with a virtual speaker closing an open dome underneath whose share is spread to its neighbours. `width` on a source spreads it (MDAP). Distance only changes level.
 - **DBAP** (irregular layouts with no sweet spot): gain falls with distance from each speaker (`rolloffDB` per doubling), with `blur` so one speaker never takes everything.
+- **KNN** (k nearest neighbours: as few speakers as possible): only the K nearest speakers by direction (`neighbours`) play; the nearest at full level and the others fading linearly with their extra angle out to `spread` degrees (plus 5 degrees, so a moving source never jumps from one speaker to the next). On a speaker with spread 0, only that speaker plays.
+- **SPCAP** (speaker-placement correction amplitude panning, Sadek and Kyriakakis 2004; irregular layouts): every speaker gets a cardioid pointed at the source, (0.5 (1 + cos angle)) ^ `tightness`, divided by how crowded that speaker's neighbourhood is, so clusters of speakers neither pull the image nor get louder. Uses many speakers.
+- **2D or 3D.** Every algorithm can be flat (`dimensions` 2): only the azimuth and the distance in plan count, and a source's height is ignored. Delay, DBAP, KNN and SPCAP are 3D unless set to 2D; VBAP picks 2D by itself when its speakers are at about one elevation.
+
+In the app, output groups are at the top of the **Speakers** list: the Group button (or right-click on speakers) makes one from the selected speakers, and its inspector sets the name, level, algorithm and the algorithm's settings, and ticks its speakers with a trim each. A group with no speakers yet (or VBAP with fewer than two) plays nothing until it has them, so a group can be built up a speaker at a time. A speaker's inspector ticks the groups it is in.
 
 ## Getting started on your Mac
 
@@ -100,9 +105,13 @@ A **group**: `{ "name": "Main", "renderer": "delay", "speakers": "1-16" }`, with
 | --- | --- |
 | `delay` | `precedenceMS` (10), `rolloff` (1: 6 dB per doubling), `referenceDistance` (the nearest speaker's distance, at least 1 m), `distanceOffset` (the nearest speaker's distance) |
 | `vbap` | `reference` (the speakers' centre in plan, 1.2 m up), `dimensions` (2 when the speakers are all at about one elevation, else 3), `rolloff` (1), `referenceDistance` (the speakers' mean distance) |
-| `dbap` | `blur` (0.5 m), `rolloffDB` (6) |
+| `dbap` | `blur` (0.5 m), `rolloffDB` (6), `dimensions` (3) |
+| `knn` | `neighbours` (3), `spread` (30 degrees), `dimensions` (3), `rolloff` (1), `referenceDistance` (the speakers' mean distance), `reference` (the listener) |
+| `spcap` | `tightness` (1), `dimensions` (3), `rolloff` (1), `referenceDistance` (the speakers' mean distance), `reference` (the listener) |
 
-A speaker can be in one Delay group only (it can also be in VBAP and DBAP groups, whose feeds add up).
+`delay` also takes `dimensions` 2, which measures distances in plan only.
+
+A speaker can be in one Delay group only (it can also be in any number of VBAP, DBAP, KNN and SPCAP groups, whose feeds add up).
 
 A **source**: `{ "input": 1, "name": "Vox", "position": [0, 2, 1.6], "gainDB": 0, "mute": false, "width": 0, "groups": { "Main": 0, "Overheads": -6 }, "lfeDB": -10 }`. `groups` can also be a list of names (each at 0 dB); left out, the source goes to every group at 0 dB. `width` is in degrees and only affects VBAP groups.
 

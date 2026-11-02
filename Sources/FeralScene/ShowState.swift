@@ -75,6 +75,7 @@ public struct ShowState: Equatable {
     /// The source groups a source is in.
     public func sourceGroups(of source: UUID) -> [SourceGroup] { show.sourceGroups.filter { $0.sources.contains(source) } }
     public var nextSourceGroupNumber: Int { (show.sourceGroups.map(\.number).max() ?? 0) + 1 }
+    public var nextGroupNumber: Int { (show.groups.map(\.number).max() ?? 0) + 1 }
     public func snapshot(_ id: UUID) -> Snapshot? { show.snapshots.first { $0.id == id } }
     public func cue(_ id: UUID) -> Cue? { show.cues.first { $0.id == id } }
 
@@ -183,7 +184,7 @@ public struct ShowState: Equatable {
                   l.facing.isFinite else { throw ConfigError("the listener must be finite and within 10 km") }
             system.listener = Listener(position: p, facing: Self.wrap(l.facing))
             // VBAP groups without a reference of their own pan around the listener.
-            return show.groups.contains { $0.renderer == .vbap && $0.reference == nil } ? .layout(crossfade: true) : .none
+            return show.groups.contains { $0.renderer.isDirectional && $0.reference == nil } ? .layout(crossfade: true) : .none
 
         case .removeSourceGroup(let id):
             guard let i = show.sourceGroups.firstIndex(where: { $0.id == id }) else { throw ConfigError("no source group has id \(id)") }
@@ -382,10 +383,17 @@ public struct ShowState: Equatable {
 
     // MARK: To and from the renderer's settings
 
+    /// Whether a speaker group has enough speakers to render. One that has not (none, or one for
+    /// VBAP) plays nothing and is left out of the renderer's settings, so a group can be built up a
+    /// speaker at a time.
+    public func isPlayable(_ g: SpeakerGroup) -> Bool {
+        g.speakers.filter { speaker($0) != nil }.count >= (g.renderer == .vbap ? 2 : 1)
+    }
+
     /// A source as the renderer takes it, with its sends by group name.
     public func sourceConfig(_ s: Source) -> SourceConfig {
         var sends: [String: Double] = [:]
-        for send in s.sends { if let g = group(send.group) { sends[g.name] = send.gainDB } }
+        for send in s.sends { if let g = group(send.group), isPlayable(g) { sends[g.name] = send.gainDB } }
         // Source groups act like VCAs: their gains add, and any muted group mutes the source.
         let groups = sourceGroups(of: s.id)
         let gain = groups.reduce(s.gainDB) { $0 + $1.gainDB }
@@ -403,7 +411,7 @@ public struct ShowState: Equatable {
         var outputOf: [UUID: Int] = [:]
         for s in system.speakers { outputOf[s.id] = s.output }
         c.speakers = system.speakers.map(\.config)
-        c.groups = show.groups.map { g -> GroupConfig in
+        c.groups = show.groups.filter(isPlayable).map { g -> GroupConfig in
             var weights: [String: Double] = [:]
             for (key, db) in g.weightsDB {
                 if let id = UUID(uuidString: key), let o = outputOf[id] { weights[String(o)] = db }
@@ -412,8 +420,9 @@ public struct ShowState: Equatable {
                                speakers: g.speakers.compactMap { outputOf[$0] }.map(String.init).joined(separator: ", "),
                                gainDB: g.gainDB, weightsDB: weights, precedenceMS: g.precedenceMS, rolloff: g.rolloff,
                                referenceDistance: g.referenceDistance, distanceOffset: g.distanceOffset,
-                               reference: g.reference ?? (g.renderer == .vbap ? system.listener.position : nil),
-                               dimensions: g.dimensions, blur: g.blur, rolloffDB: g.rolloffDB)
+                               reference: g.reference ?? (g.renderer.isDirectional ? system.listener.position : nil),
+                               dimensions: g.dimensions, blur: g.blur, rolloffDB: g.rolloffDB, neighbours: g.neighbours,
+                               spread: g.spread, tightness: g.tightness)
         }
         c.sources = show.sources.map(sourceConfig)
         let lfe = system.lfeSpeakers.compactMap { outputOf[$0] }
@@ -444,7 +453,8 @@ public struct ShowState: Equatable {
             groups.append(SpeakerGroup(number: i + 1, name: g.name, renderer: g.renderer, speakers: ids, gainDB: g.gainDB,
                                        weightsDB: weights, precedenceMS: g.precedenceMS, rolloff: g.rolloff,
                                        referenceDistance: g.referenceDistance, distanceOffset: g.distanceOffset,
-                                       reference: g.reference, dimensions: g.dimensions, blur: g.blur, rolloffDB: g.rolloffDB))
+                                       reference: g.reference, dimensions: g.dimensions, blur: g.blur, rolloffDB: g.rolloffDB,
+                                       neighbours: g.neighbours, spread: g.spread, tightness: g.tightness))
         }
         let lfe = try config.lfeOutputs.map { try Routing.channelList($0, limit: config.outputs, side: "output") } ?? []
         let lfeIDs = lfe.map { speakerID(output: $0) }

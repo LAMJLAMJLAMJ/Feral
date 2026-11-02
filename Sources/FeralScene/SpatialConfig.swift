@@ -121,13 +121,21 @@ public struct SpeakerConfig: Codable, Equatable {
     public var label: String { name.map { "\($0) (output \(output))" } ?? "output \(output)" }
 }
 
-public enum Renderer: String, Codable, Equatable {
+public enum Renderer: String, Codable, Equatable, CaseIterable {
     /// Delay-based reinforcement (TiMax and Soundscape style): the main one for live.
     case delay
     /// Vector-base amplitude panning, for overheads, domes, rings and lines.
     case vbap
     /// Distance-based amplitude panning, for irregular layouts with no sweet spot.
     case dbap
+    /// K nearest neighbours: as few speakers as possible, the nearest K with a spread.
+    case knn
+    /// Speaker-placement correction amplitude panning: a cardioid over every speaker, corrected for
+    /// how crowded each one is, for irregular layouts.
+    case spcap
+
+    /// Pans by direction from a listening point (by default the listener).
+    public var isDirectional: Bool { self == .vbap || self == .knn || self == .spcap }
 }
 
 /// A speaker group and the renderer that feeds it. Only the keys for its renderer are used.
@@ -154,7 +162,8 @@ public struct GroupConfig: Codable, Equatable {
     // VBAP
     /// The listening point directions are taken from. None: the speakers' centre in plan, 1.2 m up.
     public var reference: Position?
-    /// 2 or 3; none chooses 2D when the speakers are all at about the same elevation.
+    /// 2D is flat: azimuth and distance in plan only, ignoring height. VBAP: 2 or 3, none chooses 2D
+    /// when the speakers are all at about the same elevation. Delay and DBAP: 2, or 3 or none for 3D.
     public var dimensions: Int?
 
     // DBAP
@@ -163,10 +172,21 @@ public struct GroupConfig: Codable, Equatable {
     /// R: dB per doubling of distance.
     public var rolloffDB: Double
 
+    // KNN
+    /// K: how many of the nearest speakers may play.
+    public var neighbours: Int
+    /// Degrees: how far from the nearest speaker the others still play.
+    public var spread: Double
+
+    // SPCAP
+    /// The cardioid's exponent, 1 or more: higher is narrower.
+    public var tightness: Double
+
     public init(name: String, renderer: Renderer, speakers: String, gainDB: Double = 0, weightsDB: [String: Double] = [:],
                 precedenceMS: Double = 10, rolloff: Double = 1, referenceDistance: Double? = nil,
                 distanceOffset: Double? = nil, reference: Position? = nil, dimensions: Int? = nil,
-                blur: Double = 0.5, rolloffDB: Double = 6) {
+                blur: Double = 0.5, rolloffDB: Double = 6, neighbours: Int = 3, spread: Double = 30, tightness: Double = 1) {
+        self.neighbours = neighbours; self.spread = spread; self.tightness = tightness
         self.name = name; self.renderer = renderer; self.speakers = speakers; self.gainDB = gainDB
         self.weightsDB = weightsDB; self.precedenceMS = precedenceMS; self.rolloff = rolloff
         self.referenceDistance = referenceDistance; self.distanceOffset = distanceOffset
@@ -175,7 +195,7 @@ public struct GroupConfig: Codable, Equatable {
 
     enum CodingKeys: String, CodingKey {
         case name, renderer, speakers, gainDB, weightsDB, precedenceMS, rolloff, referenceDistance, distanceOffset,
-             reference, dimensions, blur, rolloffDB
+             reference, dimensions, blur, rolloffDB, neighbours, spread, tightness
     }
 
     public init(from decoder: Decoder) throws {
@@ -196,6 +216,9 @@ public struct GroupConfig: Codable, Equatable {
         dimensions = try c.decodeIfPresent(Int.self, forKey: .dimensions)
         blur = try c.decodeIfPresent(Double.self, forKey: .blur) ?? d.blur
         rolloffDB = try c.decodeIfPresent(Double.self, forKey: .rolloffDB) ?? d.rolloffDB
+        neighbours = try c.decodeIfPresent(Int.self, forKey: .neighbours) ?? d.neighbours
+        spread = try c.decodeIfPresent(Double.self, forKey: .spread) ?? d.spread
+        tightness = try c.decodeIfPresent(Double.self, forKey: .tightness) ?? d.tightness
     }
 }
 

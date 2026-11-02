@@ -204,7 +204,9 @@ void feral_delay_render(const feral_point *speakers, const double *weights, int 
     std::vector<double> distance(count);
     double nearest = 1e300;
     for (int k = 0; k < count; ++k) {
-        distance[k] = length(v3(speakers[k]) - v3(source));
+        V3 d = v3(speakers[k]) - v3(source);
+        if (params->planar) d.z = 0;
+        distance[k] = length(d);
         nearest = std::min(nearest, distance[k]);
     }
     const double c = params->speed_of_sound > 0 ? params->speed_of_sound : feral_speed_of_sound(20);
@@ -221,12 +223,13 @@ void feral_delay_render(const feral_point *speakers, const double *weights, int 
 }
 
 void feral_dbap_render(const feral_point *speakers, const double *weights, int count, feral_point source,
-                       double blur, double rolloff_db, float *gains) {
+                       double blur, double rolloff_db, int planar, float *gains) {
     if (count <= 0) return;
     const double a = rolloff_db / (20 * std::log10(2.0));
     std::vector<double> g(count);
     for (int k = 0; k < count; ++k) {
-        const V3 d = v3(speakers[k]) - v3(source);
+        V3 d = v3(speakers[k]) - v3(source);
+        if (planar) d.z = 0;
         const double w = weights ? weights[k] : 1;
         const double r2 = dot(d, d) + blur * blur;
         g[k] = r2 > 0 ? w / std::pow(r2, a / 2) : (w != 0 ? 1e12 : 0); // a source on a speaker with no blur
@@ -235,23 +238,110 @@ void feral_dbap_render(const feral_point *speakers, const double *weights, int c
     for (int k = 0; k < count; ++k) gains[k] = static_cast<float>(g[k]);
 }
 
+} // extern "C"
+
+namespace {
+
+/// Directions (unit vectors) from the reference, flattened for 2D, and the source's distance.
+struct Directions {
+    std::vector<V3> speakers;
+    V3 source;
+    double distance = 0, meanDistance = 1;
+};
+
+Directions directions(const feral_point *speakers, int count, feral_point source, const feral_pan_params *p) {
+    Directions d;
+    const V3 ref = v3(p->reference);
+    auto flat = [&](V3 v) { if (p->planar) v.z = 0; return v; };
+    double sum = 0;
+    for (int k = 0; k < count; ++k) {
+        const V3 v = flat(v3(speakers[k]) - ref);
+        sum += length(v);
+        d.speakers.push_back(length(v) > 0 ? normalized(v) : V3{0, 1, 0});
+    }
+    d.meanDistance = count > 0 && sum > 0 ? sum / count : 1;
+    const V3 s = flat(v3(source) - ref);
+    d.distance = length(s);
+    d.source = d.distance > 1e-6 ? s * (1 / d.distance) : V3{};
+    return d;
+}
+
+double angleBetween(const V3 &a, const V3 &b) { return std::acos(std::clamp(dot(a, b), -1.0, 1.0)); }
+
+/// Normalises, rolls off with distance and applies the weights; a source at the reference plays
+/// equally from every speaker.
+void finish(std::vector<double> &g, const Directions &d, const double *weights, const feral_pan_params *p, float *gains) {
+    const int n = static_cast<int>(g.size());
+    if (d.distance <= 1e-6) std::fill(g.begin(), g.end(), 1.0);
+    normalisePower(g.data(), n);
+    const double dr = p->reference_distance > 0 ? p->reference_distance : d.meanDistance;
+    const double level = p->rolloff > 0 && d.distance > dr ? std::pow(dr / d.distance, p->rolloff) : 1;
+    for (int k = 0; k < n; ++k) gains[k] = static_cast<float>(g[k] * level * (weights ? weights[k] : 1));
+}
+
+} // namespace
+
+extern "C" {
+
+void feral_knn_render(const feral_point *speakers, const double *weights, int count, feral_point source,
+                      const feral_pan_params *p, float *gains) {
+    if (count <= 0) return;
+    const Directions d = directions(speakers, count, source, p);
+    std::vector<double> theta(count), g(count, 0.0);
+    std::vector<int> order(count);
+    for (int k = 0; k < count; ++k) { theta[k] = angleBetween(d.source, d.speakers[k]); order[k] = k; }
+    std::stable_sort(order.begin(), order.end(), [&](int a, int b) { return theta[a] < theta[b]; });
+    constexpr double fade = 5 * M_PI / 180;
+    const int K = std::clamp(p->neighbours, 1, count);
+    const double r = std::max(0.0, p->spread) * M_PI / 180 + fade;
+    const double nearest = theta[order[0]];
+    auto weight = [&](int rank) { return std::max(0.0, 1 - (theta[order[rank]] - nearest) / r); };
+    for (int i = 0; i < K; ++i) g[order[i]] = weight(i);
+    if (K < count) {
+        // The next one fades in as it comes within 5 degrees of the Kth, and out again as the one
+        // after it catches up, so the gains never jump when speakers change places.
+        const double in = std::max(0.0, 1 - (theta[order[K]] - theta[order[K - 1]]) / fade);
+        const double out = K + 1 < count ? std::min(1.0, (theta[order[K + 1]] - theta[order[K]]) / fade) : 1.0;
+        g[order[K]] = weight(K) * in * out;
+    }
+    finish(g, d, weights, p, gains);
+}
+
+void feral_spcap_render(const feral_point *speakers, const double *weights, int count, feral_point source,
+                        const feral_pan_params *p, float *gains) {
+    if (count <= 0) return;
+    const Directions d = directions(speakers, count, source, p);
+    const double alpha = std::max(1.0, p->tightness);
+    std::vector<double> g(count, 0.0);
+    for (int k = 0; k < count; ++k) {
+        double beta = 0;
+        for (int j = 0; j < count; ++j) beta += 0.5 * (1 + dot(d.speakers[k], d.speakers[j]));
+        const double cardioid = std::pow(0.5 * (1 + dot(d.source, d.speakers[k])), alpha);
+        g[k] = beta > 0 ? cardioid / beta : 0;
+    }
+    finish(g, d, weights, p, gains);
+}
+
 feral_vbap *feral_vbap_create(const feral_point *speakers, int count, feral_point reference, int dimensions) {
     if (count < 2) return nullptr;
     auto *v = new feral_vbap;
     v->count = count;
     v->reference = v3(reference);
-    double elevMin = 1e9, elevMax = -1e9, distanceSum = 0;
+    double elevMin = 1e9, elevMax = -1e9, distanceSum = 0, planSum = 0;
     for (int k = 0; k < count; ++k) {
         const V3 d = v3(speakers[k]) - v->reference;
         const double r = length(d);
         distanceSum += r;
+        planSum += std::hypot(d.x, d.y);
         v->directions.push_back(r > 0 ? d * (1 / r) : V3{0, 1, 0});
         const double elevation = std::atan2(d.z, std::hypot(d.x, d.y)) * 180 / M_PI;
         elevMin = std::min(elevMin, elevation);
         elevMax = std::max(elevMax, elevation);
     }
-    v->meanDistance = distanceSum / count > 0 ? distanceSum / count : 1;
     v->dimensions = dimensions == 2 || dimensions == 3 ? dimensions : (elevMax - elevMin <= 5 ? 2 : 3);
+    // 2D is flat: distances are measured in plan, like the azimuths.
+    const double sum = v->dimensions == 2 ? planSum : distanceSum;
+    v->meanDistance = sum / count > 0 ? sum / count : 1;
     for (int k = 0; k < count; ++k) v->azimuth.push_back(std::atan2(v->directions[k].y, v->directions[k].x));
 
     if (v->dimensions == 2) {
@@ -337,7 +427,9 @@ void feral_vbap_render(const feral_vbap *vbap, feral_point source, double width,
                        double reference_distance, float *gains) {
     const int n = vbap->count;
     std::vector<double> g(n, 0.0);
-    const V3 offset = v3(source) - vbap->reference;
+    V3 offset = v3(source) - vbap->reference;
+    // 2D is flat: only the azimuth and the distance in plan count, not the height.
+    if (vbap->dimensions == 2) offset.z = 0;
     const double distance = length(offset);
     if (distance < 1e-6) {
         // At the reference there is no direction: every speaker equally.

@@ -289,9 +289,33 @@ struct SidebarView: View {
                         }
                     case .speakers:
                         let groups = groupOf(state)
-                        ForEach(state.system.speakers.sorted { $0.number < $1.number }) { s in
-                            SpeakerRow(speaker: s, group: groups[s.id], lfe: state.system.lfeSpeakers.contains(s.id), meters: meters)
-                                .tag(Selection.speaker(s.id))
+                        if !state.show.groups.isEmpty {
+                            Section("Output groups") {
+                                ForEach(state.show.groups) { g in
+                                    OutputGroupRow(group: g, state: state)
+                                        .tag(Selection.speakerGroup(g.id))
+                                        .contextMenu {
+                                            Menu("Algorithm") {
+                                                ForEach(Renderer.allCases, id: \.self) { r in
+                                                    Button { var c = g; c.renderer = r; model.apply(.setGroup(group: c)) } label: {
+                                                        if g.renderer == r { Label(r.title, systemImage: "checkmark") } else { Text(r.title) }
+                                                    }
+                                                }
+                                            }
+                                            Divider()
+                                            Button("Delete group…", role: .destructive) { selection = .speakerGroup(g.id) }
+                                        }
+                                }
+                            }
+                        }
+                        Section {
+                            ForEach(state.system.speakers.sorted { $0.number < $1.number }) { s in
+                                SpeakerRow(speaker: s, group: groups[s.id], lfe: state.system.lfeSpeakers.contains(s.id), meters: meters)
+                                    .tag(Selection.speaker(s.id))
+                                    .contextMenu { speakerMenu(s, state) }
+                            }
+                        } header: {
+                            if !state.show.groups.isEmpty { Text("Speakers") }
                         }
                     }
                 }
@@ -350,6 +374,33 @@ struct SidebarView: View {
     private func selectedSources(_ state: ShowState) -> [Source] {
         let rows: Set<Selection> = multiple.count > 1 ? multiple : (selection.map { [$0] } ?? [])
         return state.show.sources.filter { rows.contains(.source($0.id)) }
+    }
+
+    /// The selected speakers, by number.
+    private func selectedSpeakers(_ state: ShowState) -> [Speaker] {
+        let rows: Set<Selection> = multiple.count > 1 ? multiple : (selection.map { [$0] } ?? [])
+        return state.system.speakers.filter { rows.contains(.speaker($0.id)) }.sorted { $0.number < $1.number }
+    }
+
+    /// A speaker's right-click menu: output group membership, for the whole selection if it is in it.
+    @ViewBuilder
+    private func speakerMenu(_ s: Speaker, _ state: ShowState) -> some View {
+        let selected = selectedSpeakers(state)
+        let targets = selected.count > 1 && selected.contains(where: { $0.id == s.id }) ? selected : [s]
+        let ids = targets.map(\.id)
+        Menu(targets.count > 1 ? "Output groups (\(targets.count) speakers)" : "Output groups") {
+            ForEach(state.show.groups) { g in
+                let all = ids.allSatisfy { g.speakers.contains($0) }
+                Button { model.setSpeakers(ids, of: g, !all) } label: {
+                    if all { Label("\(g.name) (\(g.renderer.title))", systemImage: "checkmark") } else { Text("\(g.name) (\(g.renderer.title))") }
+                }
+            }
+            if !state.show.groups.isEmpty { Divider() }
+            Button("New group with \(targets.count > 1 ? "them" : "it")") {
+                multiple = []
+                if let id = model.addSpeakerGroup(with: ids) { selection = .speakerGroup(id) }
+            }
+        }
     }
 
     /// What a right-click on a source acts on: the whole selection if the source is in it, else just it.
@@ -414,6 +465,15 @@ struct SidebarView: View {
                 Text("Speaker")
                 Spacer()
                 Text("Output level")
+                Button {
+                    let members = selectedSpeakers(state).map(\.id)
+                    multiple = []
+                    if let id = model.addSpeakerGroup(with: members) { selection = .speakerGroup(id) }
+                } label: {
+                    Label("Group", systemImage: "square.stack.3d.up")
+                }
+                .buttonStyle(.borderless)
+                .help("Make an output group with the selected speakers in it (⌘-click to select several), then pick its algorithm and tick more speakers in the inspector")
             }
         }
         .font(.caption.bold())

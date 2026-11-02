@@ -202,11 +202,19 @@ public struct SpeakerGroup: Codable, Equatable, Identifiable {
     public var dimensions: Int?
     public var blur: Double
     public var rolloffDB: Double
+    /// KNN: K, how many of the nearest speakers may play.
+    public var neighbours: Int
+    /// KNN: degrees from the nearest speaker within which the others play.
+    public var spread: Double
+    /// SPCAP: the cardioid's exponent, 1 or more.
+    public var tightness: Double
 
     public init(id: UUID = UUID(), number: Int, name: String, renderer: Renderer, speakers: [UUID], gainDB: Double = 0,
                 weightsDB: [String: Double] = [:], colour: String? = nil, precedenceMS: Double = 10, rolloff: Double = 1,
                 referenceDistance: Double? = nil, distanceOffset: Double? = nil, reference: Position? = nil,
-                dimensions: Int? = nil, blur: Double = 0.5, rolloffDB: Double = 6) {
+                dimensions: Int? = nil, blur: Double = 0.5, rolloffDB: Double = 6, neighbours: Int = 3, spread: Double = 30,
+                tightness: Double = 1) {
+        self.neighbours = neighbours; self.spread = spread; self.tightness = tightness
         self.id = id; self.number = number; self.name = name; self.renderer = renderer; self.speakers = speakers
         self.gainDB = gainDB; self.weightsDB = weightsDB; self.colour = colour; self.precedenceMS = precedenceMS
         self.rolloff = rolloff; self.referenceDistance = referenceDistance; self.distanceOffset = distanceOffset
@@ -215,7 +223,7 @@ public struct SpeakerGroup: Codable, Equatable, Identifiable {
 
     enum CodingKeys: String, CodingKey {
         case id, number, name, renderer, speakers, gainDB, weightsDB, colour, precedenceMS, rolloff, referenceDistance,
-             distanceOffset, reference, dimensions, blur, rolloffDB
+             distanceOffset, reference, dimensions, blur, rolloffDB, neighbours, spread, tightness
     }
 
     public init(from decoder: Decoder) throws {
@@ -237,6 +245,9 @@ public struct SpeakerGroup: Codable, Equatable, Identifiable {
         dimensions = try c.decodeIfPresent(Int.self, forKey: .dimensions)
         blur = try c.decodeIfPresent(Double.self, forKey: .blur) ?? d.blur
         rolloffDB = try c.decodeIfPresent(Double.self, forKey: .rolloffDB) ?? d.rolloffDB
+        neighbours = try c.decodeIfPresent(Int.self, forKey: .neighbours) ?? d.neighbours
+        spread = try c.decodeIfPresent(Double.self, forKey: .spread) ?? d.spread
+        tightness = try c.decodeIfPresent(Double.self, forKey: .tightness) ?? d.tightness
     }
 }
 

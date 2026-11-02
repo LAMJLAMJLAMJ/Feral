@@ -121,7 +121,7 @@ struct PlanView: View {
                 HStack(spacing: 5) {
                     Image(systemName: "diamond.fill").foregroundStyle(g.color).font(.system(size: 9))
                     Text(g.name).font(.caption)
-                    Text(g.renderer.rawValue).font(.caption2).foregroundStyle(.secondary)
+                    Text(g.renderer.title).font(.caption2).foregroundStyle(.secondary)
                 }
             }
             if state.show.groups.isEmpty {

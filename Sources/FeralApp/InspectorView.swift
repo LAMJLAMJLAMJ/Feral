@@ -23,6 +23,8 @@ struct InspectorView: View {
                     if let s = state.snapshot(id) { SnapshotInspector(model: model, state: state, snapshot: s, selection: $selection) }
                 case .listener:
                     ListenerInspector(model: model, state: state)
+                case .speakerGroup(let id):
+                    if let g = state.group(id) { OutputGroupInspector(model: model, state: state, group: g, selection: $selection) }
                 case .sourceGroup(let id):
                     if let g = state.sourceGroup(id) {
                         if g.stereo, let left = state.stereoPair(g)?.left {
@@ -349,7 +351,7 @@ struct SendRow: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 2) {
-            Toggle("\(group.name) (\(group.renderer.rawValue))", isOn: Binding(
+            Toggle("\(group.name) (\(group.renderer.title))", isOn: Binding(
                 get: { send != nil }, set: { change($0 ? GroupSend(group: group.id) : nil) }))
             if let send {
                 LevelSlider(value: send.gainDB, range: -40...10, step: 0.5, unit: "dB") {
@@ -373,14 +375,19 @@ struct SpeakerInspector: View {
         Form {
             Section {
                 LiveMeter(meters: meters, input: nil, output: speaker.output)
-                LabeledContent("Groups", value: groups.isEmpty ? "none" : groups.map { "\($0.name) (\($0.renderer.rawValue))" }
-                    .joined(separator: ", "))
                 if state.system.lfeSpeakers.contains(speaker.id) { LabeledContent("LFE", value: "takes the sources' LFE sends") }
             } header: {
                 HStack(spacing: 8) {
                     Image(systemName: "diamond.fill").foregroundStyle(groups.first?.color ?? .gray)
                     Text("Speaker \(speaker.number)").font(.headline)
                     Text(speaker.name ?? "").foregroundStyle(.secondary)
+                }
+            }
+            Section("Output groups") {
+                if state.show.groups.isEmpty { Text("None yet: the Group button above the Speakers list makes one.").foregroundStyle(.secondary) }
+                ForEach(state.show.groups) { g in
+                    Toggle("\(g.name) (\(g.renderer.title))", isOn: Binding(get: { g.speakers.contains(speaker.id) },
+                                                                          set: { model.setSpeakers([speaker.id], of: g, $0) }))
                 }
             }
             Section("Name and position") {

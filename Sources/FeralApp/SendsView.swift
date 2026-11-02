@@ -56,7 +56,7 @@ private struct SendsGrid: View {
                     GridRow {
                         Text("Source").font(.caption.bold()).foregroundStyle(.secondary)
                         ForEach(groups) { g in
-                            header(g.name, detail: g.renderer.rawValue, color: g.color)
+                            header(g.name, detail: g.renderer.title, color: g.color)
                                 .contextMenu {
                                     Button("Send every source at 0 dB") { setAll(group: g.id, rows: rows, gainDB: 0) }
                                     Button("Remove every send to \(g.name)") { setAll(group: g.id, rows: rows, gainDB: nil) }

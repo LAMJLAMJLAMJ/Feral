@@ -478,6 +478,52 @@ final class ShowTests: XCTestCase {
         XCTAssertNil(snap.sources[0].values.delayMS)
     }
 
+    func testGroupsAreBuiltUpASpeakerAtATime() throws {
+        var state = try imported()
+        let base = try config()
+        let vox = state.show.sources[1].id
+        let speakers = state.system.speakers.map(\.id)
+        var g = SpeakerGroup(number: state.nextGroupNumber, name: "Surround", renderer: .vbap, speakers: [])
+        XCTAssertEqual(g.number, 3)
+        try state.apply(.setGroup(group: g))
+        try state.apply(.updateSources(updates: [SourceUpdate(id: vox, values: SourceValues(
+            sends: state.source(vox)!.sends + [GroupSend(group: g.id)]))]))
+        // Empty, then one speaker: VBAP cannot pan yet, so it plays nothing and the sends to it wait.
+        for n in 0...1 {
+            g.speakers = Array(speakers.prefix(n))
+            try state.apply(.setGroup(group: g))
+            XCTAssertFalse(state.isPlayable(g))
+            let c = state.engineConfig(base: base)
+            XCTAssertEqual(c.groups.map(\.name), ["Main", "Top"])
+            XCTAssertNil(state.sourceConfig(state.source(vox)!).groups?["Surround"])
+            XCTAssertNoThrow(try c.validate())
+        }
+        g.speakers = Array(speakers.prefix(2))
+        try state.apply(.setGroup(group: g))
+        XCTAssertTrue(state.isPlayable(g))
+        XCTAssertEqual(state.engineConfig(base: base).groups.map(\.name), ["Main", "Top", "Surround"])
+        XCTAssertNoThrow(try state.engineConfig(base: base).validate())
+        for r in [Renderer.knn, .spcap] {
+            g.renderer = r
+            try state.apply(.setGroup(group: g))
+            let c = state.engineConfig(base: base)
+            XCTAssertNotNil(c.groups[2].reference, "\(r) pans around the listener")
+            let taps = try SpatialRenderer(config: c).allTaps[1].filter { $0.group == "Surround" }
+            XCTAssertFalse(taps.isEmpty, "\(r) plays")
+        }
+        g.neighbours = 0
+        try state.apply(.setGroup(group: g))
+        XCTAssertThrowsError(try state.engineConfig(base: base).validate())
+        // A flat (2D) Delay or DBAP is allowed; another dimension count is not.
+        var main = state.show.groups[0]
+        main.dimensions = 2
+        try state.apply(.setGroup(group: main))
+        XCTAssertEqual(state.engineConfig(base: base).groups[0].dimensions, 2)
+        main.dimensions = 4
+        try state.apply(.setGroup(group: main))
+        XCTAssertThrowsError(try state.engineConfig(base: base).validate())
+    }
+
     func testCuesRunInNumberOrder() throws {
         var state = try imported()
         for n in ["10", "2", "2.5", "1"] { try state.apply(.setCue(cue: Cue(number: n))) }
