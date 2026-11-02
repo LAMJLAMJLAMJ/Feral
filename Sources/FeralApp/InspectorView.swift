@@ -139,14 +139,38 @@ struct LevelSlider: View {
 }
 
 /// A number field that sends its value when edited.
+/// A number the engine owns, typed as text and sent on Return or when the field loses focus, so a
+/// half-typed value such as "-" or "-1." is not thrown away while typing.
 struct NumberField: View {
     let title: String
     let value: Double
     let set: (Double) -> Void
+    @State private var text = ""
+    @FocusState private var focused: Bool
 
     var body: some View {
-        TextField(title, value: Binding(get: { value }, set: { set($0) }),
-                  format: .number.precision(.fractionLength(0...3)))
+        TextField(title, text: $text)
+            .focused($focused)
+            .onSubmit(commit)
+            .onAppear { text = Self.format(value) }
+            .onChange(of: focused) { _, now in if !now { commit() } }
+            .onChange(of: value) { _, v in if !focused { text = Self.format(v) } }
+    }
+
+    private func commit() {
+        let t = text.trimmingCharacters(in: .whitespaces)
+            .replacingOccurrences(of: "\u{2212}", with: "-")   // a typographic minus
+            .replacingOccurrences(of: ",", with: ".")
+        if let v = Double(t), v.isFinite {
+            if v != value { set(v) }
+            text = Self.format(v)
+        } else {
+            text = Self.format(value)
+        }
+    }
+
+    static func format(_ v: Double) -> String {
+        v.formatted(.number.precision(.fractionLength(0...3)).grouping(.never))
     }
 }
 
