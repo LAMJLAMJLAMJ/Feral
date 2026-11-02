@@ -72,7 +72,7 @@ public struct Source: Codable, Equatable, Identifiable {
     public var position: Position
     public var gainDB: Double
     public var mute: Bool
-    /// Spread in degrees (VBAP groups).
+    /// Spread in degrees, for every algorithm.
     public var width: Double
     /// "#RRGGBB" for the app; none picks one from the number.
     public var colour: String?
@@ -88,17 +88,22 @@ public struct Source: Codable, Equatable, Identifiable {
     public var trimDB: Double
     public var invert: Bool
     public var delayMS: Double
+    /// Level and air absorption with distance from the listener (off when none).
+    public var distance: SourceDistance?
 
     public init(id: UUID = UUID(), number: Int, name: String? = nil, input: Int, position: Position, gainDB: Double = 0,
                 mute: Bool = false, width: Double = 0, colour: String? = nil, sends: [GroupSend] = [], lfeDB: Double? = nil,
-                eq: SourceEQ? = nil, compressor: Compressor? = nil, trimDB: Double = 0, invert: Bool = false, delayMS: Double = 0) {
+                eq: SourceEQ? = nil, compressor: Compressor? = nil, trimDB: Double = 0, invert: Bool = false, delayMS: Double = 0,
+                distance: SourceDistance? = nil) {
+        self.distance = distance
         self.id = id; self.number = number; self.name = name; self.input = input; self.position = position
         self.gainDB = gainDB; self.mute = mute; self.width = width; self.colour = colour; self.sends = sends; self.lfeDB = lfeDB
         self.eq = eq; self.compressor = compressor; self.trimDB = trimDB; self.invert = invert; self.delayMS = delayMS
     }
 
     enum CodingKeys: String, CodingKey {
-        case id, number, name, input, position, gainDB, mute, width, colour, sends, lfeDB, eq, compressor, trimDB, invert, delayMS
+        case id, number, name, input, position, gainDB, mute, width, colour, sends, lfeDB, eq, compressor, trimDB, invert, delayMS,
+             distance
     }
 
     public init(from decoder: Decoder) throws {
@@ -119,6 +124,7 @@ public struct Source: Codable, Equatable, Identifiable {
         trimDB = try c.decodeIfPresent(Double.self, forKey: .trimDB) ?? 0
         invert = try c.decodeIfPresent(Bool.self, forKey: .invert) ?? false
         delayMS = try c.decodeIfPresent(Double.self, forKey: .delayMS) ?? 0
+        distance = try c.decodeIfPresent(SourceDistance.self, forKey: .distance)
     }
 
     /// "12 Vox" or "12".
@@ -287,11 +293,13 @@ public struct SourceValues: Codable, Equatable {
     public var trimDB: Double?
     public var invert: Bool?
     public var delayMS: Double?
+    public var distance: SourceDistance?
 
     public init(position: Position? = nil, gainDB: Double? = nil, mute: Bool? = nil, width: Double? = nil,
                 sends: [GroupSend]? = nil, lfeDB: Double? = nil, lfeOff: Bool? = nil,
                 eq: SourceEQ? = nil, compressor: Compressor? = nil, trimDB: Double? = nil, invert: Bool? = nil,
-                delayMS: Double? = nil) {
+                delayMS: Double? = nil, distance: SourceDistance? = nil) {
+        self.distance = distance
         self.position = position; self.gainDB = gainDB; self.mute = mute; self.width = width
         self.sends = sends; self.lfeDB = lfeDB; self.lfeOff = lfeOff
         self.eq = eq; self.compressor = compressor; self.trimDB = trimDB; self.invert = invert; self.delayMS = delayMS
@@ -310,6 +318,7 @@ public struct SourceValues: Codable, Equatable {
         if let t = newer.trimDB { v.trimDB = t }
         if let i = newer.invert { v.invert = i }
         if let d = newer.delayMS { v.delayMS = d }
+        if let d = newer.distance { v.distance = d }
         if newer.lfeOff == true { v.lfeOff = true; v.lfeDB = nil } else if let l = newer.lfeDB { v.lfeDB = l; v.lfeOff = nil }
         return v
     }
@@ -333,6 +342,8 @@ public enum SnapshotField: String, Codable, CaseIterable, Equatable {
     /// Trim, polarity and input delay.
     case input
     case eq, compressor
+    /// Level and air absorption with distance.
+    case distance
 
     /// The fields a set of stored values holds.
     public static func present(in v: SourceValues) -> Set<SnapshotField> {
@@ -346,6 +357,7 @@ public enum SnapshotField: String, Codable, CaseIterable, Equatable {
         if v.trimDB != nil || v.invert != nil || v.delayMS != nil { f.insert(.input) }
         if v.eq != nil { f.insert(.eq) }
         if v.compressor != nil { f.insert(.compressor) }
+        if v.distance != nil { f.insert(.distance) }
         return f
     }
 
@@ -361,6 +373,7 @@ public enum SnapshotField: String, Codable, CaseIterable, Equatable {
         case .input: v.trimDB = on ? all.trimDB : nil; v.invert = on ? all.invert : nil; v.delayMS = on ? all.delayMS : nil
         case .eq: v.eq = on ? all.eq : nil
         case .compressor: v.compressor = on ? all.compressor : nil
+        case .distance: v.distance = on ? all.distance : nil
         }
     }
 }

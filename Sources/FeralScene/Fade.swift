@@ -10,7 +10,8 @@ import Foundation
 /// - Trim and delay move in a straight line, polarity flips halfway. EQ and compressor gains,
 ///   thresholds and ratios move linearly and frequencies, Qs and times geometrically; an EQ or
 ///   compressor turning on does so at the start (from flat), one turning off at the end; a high-pass
-///   appearing sweeps up from 20 Hz, one going sweeps down to it.
+///   appearing sweeps up from 20 Hz, one going sweeps down to it. Distance modelling moves the same
+///   way, from or to none (no roll-off, no air).
 ///
 /// The engine steps it every 20 ms and applies the values as `updateSources` commands, so the app,
 /// the journal and the audio all follow the same path.
@@ -93,6 +94,7 @@ public struct SnapshotFade {
         if let x = b.invert { v.invert = t >= 0.5 ? x : (a.invert ?? x) }
         if let x = b.eq { v.eq = done ? x : (a.eq ?? .flat).fading(to: x, at: t) }
         if let x = b.compressor { v.compressor = done ? x : (a.compressor ?? .off).fading(to: x, at: t) }
+        if let x = b.distance { v.distance = done ? x : (a.distance ?? .off).fading(to: x, at: t) }
         if b.lfeOff != nil || b.lfeDB != nil {
             let y = b.lfeOff == true ? nil : b.lfeDB
             if done {
@@ -162,5 +164,17 @@ extension Compressor {
             }
         }
         return v
+    }
+}
+
+extension SourceDistance {
+    /// This distance modelling a fraction `t` (after the curve, below 1) of the way to `to`.
+    func fading(to b: SourceDistance, at t: Double) -> SourceDistance {
+        // Off is no roll-off and no air: one turning on starts there, one turning off ends there.
+        var a = self, target = b
+        if !a.on { a.rolloffDB = 0; a.air = 0; a.referenceM = b.referenceM }
+        if !target.on { target.rolloffDB = 0; target.air = 0; target.referenceM = a.referenceM }
+        return SourceDistance(on: on || b.on, rolloffDB: lerp(a.rolloffDB, target.rolloffDB, t),
+                              referenceM: glide(a.referenceM, target.referenceM, t), air: lerp(a.air, target.air, t))
     }
 }

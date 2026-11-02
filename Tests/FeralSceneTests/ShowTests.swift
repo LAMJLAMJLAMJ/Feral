@@ -524,6 +524,60 @@ final class ShowTests: XCTestCase {
         XCTAssertThrowsError(try state.engineConfig(base: base).validate())
     }
 
+    func testDistanceModellingFromTheListener() throws {
+        var state = try imported()
+        try state.apply(.setListener(listener: Listener(position: Position(0, 0, 0))))
+        let vox = state.show.sources[1]
+        let model = SourceDistance(on: true, rolloffDB: 6, referenceM: 5, air: 1)
+        try state.apply(.updateSources(updates: [SourceUpdate(id: vox.id, values: SourceValues(position: Position(0, 20, 0), distance: model))]))
+        let c = state.sourceConfig(state.source(vox.id)!)
+        XCTAssertEqual(c.gainDB, vox.gainDB - 12, accuracy: 1e-9, "20 m is two doublings beyond 5 m")
+        XCTAssertEqual(c.airDB ?? 0, -2, accuracy: 1e-9, "0.1 dB per metre")
+        XCTAssertEqual(model.levelDB(at: 3), 0, "nothing within the reference")
+        XCTAssertEqual(SourceDistance(on: true, air: 4).airDB(at: 500), -SourceDistance.maxAirDB)
+        XCTAssertThrowsError(try state.apply(.updateSources(updates: [SourceUpdate(id: vox.id, values: SourceValues(
+            distance: SourceDistance(on: true, air: 9)))])))
+        // Off changes nothing.
+        try state.apply(.updateSources(updates: [SourceUpdate(id: vox.id, values: SourceValues(distance: .off))]))
+        XCTAssertEqual(state.sourceConfig(state.source(vox.id)!).gainDB, vox.gainDB)
+        XCTAssertNil(state.sourceConfig(state.source(vox.id)!).airDB)
+        // Snapshots store it and fade it.
+        let half = SnapshotFade.values(from: SourceValues(distance: .off), to: SourceValues(distance: model), at: 0.5)
+        XCTAssertEqual(half.distance?.on, true)
+        XCTAssertEqual(half.distance?.rolloffDB ?? 0, 3, accuracy: 1e-9)
+        XCTAssertEqual(half.distance?.air ?? 0, 0.5, accuracy: 1e-9)
+        XCTAssertTrue(SnapshotField.present(in: state.values(of: state.source(vox.id)!)).contains(.distance))
+    }
+
+    func testSpreadWorksInEveryAlgorithm() throws {
+        var state = try imported()
+        let vox = state.show.sources[1].id
+        let ring = SpeakerGroup(number: 3, name: "Ring", renderer: .knn, speakers: state.system.speakers.prefix(4).map(\.id),
+                                spread: 0)
+        try state.apply(.setGroup(group: ring))
+        try state.apply(.updateSources(updates: [SourceUpdate(id: vox, values: SourceValues(
+            position: state.system.speakers[0].position, sends: [GroupSend(group: ring.id)]))]))
+        func feeds(_ width: Double) throws -> Int {
+            try state.apply(.updateSources(updates: [SourceUpdate(id: vox, values: SourceValues(width: width))]))
+            let c = state.engineConfig(base: try config())
+            return try SpatialRenderer(config: c).allTaps[1].filter { $0.group == "Ring" && $0.gain > 1e-3 }.count
+        }
+        XCTAssertEqual(try feeds(0), 1, "KNN on a speaker with no spread")
+        XCTAssertGreaterThan(try feeds(180), 1, "the source's spread widens it")
+    }
+
+    func testSnapToTheNearestSpeakers() throws {
+        var state = try imported()
+        let vox = state.show.sources[1], keys = state.show.sources[2]
+        // Vox sends to Main (outputs 1 to 4) only, so it lands on one of them, not on the sub.
+        try state.apply(.updateSources(updates: state.snappedToNearestSpeakers([vox.id, keys.id])))
+        XCTAssertEqual(state.source(vox.id)?.position, Position(-4, 0, 5))
+        XCTAssertEqual(state.source(keys.id)?.position, Position(0, 5, 8), "Keys sends to Top, whose only speaker is 5")
+        // Two sources never land on one speaker.
+        let both = state.snappedToNearestSpeakers([vox.id, vox.id])
+        XCTAssertNotEqual(both[0].values.position, both[1].values.position)
+    }
+
     func testCuesRunInNumberOrder() throws {
         var state = try imported()
         for n in ["10", "2", "2.5", "1"] { try state.apply(.setCue(cue: Cue(number: n))) }

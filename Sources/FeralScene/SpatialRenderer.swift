@@ -39,6 +39,8 @@ public final class SpatialRenderer {
         let gain: Double
         /// KNN and SPCAP.
         let pan: feral_pan_params
+        /// What spread turns sources around: the group's reference, else the speakers' centre.
+        let centre: Position
 
         init(_ config: GroupConfig, speakers: [SpeakerConfig], outputs: [Int]) throws {
             let points = speakers.map { $0.position.c }
@@ -57,6 +59,7 @@ public final class SpatialRenderer {
             } else {
                 vbap = nil
             }
+            centre = config.reference ?? Group.defaultReference(speakers)
             pan = feral_pan_params(reference: (config.reference ?? Group.defaultReference(speakers)).c,
                                    planar: config.dimensions == 2 ? 1 : 0, rolloff: config.rolloff,
                                    reference_distance: config.referenceDistance ?? 0, neighbours: Int32(max(1, config.neighbours)),
@@ -162,7 +165,8 @@ public final class SpatialRenderer {
         for source in sources where source.input >= 1 && source.input <= inputs {
             let link = source.link.flatMap { $0 >= 1 && $0 <= inputs ? $0 - 1 : nil }
             let params = InputParams(eq: source.eq, compressor: source.compressor, link: link, sampleRate: sampleRate,
-                                     trimDB: source.trimDB ?? 0, invert: source.invert ?? false, delayMS: source.delayMS ?? 0)
+                                     trimDB: source.trimDB ?? 0, invert: source.invert ?? false, delayMS: source.delayMS ?? 0,
+                                     airDB: source.airDB ?? 0)
             if !params.isPlain { state.setInput(source.input - 1, params) }
         }
         return state
@@ -184,28 +188,22 @@ public final class SpatialRenderer {
             }
             let scale = sourceGain * pow(10, sendDB / 20) * g.gain
             let n = g.points.count
-            var gains = [Float](repeating: 0, count: n)
-            var delays = [Double](repeating: 0, count: n)
-            switch g.config.renderer {
-            case .delay:
-                var params = feral_delay_params(
-                    speed_of_sound: feral_speed_of_sound(config.airTemperatureC),
-                    precedence: g.config.precedenceMS / 1000, rolloff: g.config.rolloff,
-                    reference_distance: g.config.referenceDistance ?? 0, distance_offset: g.config.distanceOffset ?? -1,
-                    planar: g.config.dimensions == 2 ? 1 : 0)
-                feral_delay_render(g.points, g.weights, Int32(n), p, &params, &gains, &delays)
-            case .dbap:
-                feral_dbap_render(g.points, g.weights, Int32(n), p, g.config.blur, g.config.rolloffDB,
-                                  g.config.dimensions == 2 ? 1 : 0, &gains)
-            case .vbap:
-                feral_vbap_render(g.vbap, p, source.width, g.config.rolloff, g.config.referenceDistance ?? 0, &gains)
-                for k in 0..<n { gains[k] *= Float(g.weights[k]) }
-            case .knn:
-                var params = g.pan
-                feral_knn_render(g.points, g.weights, Int32(n), p, &params, &gains)
-            case .spcap:
-                var params = g.pan
-                feral_spcap_render(g.points, g.weights, Int32(n), p, &params, &gains)
+            let centreRender = render(g, at: p, width: source.width)
+            var gains = centreRender.0
+            let delays = centreRender.1
+            // Spread, for every algorithm but VBAP (which spreads by itself): the gains are the RMS of
+            // nine copies of the source turned across the width around the group's centre, so the
+            // total power stays as it was; a Delay group keeps the delays of the source itself.
+            if source.width > 0 && g.config.renderer != .vbap {
+                var power = gains.map { Double($0) * Double($0) }
+                let copies = 9
+                for i in 0..<copies where i != copies / 2 {
+                    let turn = source.width * (Double(i) / Double(copies - 1) - 0.5)
+                    let q = source.position.turned(by: turn, around: g.centre).c
+                    let (more, _) = render(g, at: q, width: 0)
+                    for k in 0..<n { power[k] += Double(more[k]) * Double(more[k]) }
+                }
+                gains = power.map { Float(($0 / Double(copies)).squareRoot()) }
             }
             // Below -120 dB a feed is rounding left over from VBAP, not a speaker that plays.
             for k in 0..<n where abs(gains[k]) > 1e-6 {
@@ -218,6 +216,35 @@ public final class SpatialRenderer {
             for o in lfeOutputs { result.append(Tap(output: o, group: "LFE", delayed: false, gain: g, delay: 0)) }
         }
         return result
+    }
+
+    /// One group's gains (with the speakers' weights) and delays for a source at `p`.
+    private func render(_ g: Group, at p: feral_point, width: Double) -> ([Float], [Double]) {
+        let n = g.points.count
+        var gains = [Float](repeating: 0, count: n)
+        var delays = [Double](repeating: 0, count: n)
+        switch g.config.renderer {
+        case .delay:
+            var params = feral_delay_params(
+                speed_of_sound: feral_speed_of_sound(config.airTemperatureC),
+                precedence: g.config.precedenceMS / 1000, rolloff: g.config.rolloff,
+                reference_distance: g.config.referenceDistance ?? 0, distance_offset: g.config.distanceOffset ?? -1,
+                planar: g.config.dimensions == 2 ? 1 : 0)
+            feral_delay_render(g.points, g.weights, Int32(n), p, &params, &gains, &delays)
+        case .dbap:
+            feral_dbap_render(g.points, g.weights, Int32(n), p, g.config.blur, g.config.rolloffDB,
+                              g.config.dimensions == 2 ? 1 : 0, &gains)
+        case .vbap:
+            feral_vbap_render(g.vbap, p, width, g.config.rolloff, g.config.referenceDistance ?? 0, &gains)
+            for k in 0..<n { gains[k] *= Float(g.weights[k]) }
+        case .knn:
+            var params = g.pan
+            feral_knn_render(g.points, g.weights, Int32(n), p, &params, &gains)
+        case .spcap:
+            var params = g.pan
+            feral_spcap_render(g.points, g.weights, Int32(n), p, &params, &gains)
+        }
+        return (gains, delays)
     }
 
     /// A speaker's system-layer settings as output processing.

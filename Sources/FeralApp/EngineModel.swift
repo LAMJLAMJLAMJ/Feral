@@ -365,6 +365,13 @@ final class EngineModel: ObservableObject {
     }
 
     /// Moves a dragged source, and its linked partners by the same amount.
+    /// Puts sources (a stereo pair's both sides) on their nearest speakers.
+    func snapToNearestSpeakers(_ sources: [UUID]) {
+        guard let state else { return }
+        let updates = state.snappedToNearestSpeakers(withStereoPartners(sources))
+        if !updates.isEmpty { apply(.updateSources(updates: updates)) }
+    }
+
     func drag(_ source: UUID, from: Position, to: Position, partners: [UUID: Position]) {
         guard let state else { return }
         if partners.isEmpty {

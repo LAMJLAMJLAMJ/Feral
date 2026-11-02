@@ -491,6 +491,7 @@ struct SidebarView: View {
         if !many {
             Button("Duplicate") { if let id = model.addSource(like: s) { selection = .source(id) } }
         }
+        Button(many ? "Snap \(targets.count) sources to nearest speakers" : "Snap to nearest speaker") { model.snapToNearestSpeakers(ids) }
         Menu(many ? "Groups (\(targets.count) sources)" : "Groups") {
             // Stereo pairs keep their two sides; they are changed from the pair's inspector.
             ForEach(state.show.sourceGroups.filter { !$0.stereo }) { g in

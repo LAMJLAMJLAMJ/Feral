@@ -232,6 +232,8 @@ struct SourceInspector: View {
                 PolarControls(listener: state.system.listener, position: source.position) { p in
                     model.drag(source.id, from: source.position, to: p, partners: model.dragPartners(of: source.id))
                 }
+                Button("Snap to nearest speaker") { model.snapToNearestSpeakers([source.id]) }
+                    .help("Moves the source onto the nearest speaker of the groups it sends to (a stereo pair: each side to its own)")
                 let groups = state.sourceGroups(of: source.id).filter { !$0.stereo }
                 if !groups.isEmpty {
                     LabeledContent("Groups") {
@@ -255,12 +257,14 @@ struct SourceInspector: View {
                     }
                 }
                 Toggle("Mute", isOn: Binding(get: { source.mute }, set: { model.update(source.id, SourceValues(mute: $0)) }))
-                LabeledContent("Width (VBAP)") {
-                    LevelSlider(value: source.width, range: 0...180, step: 1, unit: "°") {
+                LabeledContent("Spread") {
+                    LevelSlider(value: source.width, range: 0...360, step: 1, unit: "°") {
                         model.update(source.id, SourceValues(width: $0))
                     }
                 }
+                .help("Spreads the source across this many degrees around the listener, in every algorithm")
             }
+            DistanceSection(model: model, state: state, source: source)
             if let pair = model.stereoPair(of: source.id) {
                 StereoSection(model: model, state: state, group: pair.group, current: source.id, selection: $selection)
             }
@@ -522,17 +526,61 @@ struct CueInspector: View {
     }
 }
 
+/// A source's distance modelling: level falling with distance from the listener, and air absorption.
+struct DistanceSection: View {
+    @ObservedObject var model: EngineModel
+    let state: ShowState
+    let source: Source
+
+    var body: some View {
+        let d = source.distance ?? .off
+        let metres = source.position.distance(to: state.system.listener.position)
+        Section {
+            Toggle("Distance modelling", isOn: Binding(get: { d.on }, set: { on in set { $0.on = on } }))
+            if d.on {
+                LabeledContent("Roll-off") {
+                    LevelSlider(value: d.rolloffDB, range: 0...24, step: 0.5, unit: "dB",
+                                format: { String(format: "%.1f dB per doubling", $0) }) { v in set { $0.rolloffDB = v } }
+                }
+                .help("How much quieter per doubling of distance from the listener; 6 dB is the inverse square law")
+                LabeledContent("From") {
+                    LevelSlider(value: d.referenceM, range: 0.5...50, step: 0.5, unit: "m") { v in set { $0.referenceM = v } }
+                }
+                .help("Within this distance of the listener the level is unchanged")
+                LabeledContent("Air absorption") {
+                    LevelSlider(value: d.air, range: 0...4, step: 0.1, unit: "",
+                                format: { $0 == 0 ? "off" : String(format: "%.1f× real air", $0) }) { v in set { $0.air = v } }
+                }
+                .help("Takes off the highs (above about 7 kHz) as air would over the distance; 1 is real air, more exaggerates it")
+                LabeledContent("Now", value: String(format: "%.1f m: %.1f dB, highs %.1f dB", metres, d.levelDB(at: metres), d.airDB(at: metres)))
+                    .foregroundStyle(.secondary)
+            }
+        } header: {
+            Text("Distance")
+        } footer: {
+            if d.on { Text("Measured from the listener. On top of the output groups' own roll-off.") }
+        }
+    }
+
+    private func set(_ change: (inout SourceDistance) -> Void) {
+        var d = source.distance ?? .off
+        change(&d)
+        model.update(source.id, SourceValues(distance: d))
+    }
+}
+
 func fieldName(_ f: SnapshotField) -> String {
     switch f {
     case .position: return "Position"
     case .gain: return "Level"
     case .mute: return "Mute"
-    case .width: return "Width"
+    case .width: return "Spread"
     case .sends: return "Sends"
     case .lfe: return "LFE send"
     case .input: return "Input (trim, polarity, delay)"
     case .eq: return "EQ"
     case .compressor: return "Compressor"
+    case .distance: return "Distance modelling"
     }
 }
 

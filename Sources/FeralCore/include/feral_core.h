@@ -99,7 +99,7 @@ typedef struct feral_output_params {
 /// The parameters of an output with no processing: no delay, flat, unity gain, no limiter, not muted.
 feral_output_params feral_output_defaults(void);
 
-#define FERAL_INPUT_EQ_BANDS 6
+#define FERAL_INPUT_EQ_BANDS 7
 
 /// Bands of the multiband compressor, and the filter sections that split them: in order, the low
 /// band's low-pass twice (a Linkwitz-Riley crossover) and an all-pass at the upper crossover (so the

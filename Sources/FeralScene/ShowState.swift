@@ -140,9 +140,9 @@ public struct ShowState: Equatable {
                 show.sources[i] = try applying(u.values, to: show.sources[i])
                 if !ids.contains(u.id) { ids.append(u.id) }
                 // A stereo pair's level, mute, EQ and compressor are always the same on both sides.
-                let shared = SourceValues(gainDB: u.values.gainDB, mute: u.values.mute, eq: u.values.eq,
+                let shared = SourceValues(gainDB: u.values.gainDB, mute: u.values.mute, width: u.values.width, eq: u.values.eq,
                                           compressor: u.values.compressor, trimDB: u.values.trimDB,
-                                          invert: u.values.invert, delayMS: u.values.delayMS)
+                                          invert: u.values.invert, delayMS: u.values.delayMS, distance: u.values.distance)
                 if !shared.isEmpty, let partner = stereoPartner(of: u.id), let j = sourceIndex(partner) {
                     show.sources[j] = try applying(shared, to: show.sources[j])
                     if !ids.contains(partner) { ids.append(partner) }
@@ -183,8 +183,8 @@ public struct ShowState: Equatable {
             guard p.x.isFinite, p.y.isFinite, p.z.isFinite, abs(p.x) < 10_000, abs(p.y) < 10_000, abs(p.z) < 10_000,
                   l.facing.isFinite else { throw ConfigError("the listener must be finite and within 10 km") }
             system.listener = Listener(position: p, facing: Self.wrap(l.facing))
-            // VBAP groups without a reference of their own pan around the listener.
-            return show.groups.contains { $0.renderer.isDirectional && $0.reference == nil } ? .layout(crossfade: true) : .none
+            // Panning by direction, spread and distance modelling all work from the listener.
+            return .layout(crossfade: true)
 
         case .removeSourceGroup(let id):
             guard let i = show.sourceGroups.firstIndex(where: { $0.id == id }) else { throw ConfigError("no source group has id \(id)") }
@@ -297,6 +297,7 @@ public struct ShowState: Equatable {
         if let t = v.trimDB { s.trimDB = t }
         if let i = v.invert { s.invert = i }
         if let d = v.delayMS { s.delayMS = d }
+        if let d = v.distance { s.distance = d }
         try checkValues(s)
         return s
     }
@@ -317,6 +318,7 @@ public struct ShowState: Equatable {
         guard s.delayMS.isFinite, (0...1000).contains(s.delayMS) else { throw ConfigError("source \(s.label): delay must be from 0 to 1000 ms") }
         try s.eq?.check("source \(s.label)")
         try s.compressor?.check("source \(s.label)")
+        try s.distance?.check("source \(s.label)")
     }
 
     /// Checks ids and references. Rendering checks (inputs and outputs in range, VBAP layouts) are
@@ -349,7 +351,7 @@ public struct ShowState: Equatable {
     public func values(of s: Source) -> SourceValues {
         SourceValues(position: s.position, gainDB: s.gainDB, mute: s.mute, width: s.width, sends: s.sends,
                      lfeDB: s.lfeDB, lfeOff: s.lfeDB == nil ? true : nil, eq: s.eq ?? .flat, compressor: s.compressor ?? .off,
-                     trimDB: s.trimDB, invert: s.invert, delayMS: s.delayMS)
+                     trimDB: s.trimDB, invert: s.invert, delayMS: s.delayMS, distance: s.distance ?? .off)
     }
 
     /// The fields a snapshot stores (for any of its sources).
@@ -383,6 +385,26 @@ public struct ShowState: Equatable {
 
     // MARK: To and from the renderer's settings
 
+    /// Moves sources onto their nearest speakers: of the speakers in the groups each one sends to
+    /// (any speaker when it sends nowhere), not LFE speakers, and not one another source here took.
+    public func snappedToNearestSpeakers(_ ids: [UUID]) -> [SourceUpdate] {
+        var taken = Set<UUID>()
+        return ids.compactMap { id -> SourceUpdate? in
+            guard let s = source(id) else { return nil }
+            let groups = Set(s.sends.map(\.group))
+            let inGroups = Set(show.groups.filter { groups.contains($0.id) }.flatMap(\.speakers))
+            var candidates = system.speakers.filter { !system.lfeSpeakers.contains($0.id) && !taken.contains($0.id) }
+            if !inGroups.isEmpty, candidates.contains(where: { inGroups.contains($0.id) }) {
+                candidates = candidates.filter { inGroups.contains($0.id) }
+            }
+            guard let nearest = candidates.min(by: { $0.position.distance(to: s.position) < $1.position.distance(to: s.position) }) else {
+                return nil
+            }
+            taken.insert(nearest.id)
+            return SourceUpdate(id: id, values: SourceValues(position: nearest.position))
+        }
+    }
+
     /// Whether a speaker group has enough speakers to render. One that has not (none, or one for
     /// VBAP) plays nothing and is left out of the renderer's settings, so a group can be built up a
     /// speaker at a time.
@@ -396,12 +418,15 @@ public struct ShowState: Equatable {
         for send in s.sends { if let g = group(send.group), isPlayable(g) { sends[g.name] = send.gainDB } }
         // Source groups act like VCAs: their gains add, and any muted group mutes the source.
         let groups = sourceGroups(of: s.id)
-        let gain = groups.reduce(s.gainDB) { $0 + $1.gainDB }
+        let d = s.position.distance(to: system.listener.position)
+        let gain = groups.reduce(s.gainDB) { $0 + $1.gainDB } + (s.distance?.levelDB(at: d) ?? 0)
         let mute = s.mute || groups.contains { $0.mute }
-        return SourceConfig(input: s.input, name: s.name, position: s.position, gainDB: gain, mute: mute,
+        var c = SourceConfig(input: s.input, name: s.name, position: s.position, gainDB: gain, mute: mute,
                             width: s.width, groups: sends, lfeDB: system.lfeSpeakers.isEmpty ? nil : s.lfeDB,
                             eq: s.eq, compressor: s.compressor, trimDB: s.trimDB, invert: s.invert, delayMS: s.delayMS,
                             link: stereoPartner(of: s.id).flatMap { source($0)?.input })
+        if let air = s.distance?.airDB(at: d), air < 0 { c.airDB = air }
+        return c
     }
 
     /// The engine's settings with this show's speakers, groups and sources in place of engine.json's.
@@ -420,7 +445,8 @@ public struct ShowState: Equatable {
                                speakers: g.speakers.compactMap { outputOf[$0] }.map(String.init).joined(separator: ", "),
                                gainDB: g.gainDB, weightsDB: weights, precedenceMS: g.precedenceMS, rolloff: g.rolloff,
                                referenceDistance: g.referenceDistance, distanceOffset: g.distanceOffset,
-                               reference: g.reference ?? (g.renderer.isDirectional ? system.listener.position : nil),
+                               // Directional panners pan around it; every algorithm spreads around it.
+                               reference: g.reference ?? system.listener.position,
                                dimensions: g.dimensions, blur: g.blur, rolloffDB: g.rolloffDB, neighbours: g.neighbours,
                                spread: g.spread, tightness: g.tightness)
         }

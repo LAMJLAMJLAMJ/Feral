@@ -29,6 +29,12 @@ public struct Position: Codable, Equatable {
         try c.encode(x); try c.encode(y); try c.encode(z)
     }
 
+    /// Turned about the vertical axis through `centre` by `degrees` (positive anticlockwise in x, y).
+    public func turned(by degrees: Double, around centre: Position) -> Position {
+        let a = degrees * .pi / 180, dx = x - centre.x, dy = y - centre.y
+        return Position(centre.x + dx * cos(a) - dy * sin(a), centre.y + dx * sin(a) + dy * cos(a), z)
+    }
+
     public func distance(to o: Position) -> Double { ((x - o.x) * (x - o.x) + (y - o.y) * (y - o.y) + (z - o.z) * (z - o.z)).squareRoot() }
 
     var c: feral_point { feral_point(x: x, y: y, z: z) }
@@ -244,6 +250,8 @@ public struct SourceConfig: Codable, Equatable {
     public var delayMS: Double?
     /// A stereo partner's input (from 1), whose level also drives this compressor.
     public var link: Int?
+    /// Air absorption: a high shelf's gain in dB (below 0), after the EQ.
+    public var airDB: Double?
 
     public init(input: Int, name: String? = nil, position: Position, gainDB: Double = 0, mute: Bool = false,
                 width: Double = 0, groups: [String: Double]? = nil, lfeDB: Double? = nil,
@@ -256,7 +264,7 @@ public struct SourceConfig: Codable, Equatable {
     }
 
     enum CodingKeys: String, CodingKey {
-        case input, name, position, gainDB, mute, width, groups, lfeDB, eq, compressor, trimDB, invert, delayMS, link
+        case input, name, position, gainDB, mute, width, groups, lfeDB, eq, compressor, trimDB, invert, delayMS, link, airDB
     }
 
     public init(from decoder: Decoder) throws {
@@ -280,6 +288,7 @@ public struct SourceConfig: Codable, Equatable {
         invert = try c.decodeIfPresent(Bool.self, forKey: .invert)
         delayMS = try c.decodeIfPresent(Double.self, forKey: .delayMS)
         link = try c.decodeIfPresent(Int.self, forKey: .link)
+        airDB = try c.decodeIfPresent(Double.self, forKey: .airDB)
     }
 
     /// "Vox (input 1)" or "input 1".

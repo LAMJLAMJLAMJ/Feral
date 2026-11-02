@@ -221,11 +221,17 @@ public struct InputParams: Equatable {
     static func follower(_ ms: Double, _ sampleRate: Double) -> Float { Float(exp(-1 / (max(ms, 0.01) / 1000 * sampleRate))) }
 
     /// A source's EQ and compressor at a sample rate; `link` is the stereo partner's input from 0.
+    /// `airDB` (below 0) is air absorption, a high shelf after the EQ's own sections.
     public init(eq: SourceEQ?, compressor: Compressor?, link: Int?, sampleRate: Double, trimDB: Double = 0,
-                invert: Bool = false, delayMS: Double = 0) {
+                invert: Bool = false, delayMS: Double = 0, airDB: Double = 0) {
         delay = Float(max(delayMS, 0) / 1000 * sampleRate)
         trim = Float(pow(10, trimDB / 20)) * (invert ? -1 : 1)
-        self.eq = (eq?.bands ?? []).prefix(Self.bands).map { Biquad($0, sampleRate: sampleRate) }
+        self.eq = (eq?.bands ?? []).prefix(Self.bands - 1).map { Biquad($0, sampleRate: sampleRate) }
+        if airDB < -0.01 {
+            while self.eq.count < Self.bands - 1 { self.eq.append(.flat) }
+            self.eq.append(Biquad(EQBand(.highShelf, hz: SourceDistance.airHz, gainDB: max(airDB, -SourceDistance.maxAirDB)),
+                                  sampleRate: sampleRate))
+        }
         if let c = compressor, c.on, c.multiband, c.bands.count == Compressor.bandCount {
             multiband = true
             func section(_ type: EQType, _ hz: Double) -> Biquad { Biquad(EQBand(type, hz: hz), sampleRate: sampleRate) }
@@ -282,5 +288,59 @@ public struct InputParams: Equatable {
             }
         }
         return p
+    }
+}
+
+/// Distance modelling for a source, measured from the listener: its level falls with distance beyond
+/// a reference, and air absorption takes off the highs as it would over that distance.
+public struct SourceDistance: Codable, Equatable {
+    public var on: Bool
+    /// dB less per doubling of distance beyond `referenceM` (0 to 24; 6 is the inverse square law).
+    public var rolloffDB: Double
+    /// Within this distance of the listener, in metres, the level is unchanged.
+    public var referenceM: Double
+    /// Air absorption: 0 none, 1 about what real air does (0.1 dB per metre above 7 kHz), up to 4.
+    public var air: Double
+
+    public init(on: Bool = false, rolloffDB: Double = 6, referenceM: Double = 5, air: Double = 1) {
+        self.on = on; self.rolloffDB = rolloffDB; self.referenceM = referenceM; self.air = air
+    }
+
+    public static let off = SourceDistance()
+    /// The air absorption shelf's corner, its loss per metre at `air` 1, and its limit.
+    public static let airHz = 7000.0
+    public static let airDBPerMetre = 0.1
+    public static let maxAirDB = 24.0
+    /// The most the level falls.
+    public static let maxLevelDB = 60.0
+
+    /// The level change in dB at `metres` from the listener (0 or below).
+    public func levelDB(at metres: Double) -> Double {
+        guard on, rolloffDB > 0, referenceM > 0, metres > referenceM else { return 0 }
+        return max(-rolloffDB * log2(metres / referenceM), -Self.maxLevelDB)
+    }
+
+    /// The air absorption shelf's gain in dB at `metres` from the listener (0 or below).
+    public func airDB(at metres: Double) -> Double {
+        guard on, air > 0 else { return 0 }
+        return -min(air * Self.airDBPerMetre * max(metres, 0), Self.maxAirDB)
+    }
+
+    public func check(_ who: String) throws {
+        guard rolloffDB.isFinite, (0...24).contains(rolloffDB), referenceM.isFinite, (0.1...1000).contains(referenceM),
+              air.isFinite, (0...4).contains(air) else {
+            throw ConfigError("\(who): distance roll-off must be 0 to 24 dB, reference 0.1 to 1000 m and air 0 to 4")
+        }
+    }
+
+    enum CodingKeys: String, CodingKey { case on, rolloffDB, referenceM, air }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        let d = SourceDistance()
+        on = try c.decodeIfPresent(Bool.self, forKey: .on) ?? d.on
+        rolloffDB = try c.decodeIfPresent(Double.self, forKey: .rolloffDB) ?? d.rolloffDB
+        referenceM = try c.decodeIfPresent(Double.self, forKey: .referenceM) ?? d.referenceM
+        air = try c.decodeIfPresent(Double.self, forKey: .air) ?? d.air
     }
 }
