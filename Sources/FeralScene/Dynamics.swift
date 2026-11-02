@@ -203,6 +203,9 @@ public struct InputParams: Equatable {
     public var makeup: Float = 1
     /// The other input (from 0) whose level also drives this compressor; none is -1.
     public var link: Int = -1
+    /// Delay in samples, and trim times polarity (linear).
+    public var delay: Float = 0
+    public var trim: Float = 1
     /// Multiband: the crossover's sections (see FERAL_CROSSOVER_SECTIONS) and each band's compressor.
     public var multiband = false
     public var crossover: [Biquad] = []
@@ -218,7 +221,10 @@ public struct InputParams: Equatable {
     static func follower(_ ms: Double, _ sampleRate: Double) -> Float { Float(exp(-1 / (max(ms, 0.01) / 1000 * sampleRate))) }
 
     /// A source's EQ and compressor at a sample rate; `link` is the stereo partner's input from 0.
-    public init(eq: SourceEQ?, compressor: Compressor?, link: Int?, sampleRate: Double) {
+    public init(eq: SourceEQ?, compressor: Compressor?, link: Int?, sampleRate: Double, trimDB: Double = 0,
+                invert: Bool = false, delayMS: Double = 0) {
+        delay = Float(max(delayMS, 0) / 1000 * sampleRate)
+        trim = Float(pow(10, trimDB / 20)) * (invert ? -1 : 1)
         self.eq = (eq?.bands ?? []).prefix(Self.bands).map { Biquad($0, sampleRate: sampleRate) }
         if let c = compressor, c.on, c.multiband, c.bands.count == Compressor.bandCount {
             multiband = true
@@ -242,7 +248,9 @@ public struct InputParams: Equatable {
         self.link = link ?? -1
     }
 
-    public var isPlain: Bool { eq.allSatisfy { $0 == .flat } && threshold == 0 && makeup == 1 && !multiband }
+    public var isPlain: Bool {
+        eq.allSatisfy { $0 == .flat } && threshold == 0 && makeup == 1 && !multiband && delay == 0 && trim == 1
+    }
 
     var cValue: feral_input_params {
         var p = feral_input_defaults()
@@ -258,6 +266,8 @@ public struct InputParams: Equatable {
         p.comp_release = release
         p.comp_makeup = makeup
         p.link = Int32(link)
+        p.delay = delay
+        p.trim = trim
         p.multiband = multiband ? 1 : 0
         withUnsafeMutableBytes(of: &p.crossover) { raw in
             let sections = raw.bindMemory(to: feral_biquad.self)

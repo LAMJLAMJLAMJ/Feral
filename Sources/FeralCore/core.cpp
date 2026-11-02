@@ -48,6 +48,8 @@ bool feral_state::finish(double maxDelay) {
         p.comp_release = unit(p.comp_release);
         if (!std::isfinite(p.comp_makeup) || p.comp_makeup < 0) p.comp_makeup = 1;
         if (p.link < 0 || p.link >= inputs || p.link == in) p.link = -1;
+        p.delay = std::isfinite(p.delay) ? static_cast<float>(std::clamp<double>(p.delay, 0, maxDelay)) : 0.0f;
+        p.trim = std::isfinite(p.trim) ? std::clamp(p.trim, -16.0f, 16.0f) : 1.0f;
         for (auto &b : p.bands) {
             if (!std::isfinite(b.threshold) || b.threshold < 0) b.threshold = 0;
             if (!std::isfinite(b.ratio) || b.ratio < 1) b.ratio = 1;
@@ -252,6 +254,8 @@ struct InputRuntime {
     float z1[FERAL_INPUT_EQ_BANDS], z2[FERAL_INPUT_EQ_BANDS];
     float envelope = 0;
     float makeup = 1;
+    DelayMotion delay;
+    float trim = 1;
     // Multiband: the crossover's sections now and their state, each band's follower and gain.
     bool split = false;
     feral_biquad crossover[FERAL_CROSSOVER_SECTIONS];
@@ -315,6 +319,7 @@ struct feral_core {
     uint32_t lineMask = 0;
     uint32_t writeIndex = 0;   // where the next block goes in every delay line
     int inputLinesUsed = 0;    // input delay lines written since the last clear
+    int preLinesUsed = 0;      // the same for inputs' own delay lines
     int outputLinesUsed = 0;
     const float *inputPointers[FERAL_MAX_CHANNELS] = {};
     float *outputPointers[FERAL_MAX_CHANNELS] = {};
@@ -361,6 +366,9 @@ struct feral_core {
     int meteredInputs = 0, meteredOutputs = 0;
 
     DelayLine inputLine(int in) { return {lineMemory + static_cast<size_t>(in) * (lineMask + 1), lineMask}; }
+    DelayLine preLine(int in) {
+        return {lineMemory + static_cast<size_t>(2 * FERAL_MAX_CHANNELS + in) * (lineMask + 1), lineMask};
+    }
     DelayLine outputLine(int out) {
         return {lineMemory + static_cast<size_t>(FERAL_MAX_CHANNELS + out) * (lineMask + 1), lineMask};
     }
@@ -392,6 +400,8 @@ feral_input_params feral_input_defaults(void) {
     p.comp_attack = 0;
     p.comp_release = 0;
     p.comp_makeup = 1;
+    p.delay = 0;
+    p.trim = 1;
     p.multiband = 0;
     for (auto &b : p.crossover) b = kFlat;
     for (auto &b : p.bands) b = {0, 1, 0, 0, 1};
@@ -407,7 +417,8 @@ feral_core *feral_core_create(double sample_rate) {
     while (length < core->maxDelay + FERAL_MAX_FRAMES + 8) length <<= 1;
     core->lineMask = length - 1;
     // Untouched pages of calloc'd memory cost nothing, so lines for unused channels are free.
-    core->lineMemory = static_cast<float *>(std::calloc(static_cast<size_t>(2 * FERAL_MAX_CHANNELS) * length, sizeof(float)));
+    // Input delay lines (taps read them), output alignment lines, and the lines for inputs' own delay.
+    core->lineMemory = static_cast<float *>(std::calloc(static_cast<size_t>(3 * FERAL_MAX_CHANNELS) * length, sizeof(float)));
     core->inputScratch = static_cast<float *>(std::calloc(static_cast<size_t>(FERAL_MAX_CHANNELS) * FERAL_MAX_FRAMES, sizeof(float)));
     return core;
 }
@@ -513,6 +524,8 @@ void feral_core_audio_detached(feral_core *core) {
     for (auto &r : core->inputRuntime) r = InputRuntime{};
     const size_t length = core->lineMask + 1;
     for (int in = 0; in < core->inputLinesUsed; ++in) std::memset(core->inputLine(in).data, 0, length * sizeof(float));
+    for (int in = 0; in < core->preLinesUsed; ++in) std::memset(core->preLine(in).data, 0, length * sizeof(float));
+    core->preLinesUsed = 0;
     for (int out = 0; out < core->outputLinesUsed; ++out) std::memset(core->outputLine(out).data, 0, length * sizeof(float));
     core->inputLinesUsed = core->outputLinesUsed = 0;
     // The meters fall to silence; nothing is playing.
@@ -848,21 +861,35 @@ void rampGain(float *y, float &now, float target, int frames) {
 /// Runs one processing block of the first `lines` inputs' EQ and compressor, and points
 /// core->inputSources at what each input plays: the input itself when it has no processing (and
 /// none is still settling), otherwise its processed copy. Audio thread; no allocation.
-void processInputs(feral_core *core, const RenderState *next, const float *const *raw, int lines, int frames) {
+void processInputs(feral_core *core, const RenderState *next, const float *const *raw, int lines, int frames,
+                   uint32_t block, const feral_motion_params &motion) {
     bool busy[FERAL_MAX_CHANNELS];
     for (int in = 0; in < lines; ++in) {
         const feral_input_params &p = next && in < next->inputs ? next->inputParams[in] : kNone;
         InputRuntime &r = core->inputRuntime[in];
+        // Every input's own delay line is written, so a delay set later has the history it needs.
+        DelayLine line = core->preLine(in);
+        line.write(block, raw[in], frames);
         bool eq = false;
         for (int b = 0; b < FERAL_INPUT_EQ_BANDS; ++b) eq = eq || !isFlat(p.eq[b]) || !isFlat(r.eq[b]);
-        busy[in] = raw[in] && (eq || p.comp_threshold > 0 || p.multiband || r.split || p.comp_makeup != 1 || r.makeup != 1);
+        const bool delayed = p.delay != 0 || r.delay.current != 0 || r.delay.target != 0 || r.delay.length != 0;
+        busy[in] = raw[in] && (eq || delayed || p.trim != 1 || r.trim != 1 || p.comp_threshold > 0 || p.multiband ||
+                               r.split || p.comp_makeup != 1 || r.makeup != 1);
         if (!busy[in]) {
             core->inputSources[in] = raw[in];
             r = InputRuntime{};
             continue;
         }
         float *y = core->inputScratch + static_cast<size_t>(in) * FERAL_MAX_FRAMES;
-        std::copy(raw[in], raw[in] + frames, y);
+        if (delayed) {
+            r.delay.target = p.delay;
+            const DelayPlan plan = advance(r.delay, motion, frames);
+            std::fill(y, y + frames, 0.0f);
+            line.accumulate(block, frames, plan, 1, 1, y);
+        } else {
+            std::copy(raw[in], raw[in] + frames, y);
+        }
+        rampGain(y, r.trim, p.trim, frames);
         if (eq) runEQ(r.eq, r.z1, r.z2, p.eq, FERAL_INPUT_EQ_BANDS, y, frames);
         core->inputSources[in] = y;
     }
@@ -1004,7 +1031,9 @@ void renderBlock(feral_core *core, const float *const *inputs, int num_inputs, f
     const uint32_t block = core->writeIndex;
     const int lines = std::min(FERAL_MAX_CHANNELS, std::max(num_inputs, test ? 1 : 0));
     for (int in = 0; in < lines; ++in) core->rawInputs[in] = input(in);
-    processInputs(core, next, core->rawInputs, lines, frames);
+    const feral_motion_params &motion = next ? next->motion : kStill;
+    processInputs(core, next, core->rawInputs, lines, frames, block, motion);
+    core->preLinesUsed = std::max(core->preLinesUsed, lines);
     auto source = [&](int in) -> const float * { return in < lines ? core->inputSources[in] : nullptr; };
 
     // The analysis tap.
@@ -1027,7 +1056,6 @@ void renderBlock(feral_core *core, const float *const *inputs, int num_inputs, f
     for (int in = 0; in < lines; ++in) core->inputLine(in).write(block, source(in), frames);
     core->inputLinesUsed = std::max(core->inputLinesUsed, lines);
 
-    const feral_motion_params &motion = next ? next->motion : kStill;
     uint32_t active = 0;
 
     const int rendered = std::min(num_outputs, FERAL_MAX_CHANNELS);

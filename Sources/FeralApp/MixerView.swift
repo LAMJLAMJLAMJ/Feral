@@ -15,7 +15,7 @@ struct MixerView: View {
     var docked: Binding<Bool>?
     @AppStorage("mixerShowsGroups") private var groupsFirst = false
 
-    static let dockedHeight: CGFloat = 290
+    static let dockedHeight: CGFloat = 330
 
     var body: some View {
         VStack(spacing: 0) {
@@ -129,6 +129,7 @@ private struct SourceStrip: View {
             } else {
                 StripTitle(number: "\(source.number)", name: source.name ?? "Source \(source.number)", color: source.color, select: select)
             }
+            InputControls(model: model, source: source)
             ProcessingButtons(model: model, source: source)
             HStack(spacing: 2) {
                 ForEach(groups) { g in
@@ -157,6 +158,91 @@ private struct SourceStrip: View {
             MuteButton(on: source.mute) { model.update(source.id, SourceValues(mute: !source.mute)) }
             Text(right.map { "in \(source.input)·\($0.input)" } ?? "in \(source.input)").font(.system(size: 8)).foregroundStyle(.secondary)
         }
+    }
+}
+
+/// A strip's input: polarity, trim and delay. Drag a value up or down to change it (hold Option for
+/// fine steps), double-click it to reset.
+private struct InputControls: View {
+    @ObservedObject var model: EngineModel
+    let source: Source
+
+    var body: some View {
+        VStack(spacing: 2) {
+            HStack(spacing: 2) {
+                Button { model.update(source.id, SourceValues(invert: !source.invert)) } label: {
+                    Text("Ø").font(.system(size: 10, weight: .bold))
+                        .frame(width: 16, height: 16)
+                        .foregroundStyle(source.invert ? Color.white : Color.secondary)
+                        .background(RoundedRectangle(cornerRadius: 3).fill(source.invert ? Color.purple : Color.primary.opacity(0.08)))
+                }
+                .buttonStyle(.plain)
+                .help(source.invert ? "Polarity inverted; click to put it back" : "Invert polarity")
+                DragValue(value: source.trimDB, range: -24...24, step: 0.5, reset: 0,
+                          text: { String(format: "%+.1f", $0) }, help: "Trim (dB)") {
+                    model.update(source.id, SourceValues(trimDB: $0))
+                }
+            }
+            DragValue(value: source.delayMS, range: 0...1000, step: 0.1, reset: 0,
+                      text: { $0 == 0 ? "0 ms" : String(format: $0 < 100 ? "%.1f ms" : "%.0f ms", $0) },
+                      help: "Input delay (ms), to line the source up with its sound on stage") {
+                model.update(source.id, SourceValues(delayMS: $0))
+            }
+        }
+    }
+}
+
+/// A number shown as text that changes as the mouse drags up or down: one step per two points
+/// (a tenth of that with Option held). Double-click resets it. Sends up to 30 changes a second.
+struct DragValue: View {
+    let value: Double
+    let range: ClosedRange<Double>
+    let step: Double
+    let reset: Double
+    let text: (Double) -> String
+    let help: String
+    let set: (Double) -> Void
+    @State private var start: Double?
+    @State private var dragged: Double?
+    @State private var lastSent = Date.distantPast
+    @State private var lastClick = Date.distantPast
+
+    var body: some View {
+        let shown = dragged ?? value
+        Text(text(shown))
+            .font(.system(size: 9).monospacedDigit())
+            .lineLimit(1)
+            .frame(maxWidth: .infinity, minHeight: 16)
+            .background(RoundedRectangle(cornerRadius: 3).fill(Color.primary.opacity(shown == reset ? 0.06 : 0.14)))
+            .contentShape(Rectangle())
+            .gesture(
+                DragGesture(minimumDistance: 0)
+                    .onChanged { g in
+                        let from = start ?? value
+                        start = from
+                        let fine = NSEvent.modifierFlags.contains(.option)
+                        let steps = (-g.translation.height / 2).rounded()
+                        let v = min(max(from + steps * step * (fine ? 0.1 : 1), range.lowerBound), range.upperBound)
+                        let r = (v / (fine ? step / 10 : step)).rounded() * (fine ? step / 10 : step)
+                        dragged = r
+                        if Date().timeIntervalSince(lastSent) >= 1.0 / 30 { lastSent = Date(); set(r) }
+                    }
+                    .onEnded { g in
+                        let moved = abs(g.translation.height) > 2 || abs(g.translation.width) > 2
+                        if moved {
+                            if let v = dragged { set(v) }
+                            lastClick = .distantPast
+                        } else if Date().timeIntervalSince(lastClick) < NSEvent.doubleClickInterval {
+                            set(reset)
+                            lastClick = .distantPast
+                        } else {
+                            lastClick = Date()
+                        }
+                        dragged = nil
+                        start = nil
+                    }
+            )
+            .help(help + ". Drag up or down (Option for fine), double-click to reset.")
     }
 }
 

@@ -140,7 +140,8 @@ public struct ShowState: Equatable {
                 if !ids.contains(u.id) { ids.append(u.id) }
                 // A stereo pair's level, mute, EQ and compressor are always the same on both sides.
                 let shared = SourceValues(gainDB: u.values.gainDB, mute: u.values.mute, eq: u.values.eq,
-                                          compressor: u.values.compressor)
+                                          compressor: u.values.compressor, trimDB: u.values.trimDB,
+                                          invert: u.values.invert, delayMS: u.values.delayMS)
                 if !shared.isEmpty, let partner = stereoPartner(of: u.id), let j = sourceIndex(partner) {
                     show.sources[j] = try applying(shared, to: show.sources[j])
                     if !ids.contains(partner) { ids.append(partner) }
@@ -292,6 +293,9 @@ public struct ShowState: Equatable {
         if v.lfeOff == true { s.lfeDB = nil } else if let l = v.lfeDB { s.lfeDB = l }
         if let e = v.eq { s.eq = e }
         if let c = v.compressor { s.compressor = c }
+        if let t = v.trimDB { s.trimDB = t }
+        if let i = v.invert { s.invert = i }
+        if let d = v.delayMS { s.delayMS = d }
         try checkValues(s)
         return s
     }
@@ -308,6 +312,8 @@ public struct ShowState: Equatable {
             guard send.gainDB.isFinite, send.gainDB <= 24 else { throw ConfigError("source \(s.label): send levels must be 24 dB or below") }
         }
         if let l = s.lfeDB { guard l.isFinite, l <= 24 else { throw ConfigError("source \(s.label): lfeDB must be 24 or below") } }
+        guard s.trimDB.isFinite, abs(s.trimDB) <= 24 else { throw ConfigError("source \(s.label): trim must be within ±24 dB") }
+        guard s.delayMS.isFinite, (0...1000).contains(s.delayMS) else { throw ConfigError("source \(s.label): delay must be from 0 to 1000 ms") }
         try s.eq?.check("source \(s.label)")
         try s.compressor?.check("source \(s.label)")
     }
@@ -374,7 +380,7 @@ public struct ShowState: Equatable {
         let mute = s.mute || groups.contains { $0.mute }
         return SourceConfig(input: s.input, name: s.name, position: s.position, gainDB: gain, mute: mute,
                             width: s.width, groups: sends, lfeDB: system.lfeSpeakers.isEmpty ? nil : s.lfeDB,
-                            eq: s.eq, compressor: s.compressor,
+                            eq: s.eq, compressor: s.compressor, trimDB: s.trimDB, invert: s.invert, delayMS: s.delayMS,
                             link: stereoPartner(of: s.id).flatMap { source($0)?.input })
     }
 

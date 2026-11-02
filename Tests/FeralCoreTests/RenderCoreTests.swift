@@ -125,6 +125,31 @@ final class RenderCoreTests: XCTestCase {
         XCTAssertLessThan(s[0], -60, "nothing at 20 Hz")
     }
 
+    func testInputDelayTrimAndPolarity() throws {
+        let core = RenderCore(sampleRate: 48_000)
+        let state = RenderState(inputs: 1, outputs: 1)
+        state.addGain(input: 0, output: 0, gain: 1)
+        // 100 samples late, -6 dB, inverted.
+        state.setInput(0, InputParams(eq: nil, compressor: nil, link: nil, sampleRate: 48_000, trimDB: -6.0206,
+                                      invert: true, delayMS: 100.0 / 48))
+        try core.publish(state)
+        var n = 0
+        var hits: [(Int, Float)] = []
+        let out = TestBuffers(channels: 1, frames: 64)
+        for _ in 0..<500 {
+            render(core.pointer, TestBuffers(channels: 1, frames: 64) { _, _ in defer { n += 1 }; return n % 3000 == 0 ? 1 : 0 }, out)
+            for (m, v) in out[0].enumerated() where abs(v) > 1e-6 { hits.append((n - 64 + m, v)) }
+        }
+        // Once the delay has glided out to 100 samples (0.5 % a sample: about 20 000 samples), each
+        // click comes out 100 samples late.
+        let late = hits.filter { $0.0 > 22_000 }
+        XCTAssertFalse(late.isEmpty)
+        for (at, v) in late {
+            XCTAssertEqual(at % 3000, 100)
+            XCTAssertEqual(v, -0.5, accuracy: 1e-4)
+        }
+    }
+
     func testInputEQ() throws {
         let core = RenderCore(sampleRate: 48_000)
         let state = RenderState(inputs: 1, outputs: 1)

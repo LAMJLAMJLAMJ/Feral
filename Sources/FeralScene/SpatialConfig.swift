@@ -215,18 +215,26 @@ public struct SourceConfig: Codable, Equatable {
     public var lfeDB: Double?
     public var eq: SourceEQ?
     public var compressor: Compressor?
+    /// Input trim (dB), polarity and delay (ms), before the EQ.
+    public var trimDB: Double?
+    public var invert: Bool?
+    public var delayMS: Double?
     /// A stereo partner's input (from 1), whose level also drives this compressor.
     public var link: Int?
 
     public init(input: Int, name: String? = nil, position: Position, gainDB: Double = 0, mute: Bool = false,
                 width: Double = 0, groups: [String: Double]? = nil, lfeDB: Double? = nil,
-                eq: SourceEQ? = nil, compressor: Compressor? = nil, link: Int? = nil) {
+                eq: SourceEQ? = nil, compressor: Compressor? = nil, trimDB: Double? = nil, invert: Bool? = nil,
+                delayMS: Double? = nil, link: Int? = nil) {
         self.input = input; self.name = name; self.position = position; self.gainDB = gainDB; self.mute = mute
         self.width = width; self.groups = groups; self.lfeDB = lfeDB
-        self.eq = eq; self.compressor = compressor; self.link = link
+        self.eq = eq; self.compressor = compressor; self.trimDB = trimDB; self.invert = invert; self.delayMS = delayMS
+        self.link = link
     }
 
-    enum CodingKeys: String, CodingKey { case input, name, position, gainDB, mute, width, groups, lfeDB, eq, compressor, link }
+    enum CodingKeys: String, CodingKey {
+        case input, name, position, gainDB, mute, width, groups, lfeDB, eq, compressor, trimDB, invert, delayMS, link
+    }
 
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -245,6 +253,9 @@ public struct SourceConfig: Codable, Equatable {
         lfeDB = try c.decodeIfPresent(Double.self, forKey: .lfeDB)
         eq = try c.decodeIfPresent(SourceEQ.self, forKey: .eq)
         compressor = try c.decodeIfPresent(Compressor.self, forKey: .compressor)
+        trimDB = try c.decodeIfPresent(Double.self, forKey: .trimDB)
+        invert = try c.decodeIfPresent(Bool.self, forKey: .invert)
+        delayMS = try c.decodeIfPresent(Double.self, forKey: .delayMS)
         link = try c.decodeIfPresent(Int.self, forKey: .link)
     }
 

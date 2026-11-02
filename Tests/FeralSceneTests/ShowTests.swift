@@ -123,11 +123,15 @@ final class ShowTests: XCTestCase {
         let eq = SourceEQ(on: true, highPassHz: 80, midDB: -4)
         let comp = Compressor(on: true, thresholdDB: -18, ratio: 4)
         let change = try state.apply(.updateSources(updates: [
-            SourceUpdate(id: r.id, values: SourceValues(gainDB: -6, mute: true, eq: eq, compressor: comp)),
+            SourceUpdate(id: r.id, values: SourceValues(gainDB: -6, mute: true, eq: eq, compressor: comp, trimDB: 4,
+                                                        invert: true, delayMS: 12.5)),
         ]))
         XCTAssertEqual(change, .sources([r.id, l.id]))
         for id in [l.id, r.id] {
             let s = state.source(id)!
+            XCTAssertEqual(s.trimDB, 4)
+            XCTAssertTrue(s.invert)
+            XCTAssertEqual(s.delayMS, 12.5)
             XCTAssertEqual(s.gainDB, -6)
             XCTAssertTrue(s.mute)
             XCTAssertEqual(s.eq, eq)
@@ -142,6 +146,10 @@ final class ShowTests: XCTestCase {
         XCTAssertEqual(state.sourceConfig(state.source(r.id)!).link, 1)
         XCTAssertNil(state.sourceConfig(state.source(other.id)!).link)
         XCTAssertEqual(state.sourceConfig(state.source(r.id)!).gainDB, -9, "the other group's gain still adds")
+        XCTAssertEqual(state.sourceConfig(state.source(l.id)!).delayMS, 12.5)
+        XCTAssertThrowsError(try state.apply(.updateSources(updates: [
+            SourceUpdate(id: other.id, values: SourceValues(delayMS: 1500)),
+        ])), "input delay is at most 1000 ms")
         // Out-of-range values are refused.
         XCTAssertThrowsError(try state.apply(.updateSources(updates: [
             SourceUpdate(id: other.id, values: SourceValues(compressor: Compressor(ratio: 0.5))),

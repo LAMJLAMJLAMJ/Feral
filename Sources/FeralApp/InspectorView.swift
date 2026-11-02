@@ -253,6 +253,27 @@ struct SourceInspector: View {
                     }
                 }
             }
+            Section("Input") {
+                LabeledContent("Trim") {
+                    LevelSlider(value: source.trimDB, range: -24...24, step: 0.5, unit: "dB") {
+                        model.update(source.id, SourceValues(trimDB: $0))
+                    }
+                }
+                Toggle("Invert polarity", isOn: Binding(get: { source.invert }, set: { model.update(source.id, SourceValues(invert: $0)) }))
+                LabeledContent("Delay") {
+                    HStack {
+                        LevelSlider(value: source.delayMS, range: 0...200, step: 0.1, unit: "ms") {
+                            model.update(source.id, SourceValues(delayMS: $0))
+                        }
+                        NumberField(title: "ms", value: source.delayMS) { v in
+                            model.update(source.id, SourceValues(delayMS: min(max(v, 0), 1000)))
+                        }
+                        .labelsHidden()
+                        .frame(width: 60)
+                    }
+                }
+                .help("Delays the source (0 to 1000 ms; the slider goes to 200, type more) so the PA lands just after its sound on stage")
+            }
             Section {
                 LiveEQControls(model: model, spectrum: model.spectrum, source: source)
             } header: {

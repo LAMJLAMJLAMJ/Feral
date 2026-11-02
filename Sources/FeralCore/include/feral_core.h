@@ -117,8 +117,14 @@ typedef struct feral_comp_band {
     float gain;      // linear, after the band's compressor
 } feral_comp_band;
 
-/// One input's processing before it reaches any tap or its delay line: EQ, then a compressor.
+/// One input's processing before it reaches any tap or its delay line: delay, trim and polarity,
+/// EQ, then a compressor.
 typedef struct feral_input_params {
+    /// Delay in samples (to line a source up with its acoustic sound); changes glide or crossfade
+    /// like every other delay (feral_motion_params).
+    float delay;
+    /// Trim times polarity, linear (-1 inverts); changes ramp over one buffer.
+    float trim;
     /// The EQ bands; {1, 0, 0, 0, 0} passes through. Coefficient changes interpolate over one buffer.
     feral_biquad eq[FERAL_INPUT_EQ_BANDS];
     /// The compressor's threshold as a linear level; 0 turns it off.

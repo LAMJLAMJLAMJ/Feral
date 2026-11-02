@@ -83,16 +83,23 @@ public struct Source: Codable, Equatable, Identifiable {
     /// The channel EQ and compressor, before anything else (off when none).
     public var eq: SourceEQ?
     public var compressor: Compressor?
+    /// At the very start: trim (±24 dB), polarity, and a delay (0 to 1000 ms) to line the source up
+    /// with its acoustic sound.
+    public var trimDB: Double
+    public var invert: Bool
+    public var delayMS: Double
 
     public init(id: UUID = UUID(), number: Int, name: String? = nil, input: Int, position: Position, gainDB: Double = 0,
                 mute: Bool = false, width: Double = 0, colour: String? = nil, sends: [GroupSend] = [], lfeDB: Double? = nil,
-                eq: SourceEQ? = nil, compressor: Compressor? = nil) {
+                eq: SourceEQ? = nil, compressor: Compressor? = nil, trimDB: Double = 0, invert: Bool = false, delayMS: Double = 0) {
         self.id = id; self.number = number; self.name = name; self.input = input; self.position = position
         self.gainDB = gainDB; self.mute = mute; self.width = width; self.colour = colour; self.sends = sends; self.lfeDB = lfeDB
-        self.eq = eq; self.compressor = compressor
+        self.eq = eq; self.compressor = compressor; self.trimDB = trimDB; self.invert = invert; self.delayMS = delayMS
     }
 
-    enum CodingKeys: String, CodingKey { case id, number, name, input, position, gainDB, mute, width, colour, sends, lfeDB, eq, compressor }
+    enum CodingKeys: String, CodingKey {
+        case id, number, name, input, position, gainDB, mute, width, colour, sends, lfeDB, eq, compressor, trimDB, invert, delayMS
+    }
 
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -109,6 +116,9 @@ public struct Source: Codable, Equatable, Identifiable {
         lfeDB = try c.decodeIfPresent(Double.self, forKey: .lfeDB)
         eq = try c.decodeIfPresent(SourceEQ.self, forKey: .eq)
         compressor = try c.decodeIfPresent(Compressor.self, forKey: .compressor)
+        trimDB = try c.decodeIfPresent(Double.self, forKey: .trimDB) ?? 0
+        invert = try c.decodeIfPresent(Bool.self, forKey: .invert) ?? false
+        delayMS = try c.decodeIfPresent(Double.self, forKey: .delayMS) ?? 0
     }
 
     /// "12 Vox" or "12".
@@ -263,13 +273,17 @@ public struct SourceValues: Codable, Equatable {
     public var lfeOff: Bool?
     public var eq: SourceEQ?
     public var compressor: Compressor?
+    public var trimDB: Double?
+    public var invert: Bool?
+    public var delayMS: Double?
 
     public init(position: Position? = nil, gainDB: Double? = nil, mute: Bool? = nil, width: Double? = nil,
                 sends: [GroupSend]? = nil, lfeDB: Double? = nil, lfeOff: Bool? = nil,
-                eq: SourceEQ? = nil, compressor: Compressor? = nil) {
+                eq: SourceEQ? = nil, compressor: Compressor? = nil, trimDB: Double? = nil, invert: Bool? = nil,
+                delayMS: Double? = nil) {
         self.position = position; self.gainDB = gainDB; self.mute = mute; self.width = width
         self.sends = sends; self.lfeDB = lfeDB; self.lfeOff = lfeOff
-        self.eq = eq; self.compressor = compressor
+        self.eq = eq; self.compressor = compressor; self.trimDB = trimDB; self.invert = invert; self.delayMS = delayMS
     }
 
     /// These values with `newer`'s on top.
@@ -282,6 +296,9 @@ public struct SourceValues: Codable, Equatable {
         if let s = newer.sends { v.sends = s }
         if let e = newer.eq { v.eq = e }
         if let c = newer.compressor { v.compressor = c }
+        if let t = newer.trimDB { v.trimDB = t }
+        if let i = newer.invert { v.invert = i }
+        if let d = newer.delayMS { v.delayMS = d }
         if newer.lfeOff == true { v.lfeOff = true; v.lfeDB = nil } else if let l = newer.lfeDB { v.lfeDB = l; v.lfeOff = nil }
         return v
     }
