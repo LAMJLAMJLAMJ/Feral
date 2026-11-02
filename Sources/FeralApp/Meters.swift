@@ -110,6 +110,8 @@ enum MeterScale {
 struct MeterBar: View {
     let channel: MeterStore.Channel?
     var vertical = true
+    /// Clears the clip lights; a click on a meter that has clipped calls it.
+    var clear: (() -> Void)?
 
     var body: some View {
         Canvas { ctx, size in
@@ -140,6 +142,8 @@ struct MeterBar: View {
             ctx.fill(Path(light), with: .color(c.clipped ? Color.red : Color.primary.opacity(0.08)))
         }
         .accessibilityLabel(channel.map { "peak \(MeterScale.text($0.peak)) dB, RMS \(MeterScale.text($0.rms)) dB" } ?? "no level")
+        .simultaneousGesture(TapGesture().onEnded { if channel?.clipped == true { clear?() } })
+        .help(channel?.clipped == true ? "Clipped. Click to clear the clip lights." : "")
     }
 }
 
@@ -147,6 +151,7 @@ struct MeterBar: View {
 struct MeterReadout: View {
     let title: String
     let channel: MeterStore.Channel?
+    var clear: (() -> Void)?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
@@ -161,7 +166,7 @@ struct MeterReadout: View {
                     Text("no meter").font(.caption).foregroundStyle(.secondary)
                 }
             }
-            MeterBar(channel: channel, vertical: false).frame(height: 10)
+            MeterBar(channel: channel, vertical: false, clear: clear).frame(height: 10)
         }
     }
 }
@@ -198,7 +203,7 @@ struct MeterBridge: View {
                         .help("Show every engine output, not only the ones speakers use")
                     Spacer()
                     if meters.anyClipped {
-                        Button("Clear clips") { meters.clearClips() }.font(.caption).buttonStyle(.borderless).foregroundStyle(.red)
+                        Button("Clear clips") { meters.clearClips() }.help("Or click any clipped meter").font(.caption).buttonStyle(.borderless).foregroundStyle(.red)
                     }
                     Text(meters.live ? String(format: "render load %.0f %%", meters.load * 100) : "no meters from the engine")
                         .font(.caption.monospacedDigit()).foregroundStyle(meters.load > 0.8 ? Color.red : Color.secondary)
@@ -257,7 +262,11 @@ struct MeterBridge: View {
         } else {
             ForEach(strips) { strip in
                 StripView(title: title, strip: strip, selected: strip.target != nil && selection == strip.target)
-                    .onTapGesture { if let t = strip.target { selection = t } }
+                    .onTapGesture {
+                        // A click on a clipped meter clears the clip lights; on any meter it selects the speaker.
+                        if strip.channel?.clipped == true { meters.clearClips() }
+                        if let t = strip.target { selection = t }
+                    }
             }
         }
     }
