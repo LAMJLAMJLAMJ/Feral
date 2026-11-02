@@ -215,6 +215,41 @@ final class EngineModel: ObservableObject {
         setSourceGroup(g)
     }
 
+    /// Adds a stereo source: a left and a right source on two free Feral inputs (side by side when it
+    /// can), 30° apart straight ahead of the listener, in a paired stereo group. Returns the group's id.
+    @discardableResult
+    func addStereoSource() -> UUID? {
+        guard let state else { return nil }
+        let used = Set(state.show.sources.map(\.input))
+        let count = max(feralInputs, 1)
+        let free = (1...count).filter { !used.contains($0) }
+        guard free.count >= 2 else {
+            lastError = "A stereo source needs two free Feral inputs; raise the count in Audio > Patch."
+            return nil
+        }
+        let pair = free.first { free.contains($0 + 1) }.map { ($0, $0 + 1) } ?? (free[0], free[1])
+        let n = state.nextSourceGroupNumber
+        let number = (state.show.sources.map(\.number).max() ?? 0) + 1
+        let sends = state.show.sources.last?.sends ?? state.show.groups.map { GroupSend(group: $0.id) }
+        let ahead = state.polar(of: state.system.listener.position).elevation  // 0; keeps the listener's height
+        let left = Source(number: number, name: "Stereo \(n) L", input: pair.0,
+                          position: state.point(Polar(azimuth: 15, elevation: ahead, distance: 5)), sends: sends)
+        let right = Source(number: number + 1, name: "Stereo \(n) R", input: pair.1,
+                           position: state.point(Polar(azimuth: -15, elevation: ahead, distance: 5)), sends: sends)
+        apply(.setSource(source: left))
+        apply(.setSource(source: right))
+        let group = SourceGroup(number: n, name: "Stereo \(n)", sources: [left.id, right.id], stereo: true)
+        apply(.setSourceGroup(group: group))
+        return group.id
+    }
+
+    /// Spreads a stereo pair to a new spacing in degrees.
+    func setSpacing(_ group: SourceGroup, _ degrees: Double) {
+        guard let state else { return }
+        let updates = state.setSpacing(group, to: degrees)
+        if !updates.isEmpty { apply(.updateSources(updates: updates)) }
+    }
+
     /// Moves a group's centre to a new azimuth, elevation or distance, keeping its shape.
     func moveGroup(_ group: SourceGroup, azimuth: Double? = nil, elevation: Double? = nil, distance: Double? = nil) {
         guard let state else { return }

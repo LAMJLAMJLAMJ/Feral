@@ -323,6 +323,12 @@ struct SidebarView: View {
                 .buttonStyle(.borderless)
                 .keyboardShortcut("n", modifiers: [.command, .shift])
                 .help("Add a source on the next free Feral input (⇧⌘N)")
+                Button { if let id = model.addStereoSource() { selection = .sourceGroup(id) } } label: {
+                    Label("Stereo", systemImage: "square.split.2x1")
+                }
+                .buttonStyle(.borderless)
+                .keyboardShortcut("n", modifiers: [.command, .option])
+                .help("Add a stereo source: left and right on two free Feral inputs, paired, 30° apart (⌥⌘N)")
                 Button {
                     var members: [UUID] = []
                     if case .source(let id) = selection { members = [id] }
@@ -531,9 +537,9 @@ struct SourceGroupRow: View {
 
     private var detail: String {
         let n = group.sources.filter { state.source($0) != nil }.count
-        var parts = ["\(n) source\(n == 1 ? "" : "s")"]
+        var parts = [group.stereo ? "stereo" : "\(n) source\(n == 1 ? "" : "s")"]
         if group.mute { parts.append("muted") }
-        if group.linked { parts.append("move together") }
+        if group.stereo { parts.append(group.linked ? "paired" : "unpaired") } else if group.linked { parts.append("move together") }
         return parts.joined(separator: " · ")
     }
 }

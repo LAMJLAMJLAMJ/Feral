@@ -93,6 +93,24 @@ final class ShowTests: XCTestCase {
         XCTAssertEqual(state.engineConfig(base: EngineConfig()).groups[0].reference, Position(0, 0, 3), "a group's own reference wins")
     }
 
+    func testStereoSpacing() throws {
+        var state = ShowState(show: Show(name: "S"))
+        try state.apply(.setListener(listener: Listener(position: Position(0, 0, 0))))
+        let l = Source(number: 1, input: 1, position: Position(Polar(azimuth: 20, elevation: 0, distance: 5)))
+        let r = Source(number: 2, input: 2, position: Position(Polar(azimuth: 0, elevation: 0, distance: 5)))
+        try state.apply(.setSource(source: l))
+        try state.apply(.setSource(source: r))
+        let g = SourceGroup(number: 1, name: "St", sources: [l.id, r.id], stereo: true)
+        try state.apply(.setSourceGroup(group: g))
+        XCTAssertEqual(state.spacing(of: g)!, 20, accuracy: 0.01)
+        try state.apply(.updateSources(updates: state.setSpacing(g, to: 60)))
+        XCTAssertEqual(state.spacing(of: g)!, 60, accuracy: 0.01)
+        XCTAssertEqual(state.polar(of: state.source(l.id)!.position).azimuth, 40, accuracy: 0.01, "spread round the middle (10°)")
+        XCTAssertEqual(state.polar(of: state.source(r.id)!.position).azimuth, -20, accuracy: 0.01)
+        try state.apply(.updateSources(updates: state.setSpacing(g, to: 0)))
+        XCTAssertEqual(state.spacing(of: g)!, 0, accuracy: 0.01, "on top of each other")
+    }
+
     func testAnglesAreFromTheListener() throws {
         var state = ShowState(show: Show(name: "L"))
         // The listener 10 m out at ear height, facing back towards the stage at y = 0.

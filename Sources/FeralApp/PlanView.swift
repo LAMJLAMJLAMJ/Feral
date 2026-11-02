@@ -257,6 +257,15 @@ struct PlanView: View {
 
     private func drawSources(_ ctx: GraphicsContext, _ f: PlanFrame) {
         let fading = Set(model.status?.fading ?? [])
+        // Stereo pairs: a line from left to right, dashed while unpaired.
+        for g in state.show.sourceGroups where g.stereo {
+            guard let pair = state.stereoPair(g) else { continue }
+            var line = Path()
+            line.move(to: f.point(pair.left.position))
+            line.addLine(to: f.point(pair.right.position))
+            ctx.stroke(line, with: .color(g.color.opacity(0.7)),
+                       style: StrokeStyle(lineWidth: 2, dash: g.linked ? [] : [4, 3]))
+        }
         for s in state.show.sources {
             var position = s.position
             if let drag, drag.target == .source(s.id) { position = drag.position }

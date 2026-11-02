@@ -24,14 +24,16 @@ public struct SourceGroup: Codable, Equatable, Identifiable {
     public var linked: Bool
     /// "#RRGGBB" for the app; none picks one from the number.
     public var colour: String?
+    /// A stereo source: two members, left then right, spread by an azimuth spacing.
+    public var stereo: Bool
 
     public init(id: UUID = UUID(), number: Int, name: String, sources: [UUID] = [], gainDB: Double = 0,
-                mute: Bool = false, linked: Bool = true, colour: String? = nil) {
+                mute: Bool = false, linked: Bool = true, colour: String? = nil, stereo: Bool = false) {
         self.id = id; self.number = number; self.name = name; self.sources = sources; self.gainDB = gainDB
-        self.mute = mute; self.linked = linked; self.colour = colour
+        self.mute = mute; self.linked = linked; self.colour = colour; self.stereo = stereo
     }
 
-    enum CodingKeys: String, CodingKey { case id, number, name, sources, gainDB, mute, linked, colour }
+    enum CodingKeys: String, CodingKey { case id, number, name, sources, gainDB, mute, linked, colour, stereo }
 
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -43,6 +45,7 @@ public struct SourceGroup: Codable, Equatable, Identifiable {
         mute = try c.decodeIfPresent(Bool.self, forKey: .mute) ?? false
         linked = try c.decodeIfPresent(Bool.self, forKey: .linked) ?? true
         colour = try c.decodeIfPresent(String.self, forKey: .colour)
+        stereo = try c.decodeIfPresent(Bool.self, forKey: .stereo) ?? false
     }
 
     /// "2 Band".

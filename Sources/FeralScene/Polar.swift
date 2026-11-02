@@ -87,6 +87,38 @@ extension ShowState {
         }
     }
 
+    // MARK: Stereo pairs
+
+    /// A stereo pair's left and right sources (its first two members).
+    public func stereoPair(_ group: SourceGroup) -> (left: Source, right: Source)? {
+        guard group.stereo, group.sources.count >= 2, let l = source(group.sources[0]), let r = source(group.sources[1]) else { return nil }
+        return (l, r)
+    }
+
+    /// The azimuth between a stereo pair's left and right, seen from the listener: 0 when they are on
+    /// top of each other, positive while left is to the left of right.
+    public func spacing(of group: SourceGroup) -> Double? {
+        guard let pair = stereoPair(group) else { return nil }
+        return Self.wrap(polar(of: pair.left.position).azimuth - polar(of: pair.right.position).azimuth)
+    }
+
+    /// Spreads a stereo pair to a new spacing, symmetrically round the azimuth halfway between them;
+    /// each side keeps its own elevation and distance.
+    public func setSpacing(_ group: SourceGroup, to degrees: Double) -> [SourceUpdate] {
+        guard let pair = stereoPair(group), let now = spacing(of: group) else { return [] }
+        let l = pair.left, r = pair.right
+        let pl = polar(of: l.position), pr = polar(of: r.position)
+        let middle = Self.wrap(pr.azimuth + now / 2)
+        let half = min(max(degrees, 0), 360) / 2
+        var nl = pl, nr = pr
+        nl.azimuth = Self.wrap(middle + half)
+        nr.azimuth = Self.wrap(middle - half)
+        if pl.distance == 0 { nl.distance = max(pr.distance, 1) }
+        if pr.distance == 0 { nr.distance = max(pl.distance, 1) }
+        return [SourceUpdate(id: l.id, values: SourceValues(position: point(nl))),
+                SourceUpdate(id: r.id, values: SourceValues(position: point(nr)))]
+    }
+
     /// Moves a linked group's other members by the same amount as one member, which moves from
     /// `from` to `to`. Gives the update for every member, the moved one included.
     public func moveTogether(_ id: UUID, from: Position, to: Position, starts: [UUID: Position]) -> [SourceUpdate] {

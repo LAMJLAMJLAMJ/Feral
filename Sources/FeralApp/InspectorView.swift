@@ -587,9 +587,12 @@ struct SourceGroupInspector: View {
                 .help("Adds to every member's own gain, like a VCA")
                 Toggle("Mute", isOn: Binding(get: { group.mute }, set: { var g = group; g.mute = $0; model.setSourceGroup(g) }))
             }
+            if group.stereo { StereoSection(model: model, state: state, group: group, selection: $selection) }
             Section("Position") {
-                Toggle("Move together", isOn: Binding(get: { group.linked }, set: { var g = group; g.linked = $0; model.setSourceGroup(g) }))
-                    .help("Dragging one member on the plan or the height view moves the others with it")
+                if !group.stereo {
+                    Toggle("Move together", isOn: Binding(get: { group.linked }, set: { var g = group; g.linked = $0; model.setSourceGroup(g) }))
+                        .help("Dragging one member on the plan or the height view moves the others with it")
+                }
                 if let c = state.centre(of: group) {
                     GroupPolarControls(model: model, group: group, centre: c)
                     LabeledContent("Centre") {
@@ -599,6 +602,7 @@ struct SourceGroupInspector: View {
                     Text("Add sources to move the group.").foregroundStyle(.secondary)
                 }
             }
+            if !group.stereo {
             Section("Sources in the group") {
                 if state.show.sources.isEmpty { Text("The show has no sources.").foregroundStyle(.secondary) }
                 ForEach(state.show.sources) { s in
@@ -610,6 +614,7 @@ struct SourceGroupInspector: View {
                         }
                     }
                 }
+            }
             }
             Section {
                 Button("Delete group", role: .destructive) {
@@ -649,6 +654,43 @@ struct GroupPolarControls: View {
             }
         }
         .help("Moves the whole group nearer or further, scaling each member's distance")
+    }
+}
+/// A stereo pair's own controls: paired or not, the spacing between left and right, and the two sides.
+struct StereoSection: View {
+    @ObservedObject var model: EngineModel
+    let state: ShowState
+    let group: SourceGroup
+    @Binding var selection: Selection?
+
+    var body: some View {
+        Section {
+            Toggle("Paired", isOn: Binding(get: { group.linked }, set: { var g = group; g.linked = $0; model.setSourceGroup(g) }))
+                .help("Paired: left and right move together. Unpair to place each side on its own; pair again and they move together from there.")
+            if let spacing = state.spacing(of: group) {
+                LabeledContent("Spacing") {
+                    LevelSlider(value: max(spacing, 0), range: 0...180, step: 1, unit: "°") { model.setSpacing(group, $0) }
+                }
+                .help("The azimuth between left and right, seen from the listener; 0 puts them on top of each other")
+            }
+            if let pair = state.stereoPair(group) {
+                LabeledContent("Left") {
+                    Button(pair.left.name ?? "Source \(pair.left.number)") { selection = .source(pair.left.id) }.buttonStyle(.link)
+                }
+                LabeledContent("Right") {
+                    Button(pair.right.name ?? "Source \(pair.right.number)") { selection = .source(pair.right.id) }.buttonStyle(.link)
+                }
+            } else {
+                Text("A stereo pair needs its left and right sources.").foregroundStyle(.secondary)
+            }
+        } header: {
+            Text("Stereo")
+        } footer: {
+            if !group.linked {
+                Text("Unpaired: drag or edit each side on its own. Pair again to move them together from where they are.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+        }
     }
 }
 #endif
