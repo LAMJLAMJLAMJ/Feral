@@ -1,6 +1,7 @@
 #if canImport(SwiftUI) && os(macOS)
 import FeralControl
 import FeralScene
+import AppKit
 import SwiftUI
 
 /// A console-style mixer: a channel strip per source (fader, input meter, mute) and per source
@@ -230,6 +231,7 @@ struct Fader: View {
     /// The fader position when the drag started, so the cap moves with the mouse rather than jumping.
     @State private var startPosition: Double?
     @State private var lastSent = Date.distantPast
+    @State private var lastClick = Date.distantPast
 
     /// Fader position (0 bottom, 1 top) to dB, piecewise linear.
     static let law: [(Double, Double)] = [(0, -80), (0.12, -50), (0.3, -30), (0.5, -15), (0.75, 0), (1, 10)]
@@ -292,13 +294,24 @@ struct Fader: View {
                         dragged = v
                         if Date().timeIntervalSince(lastSent) >= 1.0 / 30 { lastSent = Date(); set(v) }
                     }
-                    .onEnded { _ in
-                        if let v = dragged { set(v) }
+                    .onEnded { g in
+                        // A click that does not move is a click; two within a moment set 0 dB. (A
+                        // separate double-tap gesture loses to the drag, whose end then puts the old
+                        // level back.)
+                        let moved = abs(g.translation.height) > 2 || abs(g.translation.width) > 2
+                        if moved {
+                            if let v = dragged { set(v) }
+                            lastClick = .distantPast
+                        } else if Date().timeIntervalSince(lastClick) < NSEvent.doubleClickInterval {
+                            set(0)
+                            lastClick = .distantPast
+                        } else {
+                            lastClick = Date()
+                        }
                         dragged = nil
                         startPosition = nil
                     }
             )
-            .simultaneousGesture(TapGesture(count: 2).onEnded { set(0) })
         }
         .frame(width: 30)
         .frame(minHeight: 80)
