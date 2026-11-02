@@ -113,7 +113,8 @@ struct ContentView: View {
                 Toggle(isOn: $moveSpeakers) { Label("Move speakers", systemImage: "hifispeaker.2") }
                     .help("Let the plan move speakers too (the system layer)")
                 Toggle(isOn: $showMeters) { Label("Meters", systemImage: "chart.bar.xaxis") }
-                    .help("Show the meter bridge under the plan")
+                    .keyboardShortcut("m", modifiers: [.command, .shift])
+                    .help("Show or hide the output meters under the plan (⇧⌘M)")
                 Button { openWindow(id: "monitor") } label: {
                     Label("Control monitor", systemImage: "antenna.radiowaves.left.and.right")
                 }
@@ -141,11 +142,8 @@ struct ContentView: View {
         if let state = model.state {
             VStack(spacing: 0) {
                 PlanView(model: model, meters: model.meters, state: state, selection: $selection, moveSpeakers: moveSpeakers)
-                if showMeters {
-                    Divider()
-                    MeterBridge(meters: model.meters, state: state, selection: $selection)
-                        .frame(height: 170)
-                }
+                Divider()
+                MeterBridge(meters: model.meters, state: state, selection: $selection, shown: $showMeters)
             }
         } else {
             VStack(spacing: 10) {

@@ -173,30 +173,51 @@ struct MeterBridge: View {
     @ObservedObject var meters: MeterStore
     let state: ShowState
     @Binding var selection: Selection?
+    /// Unhidden; when hidden only the title bar stays, to unhide it from.
+    @Binding var shown: Bool
     @AppStorage("meterAllChannels") private var allChannels = false
+
+    /// One strip's height: half of what it first was.
+    static let stripHeight: CGFloat = 70
 
     var body: some View {
         VStack(spacing: 0) {
             HStack(spacing: 12) {
-                Text("OUTPUT METERS").font(.caption2.bold()).foregroundStyle(.secondary)
-                Toggle("All channels", isOn: $allChannels).toggleStyle(.checkbox).font(.caption)
-                    .help("Show every engine output, not only the ones speakers use")
-                Spacer()
-                if meters.anyClipped {
-                    Button("Clear clips") { meters.clearClips() }.font(.caption).buttonStyle(.borderless).foregroundStyle(.red)
+                Button { withAnimation(.easeInOut(duration: 0.15)) { shown.toggle() } } label: {
+                    HStack(spacing: 4) {
+                        Image(systemName: shown ? "chevron.down" : "chevron.right").font(.caption2.bold())
+                        Text("OUTPUT METERS").font(.caption2.bold())
+                    }
+                    .foregroundStyle(.secondary)
+                    .contentShape(Rectangle())
                 }
-                Text(meters.live ? String(format: "render load %.0f %%", meters.load * 100) : "no meters from the engine")
-                    .font(.caption.monospacedDigit()).foregroundStyle(meters.load > 0.8 ? Color.red : Color.secondary)
-                Text("-60 to 0 dBFS · peak held 2 s").font(.caption).foregroundStyle(.secondary)
+                .buttonStyle(.plain)
+                .help(shown ? "Hide the output meters (⇧⌘M)" : "Show the output meters (⇧⌘M)")
+                if shown {
+                    Toggle("All channels", isOn: $allChannels).toggleStyle(.checkbox).font(.caption)
+                        .help("Show every engine output, not only the ones speakers use")
+                    Spacer()
+                    if meters.anyClipped {
+                        Button("Clear clips") { meters.clearClips() }.font(.caption).buttonStyle(.borderless).foregroundStyle(.red)
+                    }
+                    Text(meters.live ? String(format: "render load %.0f %%", meters.load * 100) : "no meters from the engine")
+                        .font(.caption.monospacedDigit()).foregroundStyle(meters.load > 0.8 ? Color.red : Color.secondary)
+                    Text("-60 to 0 dBFS · the numbers are the peak, held 2 s").font(.caption).foregroundStyle(.secondary)
+                } else {
+                    Spacer()
+                }
             }
             .padding(.horizontal, 10)
             .padding(.vertical, 4)
-            ScrollView(.horizontal) {
-                HStack(alignment: .top, spacing: 2) {
-                    section("OUT", outputStrips)
+            if shown {
+                ScrollView(.horizontal) {
+                    HStack(alignment: .top, spacing: 2) {
+                        section("OUT", outputStrips)
+                    }
+                    .padding(.horizontal, 10)
+                    .padding(.bottom, 4)
                 }
-                .padding(.horizontal, 10)
-                .padding(.bottom, 6)
+                .frame(height: Self.stripHeight + 10)
             }
         }
         .background(.bar)
@@ -232,7 +253,7 @@ struct MeterBridge: View {
     private func section(_ title: String, _ strips: [Strip]) -> some View {
         if strips.isEmpty {
             Text(meters.live ? "\(title): nothing the show uses" : "\(title): waiting for meters")
-                .font(.caption).foregroundStyle(.secondary).frame(height: 130)
+                .font(.caption).foregroundStyle(.secondary).frame(height: MeterBridge.stripHeight)
         } else {
             ForEach(strips) { strip in
                 StripView(title: title, strip: strip, selected: strip.target != nil && selection == strip.target)
@@ -256,15 +277,24 @@ private struct StripView: View {
         return text
     }
 
+    /// The held peak as a number: "-12", "-3.5", "-inf".
+    private var reading: String {
+        guard let c = strip.channel, c.hold > MeterScale.floor else { return "-inf" }
+        return c.hold > -10 ? String(format: "%.1f", c.hold) : String(format: "%.0f", c.hold)
+    }
+
     var body: some View {
-        VStack(spacing: 2) {
-            MeterBar(channel: strip.channel).frame(width: 12).frame(maxHeight: .infinity)
-            Text(String(strip.number)).font(.system(size: 9, weight: .semibold).monospacedDigit())
-            Rectangle().fill(strip.color).frame(width: 16, height: 2)
-            Text(strip.name).font(.system(size: 8)).lineLimit(1).frame(width: 34)
-            Text("ch " + String(strip.device)).font(.system(size: 8).monospacedDigit()).foregroundStyle(.secondary)
+        VStack(spacing: 1) {
+            Text(reading)
+                .font(.system(size: 8, weight: .medium).monospacedDigit())
+                .foregroundStyle(strip.channel?.clipped == true ? Color.red : Color.primary)
+                .lineLimit(1)
+                .minimumScaleFactor(0.8)
+            MeterBar(channel: strip.channel).frame(width: 8).frame(maxHeight: .infinity)
+            Text(String(strip.number)).font(.system(size: 8, weight: .semibold).monospacedDigit())
+            Rectangle().fill(strip.color).frame(width: 14, height: 2)
         }
-        .frame(width: 36, height: 130)
+        .frame(width: 28, height: MeterBridge.stripHeight)
         .padding(.vertical, 2)
         .background(RoundedRectangle(cornerRadius: 4).fill(selected ? Color.accentColor.opacity(0.2) : Color.clear))
         .contentShape(Rectangle())
