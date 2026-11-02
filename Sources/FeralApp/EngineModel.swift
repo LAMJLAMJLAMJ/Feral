@@ -191,10 +191,12 @@ final class EngineModel: ObservableObject {
         return capture.id
     }
 
-    /// Stores the sources' values again into an existing snapshot, keeping its scope of sources.
+    /// Stores the sources' values again into an existing snapshot, keeping its scope of sources and fields.
     func restore(_ snapshot: Snapshot) {
+        let fields = state.map { Array($0.fields(of: snapshot)) } ?? []
         apply(.captureSnapshot(capture: SnapshotCapture(
             id: snapshot.id, number: snapshot.number, name: snapshot.name, sources: snapshot.sources.map(\.id),
+            fields: fields.isEmpty ? nil : SnapshotField.allCases.filter(fields.contains),
             fadeSeconds: snapshot.fadeSeconds, curve: snapshot.curve)))
     }
 

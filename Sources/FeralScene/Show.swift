@@ -319,6 +319,39 @@ public struct SourceUpdate: Codable, Equatable {
 /// The source values a snapshot can store.
 public enum SnapshotField: String, Codable, CaseIterable, Equatable {
     case position, gain, mute, width, sends, lfe
+    /// Trim, polarity and input delay.
+    case input
+    case eq, compressor
+
+    /// The fields a set of stored values holds.
+    public static func present(in v: SourceValues) -> Set<SnapshotField> {
+        var f = Set<SnapshotField>()
+        if v.position != nil { f.insert(.position) }
+        if v.gainDB != nil { f.insert(.gain) }
+        if v.mute != nil { f.insert(.mute) }
+        if v.width != nil { f.insert(.width) }
+        if v.sends != nil { f.insert(.sends) }
+        if v.lfeDB != nil || v.lfeOff != nil { f.insert(.lfe) }
+        if v.trimDB != nil || v.invert != nil || v.delayMS != nil { f.insert(.input) }
+        if v.eq != nil { f.insert(.eq) }
+        if v.compressor != nil { f.insert(.compressor) }
+        return f
+    }
+
+    /// Copies this field from `all` into `v`, or clears it from `v`.
+    public func copy(from all: SourceValues, into v: inout SourceValues, _ on: Bool = true) {
+        switch self {
+        case .position: v.position = on ? all.position : nil
+        case .gain: v.gainDB = on ? all.gainDB : nil
+        case .mute: v.mute = on ? all.mute : nil
+        case .width: v.width = on ? all.width : nil
+        case .sends: v.sends = on ? all.sends : nil
+        case .lfe: v.lfeDB = on ? all.lfeDB : nil; v.lfeOff = on ? all.lfeOff : nil
+        case .input: v.trimDB = on ? all.trimDB : nil; v.invert = on ? all.invert : nil; v.delayMS = on ? all.delayMS : nil
+        case .eq: v.eq = on ? all.eq : nil
+        case .compressor: v.compressor = on ? all.compressor : nil
+        }
+    }
 }
 
 /// Stored source values, recalled with a fade. It holds only what its scope included when stored:

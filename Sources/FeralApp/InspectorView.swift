@@ -426,7 +426,18 @@ struct SnapshotInspector: View {
                 Picker("Curve", selection: Binding(get: { snapshot.curve }, set: { v in set { $0.curve = v } })) {
                     ForEach(FadeCurve.allCases, id: \.self) { Text(curveName($0)).tag($0) }
                 }
-                LabeledContent("Stores", value: "\(snapshot.sources.count) source(s)")
+                LabeledContent("Sources", value: "\(snapshot.sources.count)")
+            }
+            Section {
+                let stored = state.fields(of: snapshot)
+                ForEach(SnapshotField.allCases, id: \.self) { f in
+                    Toggle(fieldName(f), isOn: Binding(get: { stored.contains(f) },
+                                                       set: { on in model.apply(.setSnapshot(snapshot: state.snapshot(snapshot, storing: f, on))) }))
+                }
+            } header: {
+                Text("Stores")
+            } footer: {
+                Text("Turning a field on stores it from the sources as they are now. A recall only changes the fields it stores.")
             }
             Section {
                 Button("Recall over \(snapshot.fadeSeconds.short) s") { model.recall(snapshot) }
@@ -501,6 +512,20 @@ struct CueInspector: View {
         var c = cue
         change(&c)
         model.apply(.setCue(cue: c))
+    }
+}
+
+func fieldName(_ f: SnapshotField) -> String {
+    switch f {
+    case .position: return "Position"
+    case .gain: return "Level"
+    case .mute: return "Mute"
+    case .width: return "Width"
+    case .sends: return "Sends"
+    case .lfe: return "LFE send"
+    case .input: return "Input (trim, polarity, delay)"
+    case .eq: return "EQ"
+    case .compressor: return "Compressor"
     }
 }
 

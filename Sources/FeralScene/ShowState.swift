@@ -347,7 +347,24 @@ public struct ShowState: Equatable {
     /// A source's current values, every field.
     public func values(of s: Source) -> SourceValues {
         SourceValues(position: s.position, gainDB: s.gainDB, mute: s.mute, width: s.width, sends: s.sends,
-                     lfeDB: s.lfeDB, lfeOff: s.lfeDB == nil ? true : nil)
+                     lfeDB: s.lfeDB, lfeOff: s.lfeDB == nil ? true : nil, eq: s.eq ?? .flat, compressor: s.compressor ?? .off,
+                     trimDB: s.trimDB, invert: s.invert, delayMS: s.delayMS)
+    }
+
+    /// The fields a snapshot stores (for any of its sources).
+    public func fields(of snapshot: Snapshot) -> Set<SnapshotField> {
+        snapshot.sources.reduce(into: Set<SnapshotField>()) { $0.formUnion(SnapshotField.present(in: $1.values)) }
+    }
+
+    /// A snapshot that stores one more field, taken from its sources as they are now, or one fewer.
+    public func snapshot(_ snapshot: Snapshot, storing field: SnapshotField, _ on: Bool) -> Snapshot {
+        var s = snapshot
+        s.sources = s.sources.map { stored in
+            var v = stored.values
+            if let source = source(stored.id) { field.copy(from: values(of: source), into: &v, on) } else if !on { field.copy(from: v, into: &v, false) }
+            return SourceUpdate(id: stored.id, values: v)
+        }
+        return s
     }
 
     /// The snapshot a capture makes from the sources as they are now.
@@ -357,12 +374,7 @@ public struct ShowState: Equatable {
         let stored = show.sources.filter { scope?.contains($0.id) ?? true }.map { s -> SourceUpdate in
             let all = values(of: s)
             var v = SourceValues()
-            if fields.contains(.position) { v.position = all.position }
-            if fields.contains(.gain) { v.gainDB = all.gainDB }
-            if fields.contains(.mute) { v.mute = all.mute }
-            if fields.contains(.width) { v.width = all.width }
-            if fields.contains(.sends) { v.sends = all.sends }
-            if fields.contains(.lfe) { v.lfeDB = all.lfeDB; v.lfeOff = all.lfeOff }
+            for f in fields { f.copy(from: all, into: &v) }
             return SourceUpdate(id: s.id, values: v)
         }
         return Snapshot(id: c.id, number: c.number, name: c.name, fadeSeconds: c.fadeSeconds, curve: c.curve, sources: stored)

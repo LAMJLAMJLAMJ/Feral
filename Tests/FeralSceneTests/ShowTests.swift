@@ -447,6 +447,37 @@ final class ShowTests: XCTestCase {
         XCTAssertNil(state.show.cues[0].snapshot)
     }
 
+    func testSnapshotsStoreProcessingAndCanChangeWhatTheyStore() throws {
+        var state = try imported()
+        let vox = state.show.sources[1].id
+        let eq = SourceEQ(on: true, highPassHz: 80, midDB: -4)
+        let comp = Compressor(on: true, thresholdDB: -18, ratio: 4)
+        try state.apply(.updateSources(updates: [SourceUpdate(id: vox, values: SourceValues(
+            eq: eq, compressor: comp, trimDB: 3, invert: true, delayMS: 12))]))
+        try state.apply(.captureSnapshot(capture: SnapshotCapture(number: 1, name: "All", sources: [vox])))
+        var snap = try XCTUnwrap(state.show.snapshots.first)
+        let v = snap.sources[0].values
+        XCTAssertEqual(v.eq, eq)
+        XCTAssertEqual(v.compressor, comp)
+        XCTAssertEqual(v.trimDB, 3)
+        XCTAssertEqual(v.invert, true)
+        XCTAssertEqual(v.delayMS, 12)
+        XCTAssertEqual(state.fields(of: snap), Set(SnapshotField.allCases))
+
+        // Turning a field off drops it; turning it on stores it from the source as it is now.
+        snap = state.snapshot(snap, storing: .eq, false)
+        XCTAssertNil(snap.sources[0].values.eq)
+        XCTAssertFalse(state.fields(of: snap).contains(.eq))
+        try state.apply(.updateSources(updates: [SourceUpdate(id: vox, values: SourceValues(eq: .flat, trimDB: -2))]))
+        snap = state.snapshot(snap, storing: .eq, true)
+        XCTAssertEqual(snap.sources[0].values.eq, .flat)
+        XCTAssertEqual(snap.sources[0].values.trimDB, 3, "other fields keep what they stored")
+        snap = state.snapshot(snap, storing: .input, false)
+        XCTAssertNil(snap.sources[0].values.trimDB)
+        XCTAssertNil(snap.sources[0].values.invert)
+        XCTAssertNil(snap.sources[0].values.delayMS)
+    }
+
     func testCuesRunInNumberOrder() throws {
         var state = try imported()
         for n in ["10", "2", "2.5", "1"] { try state.apply(.setCue(cue: Cue(number: n))) }
@@ -507,6 +538,39 @@ final class ShowTests: XCTestCase {
         let out = SnapshotFade(snapshot: mute, state: state)
         XCTAssertEqual(out.updates(at: 1).first?.values.mute, false)
         XCTAssertEqual(out.updates(at: 2).first?.values.mute, true)
+    }
+
+    func testAFadeMovesInputEQAndCompressor() {
+        let a = SourceValues(eq: .flat, compressor: .off, trimDB: 0, invert: false, delayMS: 0)
+        let b = SourceValues(eq: SourceEQ(on: true, highPassHz: 80, lowHz: 100, midHz: 4000, midDB: -6),
+                             compressor: Compressor(on: true, thresholdDB: -30, ratio: 5, makeupDB: 4),
+                             trimDB: 6, invert: true, delayMS: 20)
+        let quarter = SnapshotFade.values(from: a, to: b, at: 0.25)
+        XCTAssertEqual(quarter.trimDB ?? 0, 1.5, accuracy: 1e-9)
+        XCTAssertEqual(quarter.delayMS ?? 0, 5, accuracy: 1e-9)
+        XCTAssertEqual(quarter.invert, false, "polarity flips halfway")
+        XCTAssertEqual(quarter.eq?.on, true, "an EQ turning on does so at the start, from flat")
+        XCTAssertEqual(quarter.eq?.midDB ?? 0, -1.5, accuracy: 1e-9)
+        XCTAssertEqual(quarter.eq?.midHz, 4000, "an EQ turning on starts flat at its new frequencies")
+        XCTAssertEqual(quarter.eq?.highPassHz ?? 0, 20 * pow(4, 0.25), accuracy: 1e-6, "a high-pass sweeps up from 20 Hz")
+        XCTAssertEqual(quarter.compressor?.on, true)
+        XCTAssertEqual(quarter.compressor?.ratio ?? 0, 2, accuracy: 1e-9, "a compressor turning on starts at 1:1")
+        XCTAssertEqual(quarter.compressor?.makeupDB ?? 0, 1, accuracy: 1e-9)
+        XCTAssertEqual(SnapshotFade.values(from: a, to: b, at: 0.5).invert, true)
+        let moved = SourceEQ(on: true, midHz: 250, midDB: -6)
+        XCTAssertEqual(SnapshotFade.values(from: b, to: SourceValues(eq: moved), at: 0.5).eq?.midHz ?? 0, 1000, accuracy: 1e-6,
+                       "frequencies glide geometrically")
+        XCTAssertEqual(SnapshotFade.values(from: a, to: b, at: 1), b, "the end is exact")
+
+        // Turning off: still on until the end, flattening out.
+        let back = SnapshotFade.values(from: b, to: a, at: 0.5)
+        XCTAssertEqual(back.eq?.on, true)
+        XCTAssertEqual(back.eq?.midDB ?? 0, -3, accuracy: 1e-9)
+        XCTAssertEqual(back.compressor?.on, true)
+        XCTAssertEqual(back.compressor?.ratio ?? 0, 3, accuracy: 1e-9)
+        XCTAssertEqual(SnapshotFade.values(from: b, to: a, at: 1), a)
+        XCTAssertNil(SnapshotFade.values(from: b, to: SourceValues(gainDB: 0), at: 0.5).eq,
+                     "a snapshot without EQ leaves it alone")
     }
 
     func testAFadeLeavesOutSourcesThatAreGoneAndTakenOver() throws {
