@@ -296,6 +296,8 @@ struct SidebarView: View {
                             // The Binaural group is always there and cannot be deleted.
                             BinauralGroupRow(model: model)
                                 .tag(Selection.binaural)
+                            LFEGroupRow(state: state)
+                                .tag(Selection.lfe)
                             ForEach(state.show.groups) { g in
                                 OutputGroupRow(group: g, state: state)
                                     .tag(Selection.speakerGroup(g.id))

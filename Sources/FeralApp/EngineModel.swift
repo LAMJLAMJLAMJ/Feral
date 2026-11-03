@@ -411,7 +411,7 @@ final class EngineModel: ObservableObject {
 
 /// What is selected, in the sidebar or on the plan.
 enum Selection: Hashable {
-    case source(UUID), speaker(UUID), snapshot(UUID), cue(UUID), sourceGroup(UUID), speakerGroup(UUID), listener, binaural
+    case source(UUID), speaker(UUID), snapshot(UUID), cue(UUID), sourceGroup(UUID), speakerGroup(UUID), listener, binaural, lfe
 }
 
 extension Color {

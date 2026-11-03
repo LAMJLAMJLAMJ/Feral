@@ -952,6 +952,7 @@ final class Engine {
         case .setGroup(let g): return "set group \(g.name)"
         case .removeGroup: return "removed a group"
         case .setLFESpeakers(let s): return "set \(s.count) LFE speaker(s)"
+        case .setLFE(let mode, let gainDB): return String(format: "set the LFE group to %@ at %+.1f dB", mode.rawValue, gainDB)
         case .setSourceGroup(let g): return "set source group \(g.label)"
         case .setListener(let l): return String(format: "moved the listener to %.1f %.1f %.1f, facing %.0f°", l.position.x, l.position.y, l.position.z, l.facing)
         case .removeSourceGroup: return "removed a source group"

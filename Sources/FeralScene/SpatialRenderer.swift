@@ -243,8 +243,35 @@ public final class SpatialRenderer {
         case .spcap:
             var params = g.pan
             feral_spcap_render(g.points, g.weights, Int32(n), p, &params, &gains)
+        case .pan:
+            gains = Self.panGains(speakers: g.points, at: p, axis: g.config.panAxis ?? Position(1, 0, 0),
+                                  lawDB: g.config.panLawDB).enumerated().map { Float($0.element * g.weights[$0.offset]) }
         }
         return (gains, delays)
+    }
+
+    /// A console pan pot across a line of speakers: each speaker's and the source's position along
+    /// `axis` (left to right); the source plays in the two speakers either side of it, with the pan
+    /// law's level at halfway (3 dB down in each: constant power; 6: linear), and past either end in
+    /// the end speaker alone.
+    public static func panGains(speakers: [feral_point], at p: feral_point, axis: Position, lawDB: Double) -> [Double] {
+        let n = speakers.count
+        var gains = [Double](repeating: 0, count: n)
+        guard n > 0 else { return gains }
+        let len = max(1e-9, (axis.x * axis.x + axis.y * axis.y + axis.z * axis.z).squareRoot())
+        func u(_ q: feral_point) -> Double { (q.x * axis.x + q.y * axis.y + q.z * axis.z) / len }
+        let order = (0..<n).sorted { u(speakers[$0]) < u(speakers[$1]) }
+        let s = u(p)
+        guard n > 1, s > u(speakers[order[0]]) else { gains[order[0]] = 1; return gains }
+        guard s < u(speakers[order[n - 1]]) else { gains[order[n - 1]] = 1; return gains }
+        var a = 0
+        while a + 2 < n && u(speakers[order[a + 1]]) <= s { a += 1 }
+        let ua = u(speakers[order[a]]), ub = u(speakers[order[a + 1]])
+        let t = ub > ua ? (s - ua) / (ub - ua) : 0.5
+        let k = lawDB / (20 * log10(2.0.squareRoot()))
+        gains[order[a]] = pow(cos(t * .pi / 2), k)
+        gains[order[a + 1]] = pow(sin(t * .pi / 2), k)
+        return gains
     }
 
     /// A speaker's system-layer settings as output processing.

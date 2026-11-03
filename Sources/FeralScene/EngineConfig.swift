@@ -315,6 +315,7 @@ public struct EngineConfig: Codable, Equatable {
             guard g.neighbours >= 1, (0...360).contains(g.spread), (1...100).contains(g.tightness) else {
                 throw ConfigError("group \(g.name): neighbours must be 1 or more, spread from 0 to 360 and tightness from 1 to 100")
             }
+            guard (3...6).contains(g.panLawDB) else { throw ConfigError("group \(g.name): panLawDB must be from 3 to 6") }
             guard g.rolloff >= 0, g.blur >= 0, g.rolloffDB >= 0 else {
                 throw ConfigError("group \(g.name): rolloff, blur and rolloffDB must be 0 or more")
             }

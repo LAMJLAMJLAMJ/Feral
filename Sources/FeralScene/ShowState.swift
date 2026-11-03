@@ -17,6 +17,8 @@ public enum Command: Codable, Equatable {
     case setGroup(group: SpeakerGroup)
     case removeGroup(id: UUID)
     case setLFESpeakers(speakers: [UUID])
+    /// Sets the LFE group's algorithm and level.
+    case setLFE(mode: LFEMode, gainDB: Double)
     /// Moves or turns the listening point that azimuth, elevation and distance are measured from.
     case setListener(listener: Listener)
     /// Adds a source group, or replaces the one with the same id (members, gain, mute, name).
@@ -211,6 +213,7 @@ public struct ShowState: Equatable {
             return .layout(crossfade: true)
 
         case .setGroup(let group):
+            guard group.name != Self.lfeGroupName else { throw ConfigError("\(Self.lfeGroupName) is the LFE group's name; pick another") }
             if let i = show.groups.firstIndex(where: { $0.id == group.id }) {
                 show.groups[i] = group
             } else {
@@ -231,6 +234,12 @@ public struct ShowState: Equatable {
 
         case .setLFESpeakers(let speakers):
             system.lfeSpeakers = speakers
+            return .layout(crossfade: true)
+
+        case .setLFE(let mode, let gainDB):
+            guard gainDB.isFinite, (-60...20).contains(gainDB) else { throw ConfigError("the LFE group's level must be from -60 to 20 dB") }
+            system.lfeMode = mode
+            system.lfeGainDB = gainDB
             return .layout(crossfade: true)
 
         case .captureSnapshot(let capture):
@@ -335,6 +344,7 @@ public struct ShowState: Equatable {
         try unique(show.snapshots.map(\.id), "snapshots have the id")
         try unique(show.cues.map(\.id), "cues have the id")
         try unique(show.groups.map(\.name), "groups are called")
+        if show.groups.contains(where: { $0.name == Self.lfeGroupName }) { throw ConfigError("a group is called \(Self.lfeGroupName), the LFE group's name") }
         try unique(system.speakers.map(\.output), "speakers play on output")
         try unique(show.sources.map(\.input), "sources use input")
         for g in show.groups {
@@ -414,13 +424,17 @@ public struct ShowState: Equatable {
     public func sourceConfig(_ s: Source) -> SourceConfig {
         var sends: [String: Double] = [:]
         for send in s.sends { if let g = group(send.group), isPlayable(g) { sends[g.name] = send.gainDB } }
+        // The LFE send, with the LFE group's level: straight to every sub (equal), or through a
+        // Delay or DBAP group of the subs.
+        let lfeSend = system.lfeSpeakers.contains { speaker($0) != nil } ? s.lfeDB.map { $0 + system.lfeGainDB } : nil
+        if system.lfeMode != .equal, let l = lfeSend { sends[Self.lfeGroupName] = l }
         // Source groups act like VCAs: their gains add, and any muted group mutes the source.
         let groups = sourceGroups(of: s.id)
         let d = s.position.distance(to: system.listener.position)
         let gain = groups.reduce(s.gainDB) { $0 + $1.gainDB } + (s.distance?.levelDB(at: d) ?? 0)
         let mute = s.mute || groups.contains { $0.mute }
         var c = SourceConfig(input: s.input, name: s.name, position: s.position, gainDB: gain, mute: mute,
-                            width: s.width, groups: sends, lfeDB: system.lfeSpeakers.isEmpty ? nil : s.lfeDB,
+                            width: s.width, groups: sends, lfeDB: system.lfeMode == .equal ? lfeSend : nil,
                             eq: s.eq, compressor: s.compressor, trimDB: s.trimDB, invert: s.invert, delayMS: s.delayMS,
                             link: stereoPartner(of: s.id).flatMap { source($0)?.input })
         if let air = s.distance?.airDB(at: d), air < 0 { c.airDB = air }
@@ -434,27 +448,49 @@ public struct ShowState: Equatable {
         var outputOf: [UUID: Int] = [:]
         for s in system.speakers { outputOf[s.id] = s.output }
         c.speakers = system.speakers.map(\.config)
+        // Left to right as the listener faces, in plan, for Pan groups.
+        let right = system.listener.point(Polar(azimuth: -90, elevation: 0, distance: 1))
+        let l = system.listener.position
+        let axis = Position(right.x - l.x, right.y - l.y, 0)
         c.groups = show.groups.filter(isPlayable).map { g -> GroupConfig in
             var weights: [String: Double] = [:]
             for (key, db) in g.weightsDB {
                 if let id = UUID(uuidString: key), let o = outputOf[id] { weights[String(o)] = db }
             }
-            return GroupConfig(name: g.name, renderer: g.renderer,
+            var config = GroupConfig(name: g.name, renderer: g.renderer,
                                speakers: g.speakers.compactMap { outputOf[$0] }.map(String.init).joined(separator: ", "),
                                gainDB: g.gainDB, weightsDB: weights, precedenceMS: g.precedenceMS, rolloff: g.rolloff,
                                referenceDistance: g.referenceDistance, distanceOffset: g.distanceOffset,
                                // Directional panners pan around it; every algorithm spreads around it.
                                reference: g.reference ?? system.listener.position,
                                dimensions: g.dimensions, blur: g.blur, rolloffDB: g.rolloffDB, neighbours: g.neighbours,
-                               spread: g.spread, tightness: g.tightness)
+                               spread: g.spread, tightness: g.tightness, panLawDB: g.panLawDB)
+            config.panAxis = axis
+            return config
+        }
+        let lfe = system.lfeSpeakers.compactMap { outputOf[$0] }
+        if system.lfeMode == .equal {
+            c.lfeOutputs = lfe.isEmpty ? nil : lfe.map(String.init).joined(separator: ", ")
+        } else {
+            // The subs as a group of their own, which the sources' LFE sends play through.
+            c.lfeOutputs = nil
+            if !lfe.isEmpty {
+                let renderer: Renderer = system.lfeMode == .delay ? .delay : (system.lfeMode == .pan ? .pan : .dbap)
+                var sub = GroupConfig(name: Self.lfeGroupName, renderer: renderer,
+                                      speakers: lfe.map(String.init).joined(separator: ", "),
+                                      reference: system.listener.position)
+                sub.panAxis = axis
+                c.groups.append(sub)
+            }
         }
         // With no group to play through (none yet, the last deleted, or none with enough speakers),
         // the sources play nothing rather than fail the layout.
         c.sources = c.groups.isEmpty ? [] : show.sources.map(sourceConfig)
-        let lfe = system.lfeSpeakers.compactMap { outputOf[$0] }
-        c.lfeOutputs = lfe.isEmpty ? nil : lfe.map(String.init).joined(separator: ", ")
         return c
     }
+
+    /// The name the LFE group goes by in the renderer when it is a Delay or DBAP group.
+    public static let lfeGroupName = "LFE (subs)"
 
     /// A show made from engine.json's speakers, groups and sources (milestone 2's layout keys).
     public static func importing(_ config: EngineConfig, name: String) throws -> ShowState {

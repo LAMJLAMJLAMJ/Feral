@@ -139,6 +139,10 @@ public enum Renderer: String, Codable, Equatable, CaseIterable {
     /// Speaker-placement correction amplitude panning: a cardioid over every speaker, corrected for
     /// how crowded each one is, for irregular layouts.
     case spcap
+    /// A console's pan pot: the source's position across the stage, left to right as the listener
+    /// faces, pans between the two neighbouring speakers on that line (stereo, LCR, a row of
+    /// speakers) with a pan law. Sources past the ends stay in the end speaker.
+    case pan
 
     /// Pans by direction from a listening point (by default the listener).
     public var isDirectional: Bool { self == .vbap || self == .knn || self == .spcap }
@@ -188,11 +192,19 @@ public struct GroupConfig: Codable, Equatable {
     /// The cardioid's exponent, 1 or more: higher is narrower.
     public var tightness: Double
 
+    // Pan
+    /// The level halfway between two speakers, in dB down in each: 3 (constant power), 4.5 or 6 (linear).
+    public var panLawDB: Double
+    /// The direction across the stage, left to right as the listener faces (a unit vector in plan);
+    /// none is +x. The show sets it from its listener.
+    public var panAxis: Position?
+
     public init(name: String, renderer: Renderer, speakers: String, gainDB: Double = 0, weightsDB: [String: Double] = [:],
                 precedenceMS: Double = 10, rolloff: Double = 1, referenceDistance: Double? = nil,
                 distanceOffset: Double? = nil, reference: Position? = nil, dimensions: Int? = nil,
-                blur: Double = 0.5, rolloffDB: Double = 6, neighbours: Int = 3, spread: Double = 30, tightness: Double = 1) {
-        self.neighbours = neighbours; self.spread = spread; self.tightness = tightness
+                blur: Double = 0.5, rolloffDB: Double = 6, neighbours: Int = 3, spread: Double = 30, tightness: Double = 1,
+                panLawDB: Double = 3) {
+        self.neighbours = neighbours; self.spread = spread; self.tightness = tightness; self.panLawDB = panLawDB
         self.name = name; self.renderer = renderer; self.speakers = speakers; self.gainDB = gainDB
         self.weightsDB = weightsDB; self.precedenceMS = precedenceMS; self.rolloff = rolloff
         self.referenceDistance = referenceDistance; self.distanceOffset = distanceOffset
@@ -201,7 +213,7 @@ public struct GroupConfig: Codable, Equatable {
 
     enum CodingKeys: String, CodingKey {
         case name, renderer, speakers, gainDB, weightsDB, precedenceMS, rolloff, referenceDistance, distanceOffset,
-             reference, dimensions, blur, rolloffDB, neighbours, spread, tightness
+             reference, dimensions, blur, rolloffDB, neighbours, spread, tightness, panLawDB, panAxis
     }
 
     public init(from decoder: Decoder) throws {
@@ -225,6 +237,8 @@ public struct GroupConfig: Codable, Equatable {
         neighbours = try c.decodeIfPresent(Int.self, forKey: .neighbours) ?? d.neighbours
         spread = try c.decodeIfPresent(Double.self, forKey: .spread) ?? d.spread
         tightness = try c.decodeIfPresent(Double.self, forKey: .tightness) ?? d.tightness
+        panLawDB = try c.decodeIfPresent(Double.self, forKey: .panLawDB) ?? d.panLawDB
+        panAxis = try c.decodeIfPresent(Position.self, forKey: .panAxis)
     }
 }
 

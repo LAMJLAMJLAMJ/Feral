@@ -10,6 +10,7 @@ extension Renderer {
         case .dbap: return "DBAP"
         case .knn: return "KNN"
         case .spcap: return "SPCAP"
+        case .pan: return "Pan (stereo, LCR)"
         }
     }
 
@@ -20,7 +21,99 @@ extension Renderer {
         case .dbap: return "Level from each speaker's distance to the source, with no sweet spot. For irregular layouts."
         case .knn: return "As few speakers as possible: only the K nearest play, fading out over the spread. On a speaker with spread 0, only that one plays."
         case .spcap: return "A cardioid over every speaker, turned down where speakers are crowded. Smooth, for irregular layouts; uses many speakers."
+        case .pan: return "A console pan pot: the source's position across the stage, left to right as the listener faces, pans between the two neighbouring speakers with a pan law. For stereo, LCR and rows of speakers; past the ends a source stays in the end speaker."
         }
+    }
+}
+
+extension LFEMode {
+    var title: String {
+        switch self {
+        case .equal: return "Equal (every sub the same)"
+        case .delay: return "Delay"
+        case .dbap: return "DBAP"
+        case .pan: return "Pan (stereo, LCR)"
+        }
+    }
+
+    var explanation: String {
+        switch self {
+        case .equal: return "Every source's LFE send reaches every sub at the same level, with no delay of its own. The subs' own trims and delays (arc, end-fire, cardioid) shape the coverage. Best for a sub array: below about 100 Hz panning hardly localises, and moving delays would smear the array's pattern."
+        case .delay: return "Level and delay per sub from the source's position, as a Delay group. For subs spread around a room, time-aligned with the mains near each source; the array's pattern moves as sources move."
+        case .dbap: return "Level from each sub's distance to the source, with no delays. For subs spread around a room."
+        case .pan: return "A console pan pot across the subs, left to right: for a left and a right sub stack, or L, C and R."
+        }
+    }
+}
+
+/// The LFE group's row in the Speakers list: always there, never deleted.
+struct LFEGroupRow: View {
+    let state: ShowState
+
+    var body: some View {
+        let n = state.system.lfeSpeakers.filter { state.speaker($0) != nil }.count
+        HStack(spacing: 8) {
+            RoundedRectangle(cornerRadius: 4).fill(Color.gray)
+                .overlay(Text("LFE").font(.system(size: 7, weight: .bold)).foregroundStyle(.white))
+                .frame(width: 20, height: 20)
+            VStack(alignment: .leading, spacing: 1) {
+                Text("LFE").lineLimit(1)
+                Text("\(state.system.lfeMode.title) · \(n) sub\(n == 1 ? "" : "s")")
+                    .font(.caption).foregroundStyle(n == 0 ? Color.orange : Color.secondary).lineLimit(1)
+            }
+            Spacer(minLength: 4)
+            Text(String(format: "%+.1f dB", state.system.lfeGainDB)).font(.caption.monospacedDigit()).foregroundStyle(.secondary)
+        }
+        .padding(.vertical, 1)
+        .help("The subs, fed by each source's LFE send. Always here.")
+    }
+}
+
+/// The LFE group: its algorithm, level and subs.
+struct LFEGroupInspector: View {
+    @ObservedObject var model: EngineModel
+    let state: ShowState
+
+    var body: some View {
+        let sys = state.system
+        Form {
+            Section {
+                Picker("Algorithm", selection: Binding(get: { sys.lfeMode }, set: { m in model.apply(.setLFE(mode: m, gainDB: sys.lfeGainDB)) })) {
+                    ForEach(LFEMode.allCases, id: \.self) { Text($0.title).tag($0) }
+                }
+                LabeledContent("Level") {
+                    LevelSlider(value: sys.lfeGainDB, range: -40...20, step: 0.5, unit: "dB") { v in
+                        model.apply(.setLFE(mode: sys.lfeMode, gainDB: v))
+                    }
+                }
+                if sys.lfeSpeakers.isEmpty {
+                    Label("No subs yet: tick them below.", systemImage: "exclamationmark.triangle").foregroundStyle(.orange).font(.caption)
+                }
+            } header: {
+                HStack(spacing: 8) {
+                    RoundedRectangle(cornerRadius: 3).fill(Color.gray).frame(width: 14, height: 14)
+                    Text("LFE").font(.headline)
+                }
+            } footer: {
+                Text(sys.lfeMode.explanation + " Each source's LFE send is in its inspector and in the Sends window's LFE column.")
+            }
+            Section("Subs") {
+                ForEach(sys.speakers.sorted { $0.number < $1.number }) { s in
+                    Toggle(isOn: Binding(get: { sys.lfeSpeakers.contains(s.id) }, set: { on in
+                        var list = sys.lfeSpeakers.filter { $0 != s.id }
+                        if on { list.append(s.id) }
+                        let order = sys.speakers.sorted { $0.number < $1.number }.map(\.id)
+                        model.apply(.setLFESpeakers(speakers: order.filter { list.contains($0) }))
+                    })) {
+                        HStack(spacing: 4) {
+                            Text(s.label)
+                            Text("out \(s.output)").font(.caption).foregroundStyle(.secondary)
+                        }
+                    }
+                }
+            }
+        }
+        .formStyle(.grouped)
     }
 }
 
@@ -169,6 +262,13 @@ struct OutputGroupInspector: View {
             }
             .help("1 spreads a source over every speaker in front of it; higher narrows it")
             directional
+        case .pan:
+            Picker("Pan law", selection: Binding(get: { group.panLawDB }, set: { v in set { $0.panLawDB = v } })) {
+                Text("-3 dB (constant power)").tag(3.0)
+                Text("-4.5 dB").tag(4.5)
+                Text("-6 dB (linear)").tag(6.0)
+            }
+            .help("How far down each speaker is with the source halfway between them")
         }
     }
 

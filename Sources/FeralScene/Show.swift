@@ -214,13 +214,16 @@ public struct SpeakerGroup: Codable, Equatable, Identifiable {
     public var spread: Double
     /// SPCAP: the cardioid's exponent, 1 or more.
     public var tightness: Double
+    /// Pan: how far a source halfway between two speakers is down in each, in dB (3 constant power,
+    /// 4.5, 6 linear).
+    public var panLawDB: Double
 
     public init(id: UUID = UUID(), number: Int, name: String, renderer: Renderer, speakers: [UUID], gainDB: Double = 0,
                 weightsDB: [String: Double] = [:], colour: String? = nil, precedenceMS: Double = 10, rolloff: Double = 1,
                 referenceDistance: Double? = nil, distanceOffset: Double? = nil, reference: Position? = nil,
                 dimensions: Int? = nil, blur: Double = 0.5, rolloffDB: Double = 6, neighbours: Int = 3, spread: Double = 30,
-                tightness: Double = 1) {
-        self.neighbours = neighbours; self.spread = spread; self.tightness = tightness
+                tightness: Double = 1, panLawDB: Double = 3) {
+        self.neighbours = neighbours; self.spread = spread; self.tightness = tightness; self.panLawDB = panLawDB
         self.id = id; self.number = number; self.name = name; self.renderer = renderer; self.speakers = speakers
         self.gainDB = gainDB; self.weightsDB = weightsDB; self.colour = colour; self.precedenceMS = precedenceMS
         self.rolloff = rolloff; self.referenceDistance = referenceDistance; self.distanceOffset = distanceOffset
@@ -229,7 +232,7 @@ public struct SpeakerGroup: Codable, Equatable, Identifiable {
 
     enum CodingKeys: String, CodingKey {
         case id, number, name, renderer, speakers, gainDB, weightsDB, colour, precedenceMS, rolloff, referenceDistance,
-             distanceOffset, reference, dimensions, blur, rolloffDB, neighbours, spread, tightness
+             distanceOffset, reference, dimensions, blur, rolloffDB, neighbours, spread, tightness, panLawDB
     }
 
     public init(from decoder: Decoder) throws {
@@ -254,6 +257,7 @@ public struct SpeakerGroup: Codable, Equatable, Identifiable {
         neighbours = try c.decodeIfPresent(Int.self, forKey: .neighbours) ?? d.neighbours
         spread = try c.decodeIfPresent(Double.self, forKey: .spread) ?? d.spread
         tightness = try c.decodeIfPresent(Double.self, forKey: .tightness) ?? d.tightness
+        panLawDB = try c.decodeIfPresent(Double.self, forKey: .panLawDB) ?? d.panLawDB
     }
 }
 
@@ -547,12 +551,29 @@ public struct Listener: Codable, Equatable {
     }
 }
 
+/// How the LFE group feeds its subs from each source's LFE send.
+public enum LFEMode: String, Codable, Equatable, CaseIterable {
+    /// Every sub at the same level and no delay of its own: the array's own trims and delays (arc,
+    /// end-fire, cardioid) shape the coverage. The default.
+    case equal
+    /// Level and delay from the source's position, as a Delay group does.
+    case delay
+    /// Level from each sub's distance to the source, as a DBAP group does.
+    case dbap
+    /// Left to right across the subs with a pan law, as a console's pan pot does (a left and a
+    /// right sub stack, or L, C and R).
+    case pan
+}
+
 /// system.json: the speakers and which of them take the sources' LFE sends.
 public struct SystemLayer: Codable, Equatable {
     public var schema: Int
     public var speakers: [Speaker]
-    /// The speakers a source's lfeDB send feeds.
+    /// The speakers a source's lfeDB send feeds: the LFE group, which is always there.
     public var lfeSpeakers: [UUID]
+    /// How the LFE group feeds them, and its level (added to every source's LFE send).
+    public var lfeMode: LFEMode
+    public var lfeGainDB: Double
     /// The listening point that sources' azimuth, elevation and distance are measured from, in the
     /// speakers' coordinates.
     public var listener: Listener
@@ -563,9 +584,11 @@ public struct SystemLayer: Codable, Equatable {
         schema = showSchema
         self.speakers = speakers; self.lfeSpeakers = lfeSpeakers
         self.listener = listener ?? Listener.centre(of: speakers)
+        lfeMode = .equal
+        lfeGainDB = 0
     }
 
-    enum CodingKeys: String, CodingKey { case schema, speakers, lfeSpeakers, listener }
+    enum CodingKeys: String, CodingKey { case schema, speakers, lfeSpeakers, listener, lfeMode, lfeGainDB }
 
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -576,6 +599,8 @@ public struct SystemLayer: Codable, Equatable {
         speakers = try c.decodeIfPresent([Speaker].self, forKey: .speakers) ?? []
         lfeSpeakers = try c.decodeIfPresent([UUID].self, forKey: .lfeSpeakers) ?? []
         listener = try c.decodeIfPresent(Listener.self, forKey: .listener) ?? Listener.centre(of: speakers)
+        lfeMode = try c.decodeIfPresent(LFEMode.self, forKey: .lfeMode) ?? .equal
+        lfeGainDB = try c.decodeIfPresent(Double.self, forKey: .lfeGainDB) ?? 0
         schema = showSchema
     }
 }

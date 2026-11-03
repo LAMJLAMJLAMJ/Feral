@@ -25,6 +25,8 @@ struct InspectorView: View {
                     ListenerInspector(model: model, state: state)
                 case .binaural:
                     HeadphonesPanel(model: model)
+                case .lfe:
+                    LFEGroupInspector(model: model, state: state)
                 case .speakerGroup(let id):
                     if let g = state.group(id) { OutputGroupInspector(model: model, state: state, group: g, selection: $selection) }
                 case .sourceGroup(let id):
@@ -395,11 +397,15 @@ struct SpeakerInspector: View {
                     Label("In no output group, so it plays nothing. Tick one below.", systemImage: "exclamationmark.triangle.fill")
                         .foregroundStyle(.orange)
                 }
-                if state.show.groups.isEmpty { Text("None yet: the Group button above the Speakers list makes one.").foregroundStyle(.secondary) }
                 ForEach(state.show.groups) { g in
                     Toggle("\(g.name) (\(g.renderer.title))", isOn: Binding(get: { g.speakers.contains(speaker.id) },
                                                                           set: { model.setSpeakers([speaker.id], of: g, $0) }))
                 }
+                Toggle("LFE (\(state.system.lfeMode.title))", isOn: Binding(get: { state.system.lfeSpeakers.contains(speaker.id) }, set: { on in
+                    var list = state.system.lfeSpeakers.filter { $0 != speaker.id }
+                    if on { list.append(speaker.id) }
+                    model.apply(.setLFESpeakers(speakers: list))
+                }))
             }
             Section("Name and position") {
                 TextField("Name", text: $name).onSubmit { set { $0.name = name.isEmpty ? nil : name } }
