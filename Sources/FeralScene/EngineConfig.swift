@@ -74,6 +74,9 @@ public struct EngineConfig: Codable, Equatable {
     /// The MIDI sources to listen to (a name or part of one); none listens to every source. The
     /// engine's own "Feral" destination always listens.
     public var midiInputs: [String]?
+    /// Render worker threads beside the audio thread (0 to 32); none picks one fewer than the Mac's
+    /// performance cores. 0 renders on the audio thread alone.
+    public var renderThreads: Int?
 
     public init(device: String? = nil, sampleRate: Double = 48_000, bufferFrames: Int = 64,
                 inputs: Int = 128, outputs: Int = 128, firstInputChannel: Int = 1, firstOutputChannel: Int = 1,
@@ -122,7 +125,7 @@ public struct EngineConfig: Codable, Equatable {
         case device, sampleRate, bufferFrames, inputs, outputs, firstInputChannel, firstOutputChannel, inputPatch, outputPatch, routes,
              refuseAggregateDevices, testSignal, testSignalDB, testSignalHz, speakers, groups, sources, lfeOutputs,
              airTemperatureC, delayGlidePercent, delayJumpMS, delayCrossfadeMS, groupCrossfadeMS, testMotion, show,
-             controlAddress, controlPort, oscAddress, oscPort, midi, midiInputs
+             controlAddress, controlPort, oscAddress, oscPort, midi, midiInputs, renderThreads
     }
 
     /// Every key is optional in the file; missing ones take the defaults above.
@@ -160,6 +163,7 @@ public struct EngineConfig: Codable, Equatable {
         oscPort = try c.decodeIfPresent(Int.self, forKey: .oscPort) ?? d.oscPort
         midi = try c.decodeIfPresent(Bool.self, forKey: .midi) ?? d.midi
         midiInputs = try c.decodeIfPresent([String].self, forKey: .midiInputs)
+        renderThreads = try c.decodeIfPresent(Int.self, forKey: .renderThreads)
     }
 
     /// True when sources are rendered to speaker groups, rather than only the fixed routing played.
@@ -257,6 +261,7 @@ public struct EngineConfig: Codable, Equatable {
             throw ConfigError("delayJumpMS must be 0 or more and delayCrossfadeMS from 1 to 1000")
         }
         guard (0...10_000).contains(groupCrossfadeMS) else { throw ConfigError("groupCrossfadeMS must be from 0 to 10000") }
+        if let n = renderThreads, !(0...32).contains(n) { throw ConfigError("renderThreads must be from 0 to 32") }
         guard (-30...50).contains(airTemperatureC) else { throw ConfigError("airTemperatureC must be from -30 to 50") }
 
         var speakerOutputs = Set<Int>()

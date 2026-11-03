@@ -38,6 +38,10 @@ OSStatus feral_io_proc(AudioObjectID device, const AudioTimeStamp *now, const Au
 /// feral_io_proc as the AudioDeviceIOProc type, so Swift can pass it without converting.
 AudioDeviceIOProc feral_io_proc_pointer(void);
 
+/// Hands the device's IOProc workgroup to the core's render workers, so they run as real-time
+/// threads alongside the device's own. Returns 0, or the Core Audio error when the device has none.
+OSStatus feral_io_share_workgroup(feral_core *core, AudioObjectID device);
+
 #ifdef __cplusplus
 }
 #endif

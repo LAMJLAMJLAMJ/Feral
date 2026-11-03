@@ -14,6 +14,26 @@ public final class RenderCore {
 
     deinit { feral_core_destroy(pointer) }
 
+    /// Render workers for a Mac (or other machine): one fewer than its performance cores, since the
+    /// audio thread does its share too, at most 32.
+    public static var automaticWorkers: Int {
+        #if os(macOS)
+        var cores: Int32 = 0
+        var size = MemoryLayout<Int32>.size
+        if sysctlbyname("hw.perflevel0.physicalcpu", &cores, &size, nil, 0) == 0, cores > 0 {
+            return max(0, min(Int(cores) - 1, Int(FERAL_MAX_WORKERS)))
+        }
+        #endif
+        return max(0, min(ProcessInfo.processInfo.activeProcessorCount - 1, Int(FERAL_MAX_WORKERS)))
+    }
+
+    /// Starts render workers that share the outputs' work with the audio thread. Call before the
+    /// audio starts; returns how many run.
+    @discardableResult
+    public func startWorkers(_ count: Int) -> Int { Int(feral_core_start_workers(pointer, Int32(max(0, count)))) }
+
+    public var workers: Int { Int(feral_core_workers(pointer)) }
+
     /// The longest delay the core plays, in samples.
     public var maxDelay: Double { feral_core_max_delay(pointer) }
 

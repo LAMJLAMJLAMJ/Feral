@@ -96,6 +96,7 @@ This builds `FeralEngine.app` (the engine inside a minimal app bundle, so macOS 
 | `airTemperatureC` | 20 | Sets the speed of sound for Delay groups |
 | `delayGlidePercent`, `delayJumpMS`, `delayCrossfadeMS` | 0.5, 5, 30 | A moving delay glides at most this fast (as a pitch shift); a jump bigger than `delayJumpMS` crossfades instead, over `delayCrossfadeMS` |
 | `groupCrossfadeMS` | 50 | How long a reload's group, send or renderer changes take |
+| `renderThreads` | one fewer than the Mac's performance cores | Render worker threads beside the audio thread. Each buffer the outputs are shared out in chunks of four between the audio thread and the workers (which join the device's audio workgroup, so they run as real-time threads on the performance cores); whatever a worker has not picked up the audio thread does itself, and the result is identical sample for sample. 0 renders on the audio thread alone. Read at start; the engine log says how many run |
 | `testMotion` | none | Moves one source by itself: `{ "source": 1, "shape": "circle", "center": [0, 6, 1.6], "radius": 6, "seconds": 20 }`, or `"shape": "line"` with `"from"` and `"to"` |
 
 Milestone 2's layout keys, kept here because `feral-cli show import` and the engine's first start read them (the show file uses the same fields, with ids):

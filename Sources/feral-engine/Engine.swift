@@ -84,6 +84,8 @@ final class Engine {
             activity = ProcessInfo.processInfo.beginActivity(
                 options: [.userInitiated, .latencyCritical], reason: "Feral engine is rendering live audio")
             checkMicrophoneAccess()
+            let workers = core.startWorkers(config.renderThreads ?? RenderCore.automaticWorkers)
+            log("render: \(workers) worker thread(s) beside the audio thread")
             openShow()
             do { try publishLayout(fadeFrames: 0) } catch { log("error: \(error); playing silence until the show or settings are fixed") }
             applyTestSignal()

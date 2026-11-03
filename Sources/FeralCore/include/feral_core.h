@@ -33,6 +33,21 @@ typedef struct feral_core feral_core;
 feral_core *feral_core_create(double sample_rate);
 void feral_core_destroy(feral_core *core);
 
+/// Starts `count` render workers (0 to FERAL_MAX_WORKERS) that share the per-output work (taps,
+/// delays and output processing) with the audio thread; the audio thread does whatever the workers
+/// have not picked up, so a slow worker never loses audio. The result is the same, sample for sample,
+/// with any number of workers. Call once, before rendering starts; returns how many were started.
+int feral_core_start_workers(feral_core *core, int count);
+#define FERAL_MAX_WORKERS 32
+
+/// How many render workers are running.
+int feral_core_workers(const feral_core *core);
+
+/// macOS: the audio device's IOProc workgroup (an os_workgroup_t), which the workers join so they
+/// run as real-time threads alongside the audio thread on the performance cores. The core retains
+/// it. Null leaves the workers out of any workgroup. Ignored elsewhere.
+void feral_core_set_workgroup(feral_core *core, void *workgroup);
+
 /// The longest delay the core plays, in samples (FERAL_MAX_DELAY_SECONDS at the core's rate).
 double feral_core_max_delay(const feral_core *core);
 

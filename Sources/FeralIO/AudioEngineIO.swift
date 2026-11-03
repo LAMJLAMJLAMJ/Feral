@@ -148,6 +148,10 @@ public final class AudioEngineIO {
         procID = proc
         addListeners(dev)
         try check(AudioDeviceStart(dev.id, proc), "starting \(dev.name)")
+        if feral_core_workers(core.pointer) > 0 {
+            let status = feral_io_share_workgroup(core.pointer, dev.id)
+            if status != noErr { log("audio: \(dev.name) has no audio workgroup (\(status)); render workers run without it") }
+        }
 
         state = .running(device: dev.name)
         log("audio: running on \(dev.name) (\(dev.transport), UID \(dev.uid)) at \(Int(config.sampleRate)) Hz, "

@@ -9,6 +9,15 @@
 #include <cstdlib>
 #include <cstring>
 #include <mutex>
+#include <thread>
+#include <vector>
+
+#ifdef __APPLE__
+#include <mach/mach.h>
+#include <mach/mach_time.h>
+#include <mach/thread_policy.h>
+#include <os/workgroup.h>
+#endif
 
 using feral::RenderState;
 using feral::Tap;
@@ -290,9 +299,43 @@ inline float flushTiny(float v) { return std::fabs(v) < 1e-20f ? 0.0f : v; }
 
 using namespace feral;
 
+/// The per-output work of one block, as the audio thread hands it to the workers.
+struct RenderJob {
+    float *const *outputs = nullptr;
+    int frames = 0;
+    uint32_t block = 0;
+    int lines = 0;
+    const RenderState *next = nullptr;
+    const feral_motion_params *motion = nullptr;
+    int rendered = 0;
+};
+
+/// Render workers. Each block the audio thread writes the job, then publishes a ticket holding the
+/// number of chunks (of kChunkOutputs outputs each) and wakes the workers; everyone, the audio
+/// thread too, takes chunk numbers from the ticket until none are left, and the audio thread waits
+/// for the chunks already taken. A ticket taken from an earlier block holds a number past its own
+/// chunk count, so a late worker does nothing.
+struct WorkerPool {
+    static constexpr int kChunkOutputs = 4;
+    std::vector<std::thread> threads;
+    std::atomic<uint32_t> generation{0};
+    std::atomic<bool> quit{false};
+    std::atomic<uint64_t> ticket{0}; // chunk count << 32 | next chunk
+    std::atomic<int> chunksDone{0};
+    std::atomic<uint32_t> active{0};
+    RenderJob job;
+#ifdef __APPLE__
+    std::mutex workgroupMutex;
+    std::vector<os_workgroup_t> retained; // every workgroup ever set, released on destroy
+    std::atomic<os_workgroup_t> workgroup{nullptr};
+    std::atomic<uint32_t> workgroupSeq{0};
+#endif
+};
+
 struct feral_core {
     double sampleRate;
     double maxDelay;
+    WorkerPool *pool = nullptr;
 
     // Shared between the threads. The control thread stores a new state into latest; the audio
     // thread loads it at the start of each buffer and, once it has switched, stores the state's
@@ -375,6 +418,10 @@ struct feral_core {
     Voice *outputVoices(int out) { return voices.data() + static_cast<size_t>(out) * kVoicesPerOutput; }
 };
 
+namespace {
+void workerMain(feral_core *core);
+}
+
 extern "C" {
 
 feral_motion_params feral_motion_defaults(double sample_rate) {
@@ -423,8 +470,49 @@ feral_core *feral_core_create(double sample_rate) {
     return core;
 }
 
+int feral_core_start_workers(feral_core *core, int count) {
+    if (core->pool || count <= 0) return feral_core_workers(core);
+    core->pool = new WorkerPool;
+    const int n = std::min(count, FERAL_MAX_WORKERS);
+    for (int i = 0; i < n; ++i) core->pool->threads.emplace_back(workerMain, core);
+    return n;
+}
+
+int feral_core_workers(const feral_core *core) { return core->pool ? static_cast<int>(core->pool->threads.size()) : 0; }
+
+void feral_core_set_workgroup(feral_core *core, void *workgroup) {
+#ifdef __APPLE__
+    if (!core->pool) return;
+    WorkerPool &p = *core->pool;
+    std::lock_guard<std::mutex> lock(p.workgroupMutex);
+    auto wg = static_cast<os_workgroup_t>(workgroup);
+    if (wg) {
+        os_retain(wg);
+        p.retained.push_back(wg);
+    }
+    p.workgroup.store(wg, std::memory_order_release);
+    p.workgroupSeq.fetch_add(1, std::memory_order_acq_rel);
+    // Wake the workers so they join it before the next block.
+    p.generation.fetch_add(1, std::memory_order_release);
+    p.generation.notify_all();
+#else
+    (void)core;
+    (void)workgroup;
+#endif
+}
+
 void feral_core_destroy(feral_core *core) {
     if (!core) return;
+    if (WorkerPool *p = core->pool) {
+        p->quit.store(true, std::memory_order_release);
+        p->generation.fetch_add(1, std::memory_order_release);
+        p->generation.notify_all();
+        for (std::thread &t : p->threads) t.join();
+#ifdef __APPLE__
+        for (os_workgroup_t wg : p->retained) os_release(wg);
+#endif
+        delete p;
+    }
     for (RenderState *s : core->published) delete s;
     std::free(core->lineMemory);
     std::free(core->inputScratch);
@@ -1009,6 +1097,122 @@ void processInputs(feral_core *core, const RenderState *next, const float *const
     }
 }
 
+inline void cpuRelax() {
+#if defined(__aarch64__) || defined(__arm64__)
+    __asm__ __volatile__("yield");
+#elif defined(__x86_64__) || defined(__i386__)
+    __builtin_ia32_pause();
+#endif
+}
+
+/// Plays outputs [first, last): their taps, then each output's processing. Each output touches only
+/// its own voices, runtime and alignment line, so different outputs can run on different threads.
+/// Returns the voices still playing.
+uint32_t renderOutputs(feral_core *core, const RenderJob &job, int first, int last) {
+    const int frames = job.frames, lines = job.lines;
+    const uint32_t block = job.block;
+    const RenderState *next = job.next;
+    const feral_motion_params &motion = *job.motion;
+    uint32_t active = 0;
+    for (int out = first; out < last; ++out) {
+        float *y = job.outputs[out];
+        if (!y) continue;
+        std::fill(y, y + frames, 0.0f);
+        if (out >= core->voiceOutputs && !(next && out < next->outputs)) continue;
+
+        Voice *vs = core->outputVoices(out);
+        int count = out < core->voiceOutputs ? core->voiceCount[out] : 0;
+        int kept = 0;
+        for (int i = 0; i < count; ++i) {
+            Voice &v = vs[i];
+            float g0, g1;
+            v.advanceGain(frames, g0, g1);
+            if (v.kind == FERAL_TAP_GAIN) {
+                if (const float *x = v.input < lines ? core->inputSources[v.input] : nullptr) {
+                    if (g0 == g1) accumulate(y, x, g1, frames);
+                    else accumulateRamp(y, x, g0, g1, frames);
+                }
+            } else {
+                const DelayPlan plan = advance(v.delay, motion, frames);
+                if (v.input < lines) core->inputLine(v.input).accumulate(block, frames, plan, g0, g1, y);
+            }
+            // A voice whose tap is gone stays until it has faded out.
+            if (v.live || v.gain != 0.0f) vs[kept++] = v;
+        }
+        if (out < core->voiceOutputs) core->voiceCount[out] = kept;
+        active += static_cast<uint32_t>(kept);
+
+        const bool inState = next && out < next->outputs;
+        processOutput(core, out, inState ? next->outputParams[out] : kPlain, inState ? next->limiterRelease[out] : 0,
+                      motion, block, y, frames);
+    }
+    return active;
+}
+
+/// Takes chunks from the current ticket and plays them, until none are left.
+void runChunks(feral_core *core) {
+    WorkerPool &p = *core->pool;
+    for (;;) {
+        const uint64_t t = p.ticket.fetch_add(1, std::memory_order_acq_rel);
+        const auto chunk = static_cast<uint32_t>(t), chunks = static_cast<uint32_t>(t >> 32);
+        if (chunk >= chunks) return;
+        const RenderJob &job = p.job;
+        const int first = static_cast<int>(chunk) * WorkerPool::kChunkOutputs;
+        const int last = std::min(job.rendered, first + WorkerPool::kChunkOutputs);
+        const uint32_t active = renderOutputs(core, job, first, last);
+        p.active.fetch_add(active, std::memory_order_relaxed);
+        p.chunksDone.fetch_add(1, std::memory_order_release);
+    }
+}
+
+#ifdef __APPLE__
+/// Makes the calling thread a real-time thread, as Core Audio's own is, so it can join the device's
+/// workgroup.
+void makeRealtime(double sampleRate) {
+    mach_timebase_info_data_t tb;
+    mach_timebase_info(&tb);
+    const double ticksPerSecond = 1e9 * tb.denom / tb.numer;
+    const double period = 256.0 / sampleRate; // a typical live buffer
+    thread_time_constraint_policy_data_t policy;
+    policy.period = static_cast<uint32_t>(period * ticksPerSecond);
+    policy.computation = static_cast<uint32_t>(period * 0.5 * ticksPerSecond);
+    policy.constraint = static_cast<uint32_t>(period * ticksPerSecond);
+    policy.preemptible = 1;
+    thread_policy_set(mach_thread_self(), THREAD_TIME_CONSTRAINT_POLICY, reinterpret_cast<thread_policy_t>(&policy),
+                      THREAD_TIME_CONSTRAINT_POLICY_COUNT);
+}
+#endif
+
+/// A worker: waits for a block, then takes chunks like the audio thread does.
+void workerMain(feral_core *core) {
+    WorkerPool &p = *core->pool;
+#ifdef __APPLE__
+    makeRealtime(core->sampleRate);
+    os_workgroup_t joined = nullptr;
+    os_workgroup_join_token_s token{};
+    uint32_t joinedSeq = 0;
+#endif
+    uint32_t seen = p.generation.load(std::memory_order_acquire);
+    while (!p.quit.load(std::memory_order_acquire)) {
+#ifdef __APPLE__
+        // Follow the device's workgroup (it changes when the device is reopened).
+        if (const uint32_t seq = p.workgroupSeq.load(std::memory_order_acquire); seq != joinedSeq) {
+            if (joined) os_workgroup_leave(joined, &token);
+            joined = p.workgroup.load(std::memory_order_acquire);
+            if (joined && os_workgroup_join(joined, &token) != 0) joined = nullptr;
+            joinedSeq = seq;
+        }
+#endif
+        p.generation.wait(seen, std::memory_order_acquire);
+        seen = p.generation.load(std::memory_order_acquire);
+        if (p.quit.load(std::memory_order_acquire)) break;
+        runChunks(core);
+    }
+#ifdef __APPLE__
+    if (joined) os_workgroup_leave(joined, &token);
+#endif
+}
+
 void renderBlock(feral_core *core, const float *const *inputs, int num_inputs, float *const *outputs,
                  int num_outputs, int frames) {
     RenderState *previous = core->current;
@@ -1056,41 +1260,32 @@ void renderBlock(feral_core *core, const float *const *inputs, int num_inputs, f
     for (int in = 0; in < lines; ++in) core->inputLine(in).write(block, source(in), frames);
     core->inputLinesUsed = std::max(core->inputLinesUsed, lines);
 
-    uint32_t active = 0;
-
     const int rendered = std::min(num_outputs, FERAL_MAX_CHANNELS);
-    for (int out = 0; out < rendered; ++out) {
-        float *y = outputs[out];
-        if (!y) continue;
-        std::fill(y, y + frames, 0.0f);
-        if (out >= core->voiceOutputs && !(next && out < next->outputs)) continue;
-
-        Voice *vs = core->outputVoices(out);
-        int count = out < core->voiceOutputs ? core->voiceCount[out] : 0;
-        int kept = 0;
-        for (int i = 0; i < count; ++i) {
-            Voice &v = vs[i];
-            float g0, g1;
-            v.advanceGain(frames, g0, g1);
-            if (v.kind == FERAL_TAP_GAIN) {
-                if (const float *x = source(v.input)) {
-                    if (g0 == g1) accumulate(y, x, g1, frames);
-                    else accumulateRamp(y, x, g0, g1, frames);
-                }
-            } else {
-                const DelayPlan plan = advance(v.delay, motion, frames);
-                if (v.input < lines) core->inputLine(v.input).accumulate(block, frames, plan, g0, g1, y);
-            }
-            // A voice whose tap is gone stays until it has faded out.
-            if (v.live || v.gain != 0.0f) vs[kept++] = v;
+    const RenderJob job{outputs, frames, block, lines, next, &motion, rendered};
+    uint32_t active = 0;
+    WorkerPool *pool = core->pool;
+    const int chunks = (rendered + WorkerPool::kChunkOutputs - 1) / WorkerPool::kChunkOutputs;
+    if (pool && chunks > 1) {
+        // Hand the outputs out in chunks; the audio thread takes chunks too and then waits only for
+        // the ones a worker has already started.
+        pool->job = job;
+        pool->chunksDone.store(0, std::memory_order_relaxed);
+        pool->active.store(0, std::memory_order_relaxed);
+        pool->ticket.store(static_cast<uint64_t>(chunks) << 32, std::memory_order_release);
+        pool->generation.fetch_add(1, std::memory_order_release);
+        pool->generation.notify_all();
+        runChunks(core);
+        while (pool->chunksDone.load(std::memory_order_acquire) < chunks) cpuRelax();
+        active = pool->active.load(std::memory_order_relaxed);
+    } else {
+        active = renderOutputs(core, job, 0, rendered);
+    }
+    // The highest output whose alignment line was written.
+    for (int out = rendered - 1; out >= 0; --out) {
+        if (outputs[out] && (out < core->voiceOutputs || (next && out < next->outputs))) {
+            core->outputLinesUsed = std::max(core->outputLinesUsed, out + 1);
+            break;
         }
-        if (out < core->voiceOutputs) core->voiceCount[out] = kept;
-        active += static_cast<uint32_t>(kept);
-
-        const bool inState = next && out < next->outputs;
-        processOutput(core, out, inState ? next->outputParams[out] : kPlain, inState ? next->limiterRelease[out] : 0,
-                      motion, block, y, frames);
-        core->outputLinesUsed = std::max(core->outputLinesUsed, out + 1);
     }
     core->writeIndex = block + static_cast<uint32_t>(frames);
     core->activeTaps.store(active, std::memory_order_relaxed);
