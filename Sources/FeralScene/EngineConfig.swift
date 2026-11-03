@@ -19,6 +19,13 @@ public struct EngineConfig: Codable, Equatable {
     public var firstInputChannel: Int
     /// The device channel (from 1) that engine output 1 plays on. Later outputs follow in order.
     public var firstOutputChannel: Int
+    /// A free patch in place of firstInputChannel: the device channel (from 1) each engine input
+    /// reads, in order from input 1; 0 leaves an input unpatched, as do inputs past the end. Several
+    /// inputs may read the same device channel. Set from the app's Patch window.
+    public var inputPatch: [Int]?
+    /// A free patch in place of firstOutputChannel: the device channel (from 1) each engine output
+    /// plays on; 0 leaves an output unpatched. A device channel takes at most one output.
+    public var outputPatch: [Int]?
     /// The fixed gain matrix, as routes. Empty means every input straight to the output with its
     /// number (a passthrough).
     public var routes: [Route]
@@ -67,6 +74,11 @@ public struct EngineConfig: Codable, Equatable {
     /// The MIDI sources to listen to (a name or part of one); none listens to every source. The
     /// engine's own "Feral" destination always listens.
     public var midiInputs: [String]?
+    /// Render worker threads beside the audio thread (0 to 32); none picks one fewer than the Mac's
+    /// performance cores. 0 renders on the audio thread alone.
+    public var renderThreads: Int?
+    /// The binaural monitor for headphones (see MonitorSettings); none is off.
+    public var monitor: MonitorSettings?
 
     public init(device: String? = nil, sampleRate: Double = 48_000, bufferFrames: Int = 64,
                 inputs: Int = 128, outputs: Int = 128, firstInputChannel: Int = 1, firstOutputChannel: Int = 1,
@@ -85,6 +97,8 @@ public struct EngineConfig: Codable, Equatable {
         self.outputs = outputs
         self.firstInputChannel = firstInputChannel
         self.firstOutputChannel = firstOutputChannel
+        self.inputPatch = nil
+        self.outputPatch = nil
         self.routes = routes
         self.refuseAggregateDevices = refuseAggregateDevices
         self.testSignal = testSignal
@@ -110,10 +124,10 @@ public struct EngineConfig: Codable, Equatable {
     }
 
     enum CodingKeys: String, CodingKey {
-        case device, sampleRate, bufferFrames, inputs, outputs, firstInputChannel, firstOutputChannel, routes,
+        case device, sampleRate, bufferFrames, inputs, outputs, firstInputChannel, firstOutputChannel, inputPatch, outputPatch, routes,
              refuseAggregateDevices, testSignal, testSignalDB, testSignalHz, speakers, groups, sources, lfeOutputs,
              airTemperatureC, delayGlidePercent, delayJumpMS, delayCrossfadeMS, groupCrossfadeMS, testMotion, show,
-             controlAddress, controlPort, oscAddress, oscPort, midi, midiInputs
+             controlAddress, controlPort, oscAddress, oscPort, midi, midiInputs, renderThreads, monitor
     }
 
     /// Every key is optional in the file; missing ones take the defaults above.
@@ -127,6 +141,8 @@ public struct EngineConfig: Codable, Equatable {
         outputs = try c.decodeIfPresent(Int.self, forKey: .outputs) ?? d.outputs
         firstInputChannel = try c.decodeIfPresent(Int.self, forKey: .firstInputChannel) ?? d.firstInputChannel
         firstOutputChannel = try c.decodeIfPresent(Int.self, forKey: .firstOutputChannel) ?? d.firstOutputChannel
+        inputPatch = try c.decodeIfPresent([Int].self, forKey: .inputPatch)
+        outputPatch = try c.decodeIfPresent([Int].self, forKey: .outputPatch)
         routes = try c.decodeIfPresent([Route].self, forKey: .routes) ?? d.routes
         refuseAggregateDevices = try c.decodeIfPresent(Bool.self, forKey: .refuseAggregateDevices) ?? d.refuseAggregateDevices
         testSignal = try c.decodeIfPresent(TestSignal.self, forKey: .testSignal) ?? d.testSignal
@@ -149,6 +165,8 @@ public struct EngineConfig: Codable, Equatable {
         oscPort = try c.decodeIfPresent(Int.self, forKey: .oscPort) ?? d.oscPort
         midi = try c.decodeIfPresent(Bool.self, forKey: .midi) ?? d.midi
         midiInputs = try c.decodeIfPresent([String].self, forKey: .midiInputs)
+        renderThreads = try c.decodeIfPresent(Int.self, forKey: .renderThreads)
+        monitor = try c.decodeIfPresent(MonitorSettings.self, forKey: .monitor)
     }
 
     /// True when sources are rendered to speaker groups, rather than only the fixed routing played.
@@ -159,6 +177,32 @@ public struct EngineConfig: Codable, Equatable {
         device == o.device && sampleRate == o.sampleRate && bufferFrames == o.bufferFrames && inputs == o.inputs
             && outputs == o.outputs && firstInputChannel == o.firstInputChannel
             && firstOutputChannel == o.firstOutputChannel && refuseAggregateDevices == o.refuseAggregateDevices
+            && inputPatch == o.inputPatch && outputPatch == o.outputPatch && monitor?.channels == o.monitor?.channels
+    }
+
+    /// The core renders Binaural L and R as two outputs after Feral's own, when there is room.
+    public var hasMonitorOutputs: Bool { outputs + 2 <= Routing.maxChannels }
+
+    /// The card channel (from 1, 0 for none) every output the core renders plays on: Feral's
+    /// outputs, then Binaural L and R.
+    public var renderedOutputChannels: [Int] {
+        hasMonitorOutputs ? outputChannels + (monitor?.channels ?? [0, 0]) : outputChannels
+    }
+
+    /// The device channel (from 1) each engine input reads, 0 for none: inputPatch, or in order from
+    /// firstInputChannel.
+    public var inputChannels: [Int] {
+        Self.patch(inputPatch, count: inputs, first: firstInputChannel)
+    }
+
+    /// The device channel (from 1) each engine output plays on, 0 for none.
+    public var outputChannels: [Int] {
+        Self.patch(outputPatch, count: outputs, first: firstOutputChannel)
+    }
+
+    static func patch(_ patch: [Int]?, count: Int, first: Int) -> [Int] {
+        guard let patch else { return (0..<count).map { first + $0 } }
+        return (0..<count).map { $0 < patch.count ? max(patch[$0], 0) : 0 }
     }
 
     /// How delays move, in samples at this sample rate.
@@ -199,6 +243,18 @@ public struct EngineConfig: Codable, Equatable {
         guard firstInputChannel >= 1, firstOutputChannel >= 1 else {
             throw ConfigError("firstInputChannel and firstOutputChannel count from 1")
         }
+        if let p = inputPatch, p.contains(where: { $0 < 0 }) {
+            throw ConfigError("inputPatch holds device channels from 1, or 0 for none")
+        }
+        if let p = outputPatch {
+            guard !p.contains(where: { $0 < 0 }) else { throw ConfigError("outputPatch holds device channels from 1, or 0 for none") }
+            var seen = Set<Int>()
+            for (k, c) in p.prefix(outputs).enumerated() where c > 0 {
+                guard seen.insert(c).inserted else {
+                    throw ConfigError("outputPatch: device channel \(c) is given to more than one output (output \(k + 1) and an earlier one)")
+                }
+            }
+        }
         guard testSignalDB <= 0 else { throw ConfigError("testSignalDB must be 0 or below") }
         guard testSignalHz >= 10, testSignalHz <= 20_000 else { throw ConfigError("testSignalHz must be from 10 to 20000") }
         guard (1...65_535).contains(controlPort) else { throw ConfigError("controlPort must be from 1 to 65535") }
@@ -217,6 +273,8 @@ public struct EngineConfig: Codable, Equatable {
             throw ConfigError("delayJumpMS must be 0 or more and delayCrossfadeMS from 1 to 1000")
         }
         guard (0...10_000).contains(groupCrossfadeMS) else { throw ConfigError("groupCrossfadeMS must be from 0 to 10000") }
+        if let n = renderThreads, !(0...32).contains(n) { throw ConfigError("renderThreads must be from 0 to 32") }
+        try monitor?.check(outputChannels: outputChannels)
         guard (-30...50).contains(airTemperatureC) else { throw ConfigError("airTemperatureC must be from -30 to 50") }
 
         var speakerOutputs = Set<Int>()
@@ -253,7 +311,11 @@ public struct EngineConfig: Codable, Equatable {
                 }
                 guard (0...200).contains(g.precedenceMS) else { throw ConfigError("group \(g.name): precedenceMS must be from 0 to 200") }
             }
-            if g.renderer == .vbap, let d = g.dimensions, d != 2 && d != 3 { throw ConfigError("group \(g.name): dimensions must be 2 or 3") }
+            if let d = g.dimensions, d != 2 && d != 3 { throw ConfigError("group \(g.name): dimensions must be 2 or 3") }
+            guard g.neighbours >= 1, (0...360).contains(g.spread), (1...100).contains(g.tightness) else {
+                throw ConfigError("group \(g.name): neighbours must be 1 or more, spread from 0 to 360 and tightness from 1 to 100")
+            }
+            guard (3...6).contains(g.panLawDB) else { throw ConfigError("group \(g.name): panLawDB must be from 3 to 6") }
             guard g.rolloff >= 0, g.blur >= 0, g.rolloffDB >= 0 else {
                 throw ConfigError("group \(g.name): rolloff, blur and rolloffDB must be 0 or more")
             }

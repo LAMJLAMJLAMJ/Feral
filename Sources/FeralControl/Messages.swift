@@ -27,6 +27,101 @@ public enum Request: Codable, Equatable {
     case refresh
     /// Hands sources' positions back to cues from OSC or tracking.
     case release(sources: [UUID])
+    /// Asks for the level meters (`meters` events, 20 a second) and for the OSC and MIDI the engine
+    /// receives (`activity` events). Both are off until a client asks.
+    case watch(meters: Bool, activity: Bool)
+    /// Asks for the audio devices on the engine's Mac (answered with `devices`).
+    case listDevices
+    /// Switches the engine to an audio device (its UID, or part of its name) for both inputs and
+    /// outputs: written to engine.json as `device`, and the device is reopened at once.
+    case setDevice(device: String)
+    /// Asks for the patch between the sound card's channels and the engine's (answered with `patch`).
+    case getPatch
+    /// Sets the patch: the device channel (from 1, 0 for none) for each engine input and output,
+    /// and for Binaural L and R (`monitor`, two channels). Any may be left out to keep it. Written to
+    /// engine.json as inputPatch, outputPatch and monitor's left and right; the audio reopens on the
+    /// new patch at once (a short gap).
+    case setPatch(inputs: [Int]?, outputs: [Int]?, monitor: [Int]? = nil)
+    /// Sets how many inputs and outputs Feral has (engine.json's inputs and outputs, up to 256);
+    /// either may be left out to keep it. The audio reopens (a short gap).
+    case setChannelCounts(inputs: Int?, outputs: Int?)
+    /// Asks for the spectrum of an engine input (from 1) before and after its EQ and compressor
+    /// (`spectrum` events, 20 a second), or none to stop. The engine analyses one input at a time: the
+    /// newest request wins.
+    case analyse(input: Int?)
+    /// Sets the binaural monitor (engine.json's `monitor`; none turns it off). Written to engine.json
+    /// and played at once; refused if an output is a speaker's.
+    case setMonitor(monitor: MonitorSettings?)
+    /// What the monitor hears: the sources in `solo` through their panning, or (winning over solo)
+    /// the sources in `pfl` straight to the monitor's two outputs in stereo; neither is the whole
+    /// mix. Replaces the last listen from any client.
+    case listen(solo: [UUID], pfl: [UUID])
+}
+
+/// One input's spectrum before and after its EQ and compressor: dB per point, the points spaced
+/// evenly on a log scale from FeralScene's Spectrum.lowHz to highHz.
+public struct SpectrumFrame: Codable, Equatable {
+    /// The engine input, from 1.
+    public var input: Int
+    public var pre: [Float]
+    public var post: [Float]
+
+    public init(input: Int, pre: [Float], post: [Float]) {
+        self.input = input; self.pre = pre; self.post = post
+    }
+}
+
+/// The patch between the sound card and the engine, for the app's Patch window.
+public struct PatchInfo: Codable, Equatable {
+    /// The device channel (from 1, 0 for none) each engine input reads, from input 1.
+    public var inputs: [Int]
+    /// The device channel (from 1, 0 for none) each engine output plays on.
+    public var outputs: [Int]
+    /// The open device and its channels; nil while none is open.
+    public var device: String?
+    public var deviceInputs: Int
+    public var deviceOutputs: Int
+    /// engine.json has a free patch (inputPatch / outputPatch) rather than channels in order.
+    public var customInputs: Bool
+    public var customOutputs: Bool
+    /// The device channel (from 1, 0 for none) Binaural L and R play on; none when Feral has too
+    /// many outputs to leave room for them.
+    public var monitor: [Int]?
+
+    public init(inputs: [Int], outputs: [Int], device: String?, deviceInputs: Int, deviceOutputs: Int,
+                customInputs: Bool, customOutputs: Bool, monitor: [Int]? = nil) {
+        self.inputs = inputs; self.outputs = outputs; self.device = device; self.deviceInputs = deviceInputs
+        self.deviceOutputs = deviceOutputs; self.customInputs = customInputs; self.customOutputs = customOutputs
+        self.monitor = monitor
+    }
+}
+
+/// An audio device on the engine's Mac, as the app's sound card menu lists it.
+public struct AudioDeviceSummary: Codable, Equatable, Identifiable {
+    public var uid: String
+    public var name: String
+    /// "USB", "Thunderbolt", "PCI", "Virtual", "Aggregate", ...
+    public var transport: String
+    public var inputChannels: Int
+    public var outputChannels: Int
+    public var sampleRate: Double
+    public var sampleRates: [Double]
+    public var isAggregate: Bool
+
+    public var id: String { uid }
+
+    public init(uid: String, name: String, transport: String, inputChannels: Int, outputChannels: Int,
+                sampleRate: Double, sampleRates: [Double], isAggregate: Bool) {
+        self.uid = uid; self.name = name; self.transport = transport; self.inputChannels = inputChannels
+        self.outputChannels = outputChannels; self.sampleRate = sampleRate; self.sampleRates = sampleRates
+        self.isAggregate = isAggregate
+    }
+
+    /// engine.json's `device` names this device (its UID, or part of its name, as the engine matches it).
+    public func matches(_ setting: String?) -> Bool {
+        guard let setting, !setting.isEmpty else { return false }
+        return uid == setting || name.localizedCaseInsensitiveContains(setting)
+    }
 }
 
 /// The engine's state besides the show itself.
@@ -47,14 +142,28 @@ public struct EngineStatus: Codable, Equatable {
     public var osc: String
     /// "4 sources", "off".
     public var midi: String
+    /// The UDP port the engine's OSC listens on, once it is listening.
+    public var oscPort: Int?
+    /// The sources the monitor solos and has on PFL.
+    public var solo: [UUID]
+    public var pfl: [UUID]
+    /// engine.json's monitor, and what it plays: "outputs 63/64, spherical head model, 24 speakers",
+    /// or why it is off.
+    public var monitor: MonitorSettings?
+    public var monitorInfo: String
 
     public init(version: String, showPath: String, unsaved: Int = 0, currentCue: UUID? = nil, nextCue: UUID? = nil,
-                fading: [UUID] = [], audio: String = "", owners: [UUID: PositionOwner] = [:], osc: String = "", midi: String = "") {
+                fading: [UUID] = [], audio: String = "", owners: [UUID: PositionOwner] = [:], osc: String = "", midi: String = "",
+                oscPort: Int? = nil, solo: [UUID] = [], pfl: [UUID] = [], monitor: MonitorSettings? = nil, monitorInfo: String = "") {
         self.version = version; self.showPath = showPath; self.unsaved = unsaved; self.currentCue = currentCue
         self.nextCue = nextCue; self.fading = fading; self.audio = audio; self.owners = owners; self.osc = osc; self.midi = midi
+        self.oscPort = oscPort
+        self.solo = solo; self.pfl = pfl; self.monitor = monitor; self.monitorInfo = monitorInfo
     }
 
-    enum CodingKeys: String, CodingKey { case version, showPath, unsaved, currentCue, nextCue, fading, audio, owners, osc, midi }
+    enum CodingKeys: String, CodingKey {
+        case version, showPath, unsaved, currentCue, nextCue, fading, audio, owners, osc, midi, oscPort, solo, pfl, monitor, monitorInfo
+    }
 
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -70,6 +179,11 @@ public struct EngineStatus: Codable, Equatable {
         owners = Dictionary(uniqueKeysWithValues: byText.compactMap { k, v in UUID(uuidString: k).map { ($0, v) } })
         osc = try c.decodeIfPresent(String.self, forKey: .osc) ?? ""
         midi = try c.decodeIfPresent(String.self, forKey: .midi) ?? ""
+        oscPort = try c.decodeIfPresent(Int.self, forKey: .oscPort)
+        solo = try c.decodeIfPresent([UUID].self, forKey: .solo) ?? []
+        pfl = try c.decodeIfPresent([UUID].self, forKey: .pfl) ?? []
+        monitor = try c.decodeIfPresent(MonitorSettings.self, forKey: .monitor)
+        monitorInfo = try c.decodeIfPresent(String.self, forKey: .monitorInfo) ?? ""
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -84,6 +198,11 @@ public struct EngineStatus: Codable, Equatable {
         try c.encode(Dictionary(uniqueKeysWithValues: owners.map { ($0.key.uuidString, $0.value) }), forKey: .owners)
         try c.encode(osc, forKey: .osc)
         try c.encode(midi, forKey: .midi)
+        try c.encodeIfPresent(oscPort, forKey: .oscPort)
+        try c.encode(solo, forKey: .solo)
+        try c.encode(pfl, forKey: .pfl)
+        try c.encodeIfPresent(monitor, forKey: .monitor)
+        try c.encode(monitorInfo, forKey: .monitorInfo)
     }
 
     /// Who moves a source's position now.
@@ -103,6 +222,69 @@ public struct FullState: Codable, Equatable {
     }
 }
 
+/// The engine's level meters at one moment, for clients that asked (`watch`). Levels are dBFS to a
+/// tenth of a dB, and `MeterFrame.silence` (-120) for nothing at all. Input n (from 1) is index n - 1,
+/// the engine input sources name; output n is the engine output speakers name.
+public struct MeterFrame: Codable, Equatable {
+    public static let silence: Float = -120
+
+    /// The highest sample since the last frame, per engine input.
+    public var inputPeak: [Float]
+    /// RMS over about 300 ms, per engine input.
+    public var inputRMS: [Float]
+    public var outputPeak: [Float]
+    public var outputRMS: [Float]
+    /// The device channel engine input 1 and output 1 are on (engine.json's firstInputChannel and
+    /// firstOutputChannel), so a meter can say which device channel it is.
+    public var firstInputChannel: Int
+    public var firstOutputChannel: Int
+    /// The render's highest share of a buffer's time in the last few seconds (1 is 100 %).
+    public var load: Float
+    /// Each input compressor's deepest gain reduction since the last frame, in dB (0 or more, to a
+    /// tenth); none from engines before compressors.
+    public var inputReduction: [Float]?
+    /// The same per multiband band (low, mid, high) per input.
+    public var inputBandReduction: [[Float]]?
+
+    public init(inputPeak: [Float], inputRMS: [Float], outputPeak: [Float], outputRMS: [Float],
+                firstInputChannel: Int = 1, firstOutputChannel: Int = 1, load: Float = 0, inputReduction: [Float]? = nil,
+                inputBandReduction: [[Float]]? = nil) {
+        self.inputPeak = inputPeak; self.inputRMS = inputRMS; self.outputPeak = outputPeak; self.outputRMS = outputRMS
+        self.firstInputChannel = firstInputChannel; self.firstOutputChannel = firstOutputChannel; self.load = load
+        self.inputReduction = inputReduction
+        self.inputBandReduction = inputBandReduction
+    }
+
+    /// A linear level as the frame carries it: dBFS to 0.1 dB, at least `silence`.
+    public static func dB(_ linear: Float) -> Float {
+        guard linear > 0 else { return silence }
+        return max(silence, Float((200 * log10(Double(linear))).rounded() / 10))
+    }
+}
+
+/// An OSC or MIDI message the engine received and what it did with it, for clients that asked
+/// (`watch`), such as the app's control monitor.
+public struct ControlActivity: Codable, Equatable {
+    public enum Kind: String, Codable { case osc, midi }
+
+    /// Seconds since 1970.
+    public var time: Double
+    public var kind: Kind
+    /// Who sent it: "127.0.0.1:53000", or the MIDI source's name.
+    public var from: String
+    /// The message as text: "/feral/go 3", "program change 5 on channel 1".
+    public var message: String
+    /// What the engine did: "GO cue 3", or why it did nothing.
+    public var result: String
+    /// False when nothing listens for it or it could not be done.
+    public var handled: Bool
+
+    public init(time: Double, kind: Kind, from: String, message: String, result: String, handled: Bool) {
+        self.time = time; self.kind = kind; self.from = from; self.message = message; self.result = result
+        self.handled = handled
+    }
+}
+
 /// What the engine sends its clients.
 public enum Event: Codable, Equatable {
     case state(state: FullState)
@@ -110,6 +292,18 @@ public enum Event: Codable, Equatable {
     case status(status: EngineStatus)
     /// A request was refused, or something went wrong; the show did not change.
     case error(message: String)
+    /// Level meters, 20 a second, to clients that asked.
+    case meters(frame: MeterFrame)
+    /// OSC and MIDI received in the last moment, to clients that asked. `dropped` counts messages
+    /// left out because too many came at once (a tracker streaming positions).
+    case activity(lines: [ControlActivity], dropped: Int)
+    /// The audio devices on the engine's Mac, and engine.json's `device` setting.
+    case devices(list: [AudioDeviceSummary], selected: String?)
+    /// The patch between the sound card and the engine: to the client that asked, and to everyone
+    /// when it changes.
+    case patch(patch: PatchInfo)
+    /// The spectrum a client asked for (`analyse`).
+    case spectrum(frame: SpectrumFrame)
 }
 
 /// Newline-framed JSON.
@@ -171,7 +365,7 @@ public struct MirroredShow {
             seq = n
         case .status(let s):
             status = s
-        case .error:
+        case .error, .meters, .activity, .devices, .patch, .spectrum:
             break
         }
         return true

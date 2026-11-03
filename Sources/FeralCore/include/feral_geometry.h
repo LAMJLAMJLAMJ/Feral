@@ -32,6 +32,8 @@ typedef struct feral_delay_params {
     double reference_distance;
     /// d_0 in metres; below 0 means the nearest speaker's distance, so the nearest gets only tau_0.
     double distance_offset;
+    /// Non-zero measures distances in plan only (2D), ignoring height; 0 uses full 3D distances.
+    int planar;
 } feral_delay_params;
 
 /// The speed of sound in dry air at a temperature in degrees Celsius.
@@ -46,8 +48,47 @@ void feral_delay_render(const feral_point *speakers, const double *weights, int 
 //   g_k = w_k / (|p_s - p_k|^2 + r_s^2) ^ (a / 2),  sum of g_k^2 = 1,  a = R / (20 log10 2)
 
 /// Writes count gains. blur is r_s in metres, rolloff_db is R in dB per doubling of distance.
+/// planar non-zero measures distances in plan only (2D), ignoring height.
 void feral_dbap_render(const feral_point *speakers, const double *weights, int count, feral_point source,
-                       double blur, double rolloff_db, float *gains);
+                       double blur, double rolloff_db, int planar, float *gains);
+
+// ----- KNN and SPCAP ------------------------------------------------------------------------------
+//
+// Both pan by direction from a reference point, like VBAP, but without triangles.
+//
+// KNN (k nearest neighbours) plays a source on as few speakers as possible. With theta_k the angle
+// from the source to speaker k, sorted so theta_1 is the nearest, and r = spread + 5 degrees:
+//   w_k = max(0, 1 - (theta_k - theta_1) / r)       for the K nearest,
+// and the (K+1)th fades in only within 5 degrees of the Kth, so a moving source never jumps.
+// On a speaker with spread 0, only that speaker plays.
+//
+// SPCAP (speaker-placement correction amplitude panning, Sadek and Kyriakakis 2004):
+//   P_k = (0.5 (1 + cos theta_k)) ^ tightness,  beta_k = sum_j 0.5 (1 + cos phi_kj),  g_k = P_k / beta_k
+// where phi_kj is the angle between speakers k and j: crowded speakers are turned down so they
+// neither pull the image nor get louder.
+//
+// Both are then power-normalised, scaled by the distance roll-off min(1, (d_r / d) ^ rolloff) as
+// VBAP is, and by the speakers' weights. planar measures directions and distances in plan only (2D).
+
+typedef struct feral_pan_params {
+    feral_point reference;
+    /// Non-zero is 2D (flat): azimuth and distance in plan only.
+    int planar;
+    double rolloff;
+    /// d_r in metres; 0 or less means the speakers' mean distance from the reference.
+    double reference_distance;
+    /// KNN: K, at least 1.
+    int neighbours;
+    /// KNN: degrees.
+    double spread;
+    /// SPCAP: the cardioid's exponent, 1 or more (higher is narrower).
+    double tightness;
+} feral_pan_params;
+
+void feral_knn_render(const feral_point *speakers, const double *weights, int count, feral_point source,
+                      const feral_pan_params *params, float *gains);
+void feral_spcap_render(const feral_point *speakers, const double *weights, int count, feral_point source,
+                        const feral_pan_params *params, float *gains);
 
 // ----- VBAP ---------------------------------------------------------------------------------------
 //
@@ -65,7 +106,7 @@ typedef struct feral_vbap feral_vbap;
 feral_vbap *feral_vbap_create(const feral_point *speakers, int count, feral_point reference, int dimensions);
 void feral_vbap_destroy(feral_vbap *vbap);
 
-/// 2 or 3.
+/// 2 or 3. 2D is flat: it pans by azimuth only and measures distances in plan, ignoring height.
 int feral_vbap_dimensions(const feral_vbap *vbap);
 
 /// Triangles (3D) or pairs (2D) that include at least one real speaker.

@@ -269,7 +269,7 @@ public enum KnownAnswers {
     static func dbap() -> Result {
         let speakers = [feral_point(x: 1, y: 0, z: 0), feral_point(x: -2, y: 0, z: 0)]
         var g = [Float](repeating: 0, count: 2)
-        feral_dbap_render(speakers, nil, 2, feral_point(x: 0, y: 0, z: 0), 0, 6.0206, &g)
+        feral_dbap_render(speakers, nil, 2, feral_point(x: 0, y: 0, z: 0), 0, 6.0206, 0, &g)
         return check("DBAP gains", [("1 m", Double(g[0]), 2 / 5.0.squareRoot()), ("2 m", Double(g[1]), 1 / 5.0.squareRoot())],
                      tolerance: 1e-4)
     }

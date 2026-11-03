@@ -21,6 +21,9 @@ final class MessageTests: XCTestCase {
             .recall(snapshot: "3", fadeSeconds: nil),
             .recall(snapshot: "3", fadeSeconds: 2.5),
             .go(cue: nil), .go(cue: "12.5"), .stopFades, .save, .refresh,
+            .watch(meters: true, activity: false),
+            .getPatch, .setPatch(inputs: [33, 34, 0], outputs: nil), .setPatch(inputs: nil, outputs: [1, 2]),
+            .setChannelCounts(inputs: 32, outputs: nil),
         ]
         for r in requests { try roundTrip(r) }
         let status = EngineStatus(version: "0.3", showPath: "/x.feralshow", unsaved: 2, currentCue: id, fading: [id], audio: "running")
@@ -29,6 +32,12 @@ final class MessageTests: XCTestCase {
             .applied(seq: 5, origin: "app", command: .renameShow(name: "T")),
             .status(status: status),
             .error(message: "no cue 9"),
+            .meters(frame: MeterFrame(inputPeak: [-3.5, MeterFrame.silence], inputRMS: [-12.1, MeterFrame.silence],
+                                      outputPeak: [0], outputRMS: [-9.9], firstInputChannel: 1, firstOutputChannel: 33, load: 0.25)),
+            .activity(lines: [ControlActivity(time: 1_700_000_000.25, kind: .osc, from: "127.0.0.1:5000", message: "/feral/go",
+                                              result: "GO", handled: true)], dropped: 3),
+            .patch(patch: PatchInfo(inputs: [33, 0], outputs: [1, 2, 3], device: "BlackHole 64ch", deviceInputs: 64,
+                                    deviceOutputs: 64, customInputs: true, customOutputs: false)),
         ]
         for e in events { try roundTrip(e) }
     }
@@ -38,6 +47,19 @@ final class MessageTests: XCTestCase {
         XCTAssertEqual(String(decoding: try Wire.encode(Request.go(cue: "12.5")), as: UTF8.self), #"{"go":{"cue":"12.5"}}"# + "\n")
         XCTAssertEqual(try Wire.decode(Request.self, from: Data(#"{"save":{}}"#.utf8)), .save)
         XCTAssertEqual(try Wire.decode(Request.self, from: Data(#"{"recall":{"snapshot":"2"}}"#.utf8)), .recall(snapshot: "2", fadeSeconds: nil))
+    }
+
+    func testMeterLevelsAreTenthsOfADecibel() throws {
+        XCTAssertEqual(MeterFrame.dB(1), 0)
+        XCTAssertEqual(MeterFrame.dB(0.5), -6)
+        XCTAssertEqual(MeterFrame.dB(0.1), -20)
+        XCTAssertEqual(MeterFrame.dB(0), MeterFrame.silence)
+        XCTAssertEqual(MeterFrame.dB(1e-9), MeterFrame.silence)
+        XCTAssertEqual(MeterFrame.dB(2), 6)
+        // Short on the wire: tenths, not long floats.
+        let line = String(decoding: try Wire.encode(Event.meters(frame: MeterFrame(inputPeak: [MeterFrame.dB(0.3)], inputRMS: [],
+                                                                                   outputPeak: [], outputRMS: []))), as: UTF8.self)
+        XCTAssertTrue(line.contains("[-10.5]"), line)
     }
 
     func testLineBufferJoinsAndSplits() throws {

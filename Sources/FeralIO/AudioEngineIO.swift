@@ -129,10 +129,11 @@ public final class AudioEngineIO {
 
         // Re-read the device so the channel counts are the ones at the rate just set.
         let dev = try AudioDevices.device(id: found.id)
-        let inputMap = Self.channelMap(count: config.inputs, first: config.firstInputChannel, available: dev.inputChannels)
-        let outputMap = Self.channelMap(count: config.outputs, first: config.firstOutputChannel, available: dev.outputChannels)
+        let inputMap = Self.channelMap(config.inputChannels, available: dev.inputChannels)
+        // Feral's outputs, then Binaural L and R.
+        let outputMap = Self.channelMap(config.renderedOutputChannels, available: dev.outputChannels)
         let connectedIn = inputMap.filter { $0 >= 0 }.count
-        let connectedOut = outputMap.filter { $0 >= 0 }.count
+        let connectedOut = outputMap.prefix(config.outputs).filter { $0 >= 0 }.count
 
         guard let io = inputMap.withUnsafeBufferPointer({ i in
             outputMap.withUnsafeBufferPointer { o in
@@ -148,6 +149,10 @@ public final class AudioEngineIO {
         procID = proc
         addListeners(dev)
         try check(AudioDeviceStart(dev.id, proc), "starting \(dev.name)")
+        if feral_core_workers(core.pointer) > 0 {
+            let status = feral_io_share_workgroup(core.pointer, dev.id)
+            if status != noErr { log("audio: \(dev.name) has no audio workgroup (\(status)); render workers run without it") }
+        }
 
         state = .running(device: dev.name)
         log("audio: running on \(dev.name) (\(dev.transport), UID \(dev.uid)) at \(Int(config.sampleRate)) Hz, "
@@ -156,7 +161,7 @@ public final class AudioEngineIO {
             + "(device has \(dev.outputChannels)); latency in \(dev.inputLatency), out \(dev.outputLatency) frames")
         if connectedOut < config.outputs {
             log("audio: \(config.outputs - connectedOut) engine output(s) have no device channel; "
-                + "check outputs and firstOutputChannel in engine.json")
+                + "check the output patch (or outputs and firstOutputChannel) in engine.json")
         }
     }
 
@@ -177,6 +182,12 @@ public final class AudioEngineIO {
 
     /// Engine channel k plays on (or reads from) device channel first - 1 + k, or -1 when the
     /// device has no such channel.
+    /// Device channels from 1 (0 for none) as the IOProc's map: channel indexes from 0, -1 for none
+    /// or a channel the device does not have.
+    public static func channelMap(_ channels: [Int], available: Int) -> [Int32] {
+        channels.map { c in c >= 1 && c <= available ? Int32(c - 1) : -1 }
+    }
+
     public static func channelMap(count: Int, first: Int, available: Int) -> [Int32] {
         (0..<count).map { k in
             let c = first - 1 + k

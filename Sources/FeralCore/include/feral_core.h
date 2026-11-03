@@ -3,9 +3,12 @@
 //
 // Threads:
 //   control thread   feral_state_*, feral_core_publish, feral_core_publish_gains, feral_core_collect,
+//                    feral_monitor_*, feral_core_set_monitor,
 //                    feral_core_audio_detached, and the geometry functions in feral_geometry.h
 //   audio thread     feral_core_render (never allocates, locks or logs)
-//   any thread       feral_core_get_stats, feral_core_live_states, feral_core_set_test_signal
+//   any thread       feral_core_get_stats, feral_core_live_states, feral_core_set_test_signal,
+//                    feral_core_set_listen, feral_core_clear_listen,
+//                    feral_core_read_meters (one reader at a time)
 #ifndef FERAL_CORE_H
 #define FERAL_CORE_H
 
@@ -31,6 +34,21 @@ typedef struct feral_core feral_core;
 /// Creates a core for a sample rate, with a delay line for every possible input and output.
 feral_core *feral_core_create(double sample_rate);
 void feral_core_destroy(feral_core *core);
+
+/// Starts `count` render workers (0 to FERAL_MAX_WORKERS) that share the per-output work (taps,
+/// delays and output processing) with the audio thread; the audio thread does whatever the workers
+/// have not picked up, so a slow worker never loses audio. The result is the same, sample for sample,
+/// with any number of workers. Call once, before rendering starts; returns how many were started.
+int feral_core_start_workers(feral_core *core, int count);
+#define FERAL_MAX_WORKERS 32
+
+/// How many render workers are running.
+int feral_core_workers(const feral_core *core);
+
+/// macOS: the audio device's IOProc workgroup (an os_workgroup_t), which the workers join so they
+/// run as real-time threads alongside the audio thread on the performance cores. The core retains
+/// it. Null leaves the workers out of any workgroup. Ignored elsewhere.
+void feral_core_set_workgroup(feral_core *core, void *workgroup);
 
 /// The longest delay the core plays, in samples (FERAL_MAX_DELAY_SECONDS at the core's rate).
 double feral_core_max_delay(const feral_core *core);
@@ -98,6 +116,56 @@ typedef struct feral_output_params {
 /// The parameters of an output with no processing: no delay, flat, unity gain, no limiter, not muted.
 feral_output_params feral_output_defaults(void);
 
+#define FERAL_INPUT_EQ_BANDS 7
+
+/// Bands of the multiband compressor, and the filter sections that split them: in order, the low
+/// band's low-pass twice (a Linkwitz-Riley crossover) and an all-pass at the upper crossover (so the
+/// bands add back up flat), the high-pass at the lower crossover twice, then the upper crossover's
+/// low-pass twice (mid band) and high-pass twice (high band).
+#define FERAL_COMP_BANDS 3
+#define FERAL_CROSSOVER_SECTIONS 9
+
+/// One band of the multiband compressor.
+typedef struct feral_comp_band {
+    float threshold; // linear; 0 leaves the band uncompressed
+    float ratio;     // >= 1
+    float attack;    // per-sample follower factors 0..1
+    float release;
+    float gain;      // linear, after the band's compressor
+} feral_comp_band;
+
+/// One input's processing before it reaches any tap or its delay line: delay, trim and polarity,
+/// EQ, then a compressor.
+typedef struct feral_input_params {
+    /// Delay in samples (to line a source up with its acoustic sound); changes glide or crossfade
+    /// like every other delay (feral_motion_params).
+    float delay;
+    /// Trim times polarity, linear (-1 inverts); changes ramp over one buffer.
+    float trim;
+    /// The EQ bands; {1, 0, 0, 0, 0} passes through. Coefficient changes interpolate over one buffer.
+    feral_biquad eq[FERAL_INPUT_EQ_BANDS];
+    /// The compressor's threshold as a linear level; 0 turns it off.
+    float comp_threshold;
+    /// 1 or more: 4 brings 4 dB over the threshold down to 1 dB over.
+    float comp_ratio;
+    /// The level follower's per-sample attack and release factors (0 to 1; nearer 1 is slower).
+    float comp_attack;
+    float comp_release;
+    /// Gain after the compressor, linear (single or multiband).
+    float comp_makeup;
+    /// Non-zero splits the input into FERAL_COMP_BANDS bands with `crossover` and compresses each
+    /// with its own `bands` entry; comp_threshold and comp_ratio are then not used.
+    int multiband;
+    feral_biquad crossover[FERAL_CROSSOVER_SECTIONS];
+    feral_comp_band bands[FERAL_COMP_BANDS];
+    /// Another input (from 0) whose level also drives this compressor, so a stereo pair is compressed
+    /// alike; -1 for none. Give the two inputs the same parameters and link them to each other.
+    int link;
+} feral_input_params;
+
+/// An input with no processing: flat EQ, no compressor, no link.
+feral_input_params feral_input_defaults(void);
+
 /// Starts an empty state for inputs by outputs (each up to FERAL_MAX_CHANNELS). Every output starts
 /// with no taps and feral_output_defaults(), and the motion is feral_motion_defaults(48000).
 /// Returns null when the sizes are out of range.
@@ -119,6 +187,9 @@ int feral_state_add_delay(feral_state *state, int input, int output, float gain,
 int feral_state_set_output(feral_state *state, int output, const feral_output_params *params);
 
 void feral_state_set_motion(feral_state *state, const feral_motion_params *motion);
+
+/// Sets one input's processing. Returns 0, or -1 when the input is out of range.
+int feral_state_set_input(feral_state *state, int input, const feral_input_params *params);
 
 /// Taps in the state so far.
 size_t feral_state_tap_count(const feral_state *state);
@@ -182,6 +253,74 @@ typedef struct feral_core_stats {
     /// Taps playing now, including ones still fading out.
     uint32_t active_taps;
 } feral_core_stats;
+
+/// Reads the level meters: the first `inputs` engine inputs as they arrive (with the test signal in
+/// place of input 1) and the first `outputs` outputs after their processing, as the device gets them.
+/// *_peak: the highest absolute sample since the last read, linear (reading starts it again from 0).
+/// *_rms: the RMS level averaged over about 300 ms, linear. Any of the arrays may be null.
+/// Any thread, but one reader at a time (the peaks are reset by whoever reads them).
+void feral_core_read_meters(feral_core *core, float *input_peak, float *input_rms, int inputs,
+                            float *output_peak, float *output_rms, int outputs);
+
+/// Reads each input compressor's deepest gain reduction since the last read, in dB (0 or more;
+/// reading starts it again from 0). Any thread, one reader at a time.
+void feral_core_read_reduction(feral_core *core, float *reduction_db, int inputs);
+
+/// Samples the analysis tap keeps (a power of two).
+#define FERAL_ANALYSIS_FRAMES 8192
+
+/// Picks the input (from 0) whose samples the analysis tap keeps, before and after its EQ and
+/// compressor, for a spectrum display; -1 turns it off. Any thread.
+void feral_core_set_analysis_input(feral_core *core, int input);
+
+/// Copies the analysed input's newest `frames` samples (up to FERAL_ANALYSIS_FRAMES) before (pre)
+/// and after (post) its processing, oldest first. Returns how many samples the tap has taken since
+/// the input was picked; when that is fewer than `frames`, the start of each buffer is zeros. One
+/// reader at a time.
+uint64_t feral_core_read_analysis(feral_core *core, float *pre, float *post, int frames);
+
+/// The same per multiband band: reduction_db holds FERAL_COMP_BANDS values per input, input by
+/// input (0 for an input that is not multiband).
+void feral_core_read_band_reduction(feral_core *core, float *reduction_db, int inputs);
+
+// The monitor: a binaural render of the speakers on two outputs, for headphones. The control side
+// builds a monitor (every speaker's output, distance gain and delay, and HRIR pair) and hands it to
+// the core whole; the audio thread convolves each speaker's feed with its pair, 64 samples behind
+// the speakers. What the monitor hears is picked per input: the full mix (nothing soloed), only the
+// soloed inputs through their panning (solo), or the inputs on PFL straight to the two outputs in
+// stereo, with no binaural render and no latency (PFL wins over solo).
+
+typedef struct feral_monitor feral_monitor;
+
+/// The longest HRIR used, in samples (longer ones are cut).
+#define FERAL_MONITOR_MAX_HRIR 512
+/// The longest distance delay a monitor speaker can have, in samples.
+#define FERAL_MONITOR_MAX_DELAY 8192
+
+/// Starts a monitor on outputs left and right (from 0; -1 for none: a monitor with neither is off)
+/// at a linear gain. Control thread.
+feral_monitor *feral_monitor_create(int left_output, int right_output, float gain);
+
+/// Adds a speaker: its output, a linear gain and delay in samples (0 to FERAL_MONITOR_MAX_DELAY) for
+/// its distance, and its HRIR pair (`length` samples each). Returns -1 if the output or the delay is
+/// out of range or the monitor is full (FERAL_MAX_CHANNELS speakers).
+int feral_monitor_add_speaker(feral_monitor *monitor, int output, float gain, int delay, const float *left,
+                              const float *right, int length);
+
+/// Frees a monitor that was never handed to a core.
+void feral_monitor_destroy(feral_monitor *monitor);
+
+/// Hands a monitor to the core (which owns it from now on); the audio thread switches at its next
+/// buffer. Never null: turn the monitor off with one that has no outputs. Control thread; older
+/// monitors are freed by feral_core_collect.
+void feral_core_set_monitor(feral_core *core, feral_monitor *monitor);
+
+/// What the monitor hears from one input (from 0): solo non-zero puts it in the solo; pfl_left and
+/// pfl_right non-zero put it on PFL at those linear gains on the two monitor outputs. Any thread.
+void feral_core_set_listen(feral_core *core, int input, int solo, float pfl_left, float pfl_right);
+
+/// Clears every solo and PFL. Any thread.
+void feral_core_clear_listen(feral_core *core);
 
 /// Reads the counters. When reset_max_load is non-zero, max_load starts again from 0.
 void feral_core_get_stats(feral_core *core, feral_core_stats *stats, int reset_max_load);

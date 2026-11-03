@@ -41,6 +41,219 @@ final class ShowTests: XCTestCase {
             .appendingPathComponent("Test.feralshow")
     }
 
+    // MARK: Source groups
+
+    func testSourceGroupsActLikeVCAs() throws {
+        var state = try imported()
+        let vox = state.show.sources[1], keys = state.show.sources[2]
+        let group = SourceGroup(number: 1, name: "Band", sources: [vox.id, keys.id], gainDB: -6)
+        let change = try state.apply(.setSourceGroup(group: group))
+        XCTAssertEqual(change, .sources([vox.id, keys.id]))
+        XCTAssertEqual(state.sourceConfig(state.source(keys.id)!).gainDB, -10, "the group's gain adds to the source's")
+        XCTAssertFalse(state.sourceConfig(state.source(vox.id)!).mute)
+        var muted = group
+        muted.mute = true
+        try state.apply(.setSourceGroup(group: muted))
+        XCTAssertTrue(state.sourceConfig(state.source(vox.id)!).mute, "a muted group mutes its members")
+        XCTAssertFalse(state.sourceConfig(state.show.sources[0]).mute, "sources outside it play on")
+        try state.apply(.removeSource(id: keys.id))
+        XCTAssertEqual(state.show.sourceGroups[0].sources, [vox.id], "a deleted source leaves its groups")
+        XCTAssertThrowsError(try state.apply(.setSourceGroup(group: SourceGroup(number: 2, name: "X", sources: [UUID()]))))
+        try state.apply(.removeSourceGroup(id: group.id))
+        XCTAssertEqual(state.sourceConfig(state.source(vox.id)!).gainDB, vox.gainDB)
+
+        let json = try JSONEncoder().encode(Command.setSourceGroup(group: group))
+        XCTAssertEqual(try JSONDecoder().decode(Command.self, from: json), .setSourceGroup(group: group))
+    }
+
+    func testPolarRoundTrip() {
+        let p = Position(-3, 4, 0)
+        XCTAssertEqual(p.polar.azimuth, atan2(3.0, 4.0) * 180 / .pi, accuracy: 1e-9, "positive azimuth is to the left (-x)")
+        XCTAssertEqual(p.polar.distance, 5, accuracy: 1e-9)
+        let back = Position(p.polar)
+        XCTAssertEqual(back.x, -3, accuracy: 1e-9)
+        XCTAssertEqual(back.y, 4, accuracy: 1e-9)
+        XCTAssertEqual(Position(Polar(azimuth: 0, elevation: 90, distance: 2)).z, 2, accuracy: 1e-9)
+    }
+
+    func testDeletingTheLastGroupLeavesAValidLayout() throws {
+        var state = ShowState(show: Show(name: "D"), system: SystemLayer(speakers: [
+            Speaker(number: 1, output: 1, position: Position(-4, 0, 5)), Speaker(number: 2, output: 2, position: Position(4, 0, 5)),
+        ]))
+        let g = SpeakerGroup(number: 1, name: "Main", renderer: .delay, speakers: state.system.speakers.map(\.id))
+        try state.apply(.setGroup(group: g))
+        try state.apply(.setSource(source: Source(number: 1, input: 1, position: Position(0, 2, 1.6))))
+        try state.engineConfig(base: EngineConfig()).validate()
+        try state.apply(.removeGroup(id: g.id))
+        let config = state.engineConfig(base: EngineConfig())
+        XCTAssertTrue(config.groups.isEmpty)
+        XCTAssertTrue(config.sources.isEmpty, "with no group the sources play nothing")
+        XCTAssertNoThrow(try config.validate())
+        XCTAssertTrue(try Routing.silent(inputs: 2, outputs: 2).gains.allSatisfy { $0 == 0 })
+    }
+
+    func testListenerIsTheDefaultVBAPReference() throws {
+        var state = ShowState(show: Show(name: "V"), system: SystemLayer(speakers: [
+            Speaker(number: 1, output: 1, position: Position(-4, 0, 5)), Speaker(number: 2, output: 2, position: Position(4, 4, 5)),
+        ]))
+        XCTAssertEqual(state.system.listener.position, Position(0, 2, 1.2), "no listener saved: the speakers' centre at ear height")
+        let ring = SpeakerGroup(number: 1, name: "Ring", renderer: .vbap, speakers: state.system.speakers.map(\.id))
+        try state.apply(.setGroup(group: ring))
+        XCTAssertEqual(state.engineConfig(base: EngineConfig()).groups[0].reference, Position(0, 2, 1.2))
+        let change = try state.apply(.setListener(listener: Listener(position: Position(1, 3, 1.5))))
+        XCTAssertEqual(change, .layout(crossfade: true), "moving the listener moves the VBAP panning")
+        XCTAssertEqual(state.engineConfig(base: EngineConfig()).groups[0].reference, Position(1, 3, 1.5))
+        var own = ring
+        own.reference = Position(0, 0, 3)
+        try state.apply(.setGroup(group: own))
+        XCTAssertEqual(state.engineConfig(base: EngineConfig()).groups[0].reference, Position(0, 0, 3), "a group's own reference wins")
+    }
+
+    func testStereoSpacing() throws {
+        var state = ShowState(show: Show(name: "S"))
+        try state.apply(.setListener(listener: Listener(position: Position(0, 0, 0))))
+        let l = Source(number: 1, input: 1, position: state.point(Polar(azimuth: 20, elevation: 0, distance: 5)))
+        let r = Source(number: 2, input: 2, position: state.point(Polar(azimuth: 0, elevation: 0, distance: 5)))
+        try state.apply(.setSource(source: l))
+        try state.apply(.setSource(source: r))
+        let g = SourceGroup(number: 1, name: "St", sources: [l.id, r.id], stereo: true)
+        try state.apply(.setSourceGroup(group: g))
+        XCTAssertEqual(state.spacing(of: g)!, 20, accuracy: 0.01)
+        try state.apply(.updateSources(updates: state.setSpacing(g, to: 60)))
+        XCTAssertEqual(state.spacing(of: g)!, 60, accuracy: 0.01)
+        XCTAssertEqual(state.polar(of: state.source(l.id)!.position).azimuth, 40, accuracy: 0.01, "spread round the middle (10°)")
+        XCTAssertEqual(state.polar(of: state.source(r.id)!.position).azimuth, -20, accuracy: 0.01)
+        try state.apply(.updateSources(updates: state.setSpacing(g, to: 0)))
+        XCTAssertEqual(state.spacing(of: g)!, 0, accuracy: 0.01, "on top of each other")
+    }
+
+    func testStereoPairsShareLevelEQAndCompressor() throws {
+        var state = ShowState(show: Show(name: "S"))
+        let l = Source(number: 1, input: 1, position: Position(-1, 5, 1))
+        let r = Source(number: 2, input: 2, position: Position(1, 5, 1))
+        let other = Source(number: 3, input: 3, position: Position(0, 5, 1))
+        for s in [l, r, other] { try state.apply(.setSource(source: s)) }
+        try state.apply(.setSourceGroup(group: SourceGroup(number: 1, name: "St", sources: [l.id, r.id], stereo: true)))
+        // A stereo pair can be in another group too.
+        try state.apply(.setSourceGroup(group: SourceGroup(number: 2, name: "Band", sources: [r.id, other.id], gainDB: -3)))
+        let eq = SourceEQ(on: true, highPassHz: 80, midDB: -4)
+        let comp = Compressor(on: true, thresholdDB: -18, ratio: 4)
+        let change = try state.apply(.updateSources(updates: [
+            SourceUpdate(id: r.id, values: SourceValues(gainDB: -6, mute: true, eq: eq, compressor: comp, trimDB: 4,
+                                                        invert: true, delayMS: 12.5)),
+        ]))
+        XCTAssertEqual(change, .sources([r.id, l.id]))
+        for id in [l.id, r.id] {
+            let s = state.source(id)!
+            XCTAssertEqual(s.trimDB, 4)
+            XCTAssertTrue(s.invert)
+            XCTAssertEqual(s.delayMS, 12.5)
+            XCTAssertEqual(s.gainDB, -6)
+            XCTAssertTrue(s.mute)
+            XCTAssertEqual(s.eq, eq)
+            XCTAssertEqual(s.compressor, comp)
+        }
+        // Position is the pair's own business per side.
+        try state.apply(.updateSources(updates: [SourceUpdate(id: l.id, values: SourceValues(position: Position(-2, 5, 1)))]))
+        XCTAssertEqual(state.source(r.id)!.position, Position(1, 5, 1))
+        XCTAssertNil(state.source(other.id)!.eq)
+        // The renderer links each side's compressor to the other's input.
+        XCTAssertEqual(state.sourceConfig(state.source(l.id)!).link, 2)
+        XCTAssertEqual(state.sourceConfig(state.source(r.id)!).link, 1)
+        XCTAssertNil(state.sourceConfig(state.source(other.id)!).link)
+        XCTAssertEqual(state.sourceConfig(state.source(r.id)!).gainDB, -9, "the other group's gain still adds")
+        XCTAssertEqual(state.sourceConfig(state.source(l.id)!).delayMS, 12.5)
+        XCTAssertThrowsError(try state.apply(.updateSources(updates: [
+            SourceUpdate(id: other.id, values: SourceValues(delayMS: 1500)),
+        ])), "input delay is at most 1000 ms")
+        // Out-of-range values are refused.
+        XCTAssertThrowsError(try state.apply(.updateSources(updates: [
+            SourceUpdate(id: other.id, values: SourceValues(compressor: Compressor(ratio: 0.5))),
+        ])))
+        // Shows round-trip with the new fields.
+        let data = try JSONEncoder().encode(state.show)
+        XCTAssertEqual(try JSONDecoder().decode(Show.self, from: data).sources, state.show.sources)
+    }
+
+    func testMultibandCompressorSettings() throws {
+        var c = Compressor(on: true, multiband: true)
+        XCTAssertEqual(c.bands.count, 3)
+        let p = InputParams(eq: nil, compressor: c, link: nil, sampleRate: 48_000)
+        XCTAssertTrue(p.multiband)
+        XCTAssertEqual(p.crossover.count, 9)
+        XCTAssertEqual(p.bands.count, 3)
+        // A compressor saved before multiband reads as single band.
+        let old = try JSONDecoder().decode(Compressor.self, from: Data(#"{"on":true,"thresholdDB":-10}"#.utf8))
+        XCTAssertFalse(old.multiband)
+        XCTAssertEqual(old.bands, Compressor.defaultBands)
+        try c.check("t")
+        c.crossoverHighHz = 300
+        XCTAssertThrowsError(try c.check("t"), "the upper crossover must be an octave above the lower")
+    }
+
+    func testANewListenerFacesTheStage() throws {
+        let state = ShowState(show: Show(name: "L"))
+        XCTAssertEqual(state.system.listener.facing, 180)
+        // Positive azimuth (left) is to the left on the plan: towards -x.
+        XCTAssertLessThan(state.point(Polar(azimuth: 15, elevation: 0, distance: 5)).x, state.system.listener.position.x)
+    }
+
+    func testAnglesAreFromTheListener() throws {
+        var state = ShowState(show: Show(name: "L"))
+        // The listener 10 m out at ear height, facing back towards the stage at y = 0.
+        try state.apply(.setListener(listener: Listener(position: Position(0, 10, 1.5), facing: 180)))
+        let ahead = state.polar(of: Position(0, 0, 1.5))
+        XCTAssertEqual(ahead.azimuth, 0, accuracy: 1e-9, "the stage is straight ahead")
+        XCTAssertEqual(ahead.distance, 10, accuracy: 1e-9)
+        XCTAssertEqual(ahead.elevation, 0, accuracy: 1e-9)
+        // Facing the stage (up the plan), the listener's left is -x, to the left on the plan.
+        XCTAssertEqual(state.polar(of: Position(-5, 10, 1.5)).azimuth, 90, accuracy: 1e-9)
+        XCTAssertEqual(state.polar(of: Position(5, 10, 1.5)).azimuth, -90, accuracy: 1e-9)
+        let p = state.point(Polar(azimuth: 90, elevation: 0, distance: 5))
+        XCTAssertEqual(p.x, -5, accuracy: 0.001)
+        XCTAssertEqual(p.y, 10, accuracy: 0.001)
+        XCTAssertEqual(p.z, 1.5, accuracy: 0.001)
+        let json = try JSONEncoder().encode(state.system)
+        XCTAssertEqual(try JSONDecoder().decode(SystemLayer.self, from: json).listener.facing, 180)
+    }
+
+    func testMovingAGroupKeepsItsShape() throws {
+        var state = ShowState(show: Show(name: "G"))
+        try state.apply(.setListener(listener: Listener(position: Position(0, 0, 0))))
+        let a = Source(number: 1, input: 1, position: Position(-1, 10, 0))
+        let b = Source(number: 2, input: 2, position: Position(1, 10, 0))
+        try state.apply(.setSource(source: a))
+        try state.apply(.setSource(source: b))
+        let g = SourceGroup(number: 1, name: "Pair", sources: [a.id, b.id])
+        try state.apply(.setSourceGroup(group: g))
+        XCTAssertEqual(state.centre(of: g), Position(0, 10, 0))
+
+        // Turn the pair 90 degrees to the left: the centre goes to (-10, 0), the pair stays 2 m apart.
+        try state.apply(.updateSources(updates: state.moveGroup(g, azimuth: 90)))
+        let c = state.centre(of: g)!
+        XCTAssertEqual(c.polar.azimuth, 90, accuracy: 0.01)
+        let pa = state.source(a.id)!.position, pb = state.source(b.id)!.position
+        XCTAssertEqual(hypot(pa.x - pb.x, pa.y - pb.y), 2, accuracy: 0.01)
+
+        // Twice the distance.
+        let before = state.centre(of: g)!.polar.distance
+        try state.apply(.updateSources(updates: state.moveGroup(g, distance: before * 2)))
+        XCTAssertEqual(state.centre(of: g)!.polar.distance, before * 2, accuracy: 0.01)
+
+        // Up 30 degrees.
+        try state.apply(.updateSources(updates: state.moveGroup(g, elevation: 30)))
+        XCTAssertEqual(state.source(a.id)!.position.polar.elevation, 30, accuracy: 0.01)
+
+        // Dragging one member of a linked group moves the other by the same amount.
+        let start = state.source(b.id)!.position
+        XCTAssertEqual(state.linkedPartners(of: a.id), [b.id])
+        let from = state.source(a.id)!.position
+        let to = Position(from.x + 1, from.y - 2, from.z)
+        try state.apply(.updateSources(updates: state.moveTogether(a.id, from: from, to: to, starts: [b.id: start])))
+        XCTAssertEqual(state.source(b.id)!.position.x, start.x + 1, accuracy: 0.001)
+        XCTAssertEqual(state.source(b.id)!.position.y, start.y - 2, accuracy: 0.001)
+    }
+
     // MARK: The show and the renderer
 
     /// A show imported from engine.json renders exactly what engine.json did.
@@ -250,6 +463,137 @@ final class ShowTests: XCTestCase {
         XCTAssertNil(state.show.cues[0].snapshot)
     }
 
+    func testSnapshotsStoreProcessingAndCanChangeWhatTheyStore() throws {
+        var state = try imported()
+        let vox = state.show.sources[1].id
+        let eq = SourceEQ(on: true, highPassHz: 80, midDB: -4)
+        let comp = Compressor(on: true, thresholdDB: -18, ratio: 4)
+        try state.apply(.updateSources(updates: [SourceUpdate(id: vox, values: SourceValues(
+            eq: eq, compressor: comp, trimDB: 3, invert: true, delayMS: 12))]))
+        try state.apply(.captureSnapshot(capture: SnapshotCapture(number: 1, name: "All", sources: [vox])))
+        var snap = try XCTUnwrap(state.show.snapshots.first)
+        let v = snap.sources[0].values
+        XCTAssertEqual(v.eq, eq)
+        XCTAssertEqual(v.compressor, comp)
+        XCTAssertEqual(v.trimDB, 3)
+        XCTAssertEqual(v.invert, true)
+        XCTAssertEqual(v.delayMS, 12)
+        XCTAssertEqual(state.fields(of: snap), Set(SnapshotField.allCases))
+
+        // Turning a field off drops it; turning it on stores it from the source as it is now.
+        snap = state.snapshot(snap, storing: .eq, false)
+        XCTAssertNil(snap.sources[0].values.eq)
+        XCTAssertFalse(state.fields(of: snap).contains(.eq))
+        try state.apply(.updateSources(updates: [SourceUpdate(id: vox, values: SourceValues(eq: .flat, trimDB: -2))]))
+        snap = state.snapshot(snap, storing: .eq, true)
+        XCTAssertEqual(snap.sources[0].values.eq, .flat)
+        XCTAssertEqual(snap.sources[0].values.trimDB, 3, "other fields keep what they stored")
+        snap = state.snapshot(snap, storing: .input, false)
+        XCTAssertNil(snap.sources[0].values.trimDB)
+        XCTAssertNil(snap.sources[0].values.invert)
+        XCTAssertNil(snap.sources[0].values.delayMS)
+    }
+
+    func testGroupsAreBuiltUpASpeakerAtATime() throws {
+        var state = try imported()
+        let base = try config()
+        let vox = state.show.sources[1].id
+        let speakers = state.system.speakers.map(\.id)
+        var g = SpeakerGroup(number: state.nextGroupNumber, name: "Surround", renderer: .vbap, speakers: [])
+        XCTAssertEqual(g.number, 3)
+        try state.apply(.setGroup(group: g))
+        try state.apply(.updateSources(updates: [SourceUpdate(id: vox, values: SourceValues(
+            sends: state.source(vox)!.sends + [GroupSend(group: g.id)]))]))
+        // Empty, then one speaker: VBAP cannot pan yet, so it plays nothing and the sends to it wait.
+        for n in 0...1 {
+            g.speakers = Array(speakers.prefix(n))
+            try state.apply(.setGroup(group: g))
+            XCTAssertFalse(state.isPlayable(g))
+            let c = state.engineConfig(base: base)
+            XCTAssertEqual(c.groups.map(\.name), ["Main", "Top"])
+            XCTAssertNil(state.sourceConfig(state.source(vox)!).groups?["Surround"])
+            XCTAssertNoThrow(try c.validate())
+        }
+        g.speakers = Array(speakers.prefix(2))
+        try state.apply(.setGroup(group: g))
+        XCTAssertTrue(state.isPlayable(g))
+        XCTAssertEqual(state.engineConfig(base: base).groups.map(\.name), ["Main", "Top", "Surround"])
+        XCTAssertNoThrow(try state.engineConfig(base: base).validate())
+        for r in [Renderer.knn, .spcap] {
+            g.renderer = r
+            try state.apply(.setGroup(group: g))
+            let c = state.engineConfig(base: base)
+            XCTAssertNotNil(c.groups[2].reference, "\(r) pans around the listener")
+            let taps = try SpatialRenderer(config: c).allTaps[1].filter { $0.group == "Surround" }
+            XCTAssertFalse(taps.isEmpty, "\(r) plays")
+        }
+        g.neighbours = 0
+        try state.apply(.setGroup(group: g))
+        XCTAssertThrowsError(try state.engineConfig(base: base).validate())
+        // A flat (2D) Delay or DBAP is allowed; another dimension count is not.
+        var main = state.show.groups[0]
+        main.dimensions = 2
+        try state.apply(.setGroup(group: main))
+        XCTAssertEqual(state.engineConfig(base: base).groups[0].dimensions, 2)
+        main.dimensions = 4
+        try state.apply(.setGroup(group: main))
+        XCTAssertThrowsError(try state.engineConfig(base: base).validate())
+    }
+
+    func testDistanceModellingFromTheListener() throws {
+        var state = try imported()
+        try state.apply(.setListener(listener: Listener(position: Position(0, 0, 0))))
+        let vox = state.show.sources[1]
+        let model = SourceDistance(on: true, rolloffDB: 6, referenceM: 5, air: 1)
+        try state.apply(.updateSources(updates: [SourceUpdate(id: vox.id, values: SourceValues(position: Position(0, 20, 0), distance: model))]))
+        let c = state.sourceConfig(state.source(vox.id)!)
+        XCTAssertEqual(c.gainDB, vox.gainDB - 12, accuracy: 1e-9, "20 m is two doublings beyond 5 m")
+        XCTAssertEqual(c.airDB ?? 0, -2, accuracy: 1e-9, "0.1 dB per metre")
+        XCTAssertEqual(model.levelDB(at: 3), 0, "nothing within the reference")
+        XCTAssertEqual(SourceDistance(on: true, air: 4).airDB(at: 500), -SourceDistance.maxAirDB)
+        XCTAssertThrowsError(try state.apply(.updateSources(updates: [SourceUpdate(id: vox.id, values: SourceValues(
+            distance: SourceDistance(on: true, air: 9)))])))
+        // Off changes nothing.
+        try state.apply(.updateSources(updates: [SourceUpdate(id: vox.id, values: SourceValues(distance: .off))]))
+        XCTAssertEqual(state.sourceConfig(state.source(vox.id)!).gainDB, vox.gainDB)
+        XCTAssertNil(state.sourceConfig(state.source(vox.id)!).airDB)
+        // Snapshots store it and fade it.
+        let half = SnapshotFade.values(from: SourceValues(distance: .off), to: SourceValues(distance: model), at: 0.5)
+        XCTAssertEqual(half.distance?.on, true)
+        XCTAssertEqual(half.distance?.rolloffDB ?? 0, 3, accuracy: 1e-9)
+        XCTAssertEqual(half.distance?.air ?? 0, 0.5, accuracy: 1e-9)
+        XCTAssertTrue(SnapshotField.present(in: state.values(of: state.source(vox.id)!)).contains(.distance))
+    }
+
+    func testSpreadWorksInEveryAlgorithm() throws {
+        var state = try imported()
+        let vox = state.show.sources[1].id
+        let ring = SpeakerGroup(number: 3, name: "Ring", renderer: .knn, speakers: state.system.speakers.prefix(4).map(\.id),
+                                spread: 0)
+        try state.apply(.setGroup(group: ring))
+        try state.apply(.updateSources(updates: [SourceUpdate(id: vox, values: SourceValues(
+            position: state.system.speakers[0].position, sends: [GroupSend(group: ring.id)]))]))
+        func feeds(_ width: Double) throws -> Int {
+            try state.apply(.updateSources(updates: [SourceUpdate(id: vox, values: SourceValues(width: width))]))
+            let c = state.engineConfig(base: try config())
+            return try SpatialRenderer(config: c).allTaps[1].filter { $0.group == "Ring" && $0.gain > 1e-3 }.count
+        }
+        XCTAssertEqual(try feeds(0), 1, "KNN on a speaker with no spread")
+        XCTAssertGreaterThan(try feeds(180), 1, "the source's spread widens it")
+    }
+
+    func testSnapToTheNearestSpeakers() throws {
+        var state = try imported()
+        let vox = state.show.sources[1], keys = state.show.sources[2]
+        // Vox sends to Main (outputs 1 to 4) only, so it lands on one of them, not on the sub.
+        try state.apply(.updateSources(updates: state.snappedToNearestSpeakers([vox.id, keys.id])))
+        XCTAssertEqual(state.source(vox.id)?.position, Position(-4, 0, 5))
+        XCTAssertEqual(state.source(keys.id)?.position, Position(0, 5, 8), "Keys sends to Top, whose only speaker is 5")
+        // Two sources nearest one speaker both land on it.
+        let both = state.snappedToNearestSpeakers([vox.id, vox.id])
+        XCTAssertEqual(both[0].values.position, both[1].values.position)
+    }
+
     func testCuesRunInNumberOrder() throws {
         var state = try imported()
         for n in ["10", "2", "2.5", "1"] { try state.apply(.setCue(cue: Cue(number: n))) }
@@ -310,6 +654,39 @@ final class ShowTests: XCTestCase {
         let out = SnapshotFade(snapshot: mute, state: state)
         XCTAssertEqual(out.updates(at: 1).first?.values.mute, false)
         XCTAssertEqual(out.updates(at: 2).first?.values.mute, true)
+    }
+
+    func testAFadeMovesInputEQAndCompressor() {
+        let a = SourceValues(eq: .flat, compressor: .off, trimDB: 0, invert: false, delayMS: 0)
+        let b = SourceValues(eq: SourceEQ(on: true, highPassHz: 80, lowHz: 100, midHz: 4000, midDB: -6),
+                             compressor: Compressor(on: true, thresholdDB: -30, ratio: 5, makeupDB: 4),
+                             trimDB: 6, invert: true, delayMS: 20)
+        let quarter = SnapshotFade.values(from: a, to: b, at: 0.25)
+        XCTAssertEqual(quarter.trimDB ?? 0, 1.5, accuracy: 1e-9)
+        XCTAssertEqual(quarter.delayMS ?? 0, 5, accuracy: 1e-9)
+        XCTAssertEqual(quarter.invert, false, "polarity flips halfway")
+        XCTAssertEqual(quarter.eq?.on, true, "an EQ turning on does so at the start, from flat")
+        XCTAssertEqual(quarter.eq?.midDB ?? 0, -1.5, accuracy: 1e-9)
+        XCTAssertEqual(quarter.eq?.midHz, 4000, "an EQ turning on starts flat at its new frequencies")
+        XCTAssertEqual(quarter.eq?.highPassHz ?? 0, 20 * pow(4, 0.25), accuracy: 1e-6, "a high-pass sweeps up from 20 Hz")
+        XCTAssertEqual(quarter.compressor?.on, true)
+        XCTAssertEqual(quarter.compressor?.ratio ?? 0, 2, accuracy: 1e-9, "a compressor turning on starts at 1:1")
+        XCTAssertEqual(quarter.compressor?.makeupDB ?? 0, 1, accuracy: 1e-9)
+        XCTAssertEqual(SnapshotFade.values(from: a, to: b, at: 0.5).invert, true)
+        let moved = SourceEQ(on: true, midHz: 250, midDB: -6)
+        XCTAssertEqual(SnapshotFade.values(from: b, to: SourceValues(eq: moved), at: 0.5).eq?.midHz ?? 0, 1000, accuracy: 1e-6,
+                       "frequencies glide geometrically")
+        XCTAssertEqual(SnapshotFade.values(from: a, to: b, at: 1), b, "the end is exact")
+
+        // Turning off: still on until the end, flattening out.
+        let back = SnapshotFade.values(from: b, to: a, at: 0.5)
+        XCTAssertEqual(back.eq?.on, true)
+        XCTAssertEqual(back.eq?.midDB ?? 0, -3, accuracy: 1e-9)
+        XCTAssertEqual(back.compressor?.on, true)
+        XCTAssertEqual(back.compressor?.ratio ?? 0, 3, accuracy: 1e-9)
+        XCTAssertEqual(SnapshotFade.values(from: b, to: a, at: 1), a)
+        XCTAssertNil(SnapshotFade.values(from: b, to: SourceValues(gainDB: 0), at: 0.5).eq,
+                     "a snapshot without EQ leaves it alone")
     }
 
     func testAFadeLeavesOutSourcesThatAreGoneAndTakenOver() throws {

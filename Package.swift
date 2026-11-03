@@ -44,7 +44,7 @@ let package = Package(
         // over the control link. macOS only; a stub elsewhere. scripts/build-app.sh bundles it.
         .executableTarget(name: "FeralApp", dependencies: ["FeralScene", "FeralControl"]),
         .testTarget(name: "FeralCoreTests", dependencies: ["FeralCore", "FeralScene"]),
-        .testTarget(name: "FeralSceneTests", dependencies: ["FeralScene"]),
+        .testTarget(name: "FeralSceneTests", dependencies: ["FeralCore", "FeralScene"]),
         .testTarget(name: "FeralControlTests", dependencies: ["FeralControl", "FeralScene"]),
         .testTarget(name: "FeralOfflineTests", dependencies: ["FeralOffline", "FeralScene"]),
         .testTarget(name: "FeralIOTests", dependencies: ["FeralCore", "FeralCoreAudio", "FeralIO", "FeralScene"]),

@@ -14,6 +14,26 @@ public final class RenderCore {
 
     deinit { feral_core_destroy(pointer) }
 
+    /// Render workers for a Mac (or other machine): one fewer than its performance cores, since the
+    /// audio thread does its share too, at most 32.
+    public static var automaticWorkers: Int {
+        #if os(macOS)
+        var cores: Int32 = 0
+        var size = MemoryLayout<Int32>.size
+        if sysctlbyname("hw.perflevel0.physicalcpu", &cores, &size, nil, 0) == 0, cores > 0 {
+            return max(0, min(Int(cores) - 1, Int(FERAL_MAX_WORKERS)))
+        }
+        #endif
+        return max(0, min(ProcessInfo.processInfo.activeProcessorCount - 1, Int(FERAL_MAX_WORKERS)))
+    }
+
+    /// Starts render workers that share the outputs' work with the audio thread. Call before the
+    /// audio starts; returns how many run.
+    @discardableResult
+    public func startWorkers(_ count: Int) -> Int { Int(feral_core_start_workers(pointer, Int32(max(0, count)))) }
+
+    public var workers: Int { Int(feral_core_workers(pointer)) }
+
     /// The longest delay the core plays, in samples.
     public var maxDelay: Double { feral_core_max_delay(pointer) }
 
@@ -53,6 +73,89 @@ public final class RenderCore {
         case .sine: code = Int32(FERAL_TEST_SINE)
         }
         feral_core_set_test_signal(pointer, code, Float(levelDB), Float(sineHz))
+    }
+
+    /// Linear levels per channel (see feral_core_read_meters).
+    public struct Levels: Equatable {
+        /// The highest absolute sample since the last read.
+        public var inputPeak: [Float]
+        /// RMS over about 300 ms.
+        public var inputRMS: [Float]
+        public var outputPeak: [Float]
+        public var outputRMS: [Float]
+    }
+
+    /// Reads the first `inputs` inputs' and `outputs` outputs' meters, and starts the peaks again.
+    /// One reader at a time.
+    public func readMeters(inputs: Int, outputs: Int) -> Levels {
+        let i = max(0, min(inputs, Routing.maxChannels)), o = max(0, min(outputs, Routing.maxChannels))
+        var inPeak = [Float](repeating: 0, count: i), inRMS = [Float](repeating: 0, count: i)
+        var outPeak = [Float](repeating: 0, count: o), outRMS = [Float](repeating: 0, count: o)
+        inPeak.withUnsafeMutableBufferPointer { ip in
+            inRMS.withUnsafeMutableBufferPointer { ir in
+                outPeak.withUnsafeMutableBufferPointer { op in
+                    outRMS.withUnsafeMutableBufferPointer { or in
+                        feral_core_read_meters(pointer, ip.baseAddress, ir.baseAddress, Int32(i),
+                                               op.baseAddress, or.baseAddress, Int32(o))
+                    }
+                }
+            }
+        }
+        return Levels(inputPeak: inPeak, inputRMS: inRMS, outputPeak: outPeak, outputRMS: outRMS)
+    }
+
+    /// Each input compressor's deepest gain reduction in dB since the last read (0 or more), for the
+    /// first `inputs` inputs. One reader at a time.
+    public func readReduction(inputs: Int) -> [Float] {
+        let i = max(0, min(inputs, Routing.maxChannels))
+        var out = [Float](repeating: 0, count: i)
+        out.withUnsafeMutableBufferPointer { feral_core_read_reduction(pointer, $0.baseAddress, Int32(i)) }
+        return out
+    }
+
+    /// The same per multiband band: for each input, low, mid and high.
+    public func readBandReduction(inputs: Int) -> [[Float]] {
+        let i = max(0, min(inputs, Routing.maxChannels)), n = Int(FERAL_COMP_BANDS)
+        var flat = [Float](repeating: 0, count: i * n)
+        flat.withUnsafeMutableBufferPointer { feral_core_read_band_reduction(pointer, $0.baseAddress, Int32(i)) }
+        return (0..<i).map { Array(flat[$0 * n ..< ($0 + 1) * n]) }
+    }
+
+    /// Hands the core a new monitor: the two outputs (from 0; none for neither turns it off), its
+    /// linear gain, and the speakers it hears. Older monitors are freed by `collect`.
+    public func setMonitor(left: Int?, right: Int?, gain: Float, speakers: [MonitorSpeaker]) {
+        guard let m = feral_monitor_create(Int32(left ?? -1), Int32(right ?? -1), gain) else { return }
+        for s in speakers {
+            let n = min(s.left.count, s.right.count)
+            guard n > 0 else { continue }
+            s.left.withUnsafeBufferPointer { l in
+                s.right.withUnsafeBufferPointer { r in
+                    _ = feral_monitor_add_speaker(m, Int32(s.output), s.gain, Int32(s.delay), l.baseAddress, r.baseAddress, Int32(n))
+                }
+            }
+        }
+        feral_core_set_monitor(pointer, m)
+    }
+
+    /// What the monitor hears from an input (from 0): in the solo, and on PFL at a linear gain per ear.
+    public func setListen(input: Int, solo: Bool, pflLeft: Float, pflRight: Float) {
+        feral_core_set_listen(pointer, Int32(input), solo ? 1 : 0, pflLeft, pflRight)
+    }
+
+    public func clearListen() { feral_core_clear_listen(pointer) }
+
+    /// Picks the input (from 0) the analysis tap keeps, or none.
+    public func setAnalysisInput(_ input: Int?) { feral_core_set_analysis_input(pointer, Int32(input ?? -1)) }
+
+    /// The analysed input's newest samples before and after its EQ and compressor, and how many the
+    /// tap has taken since the input was picked.
+    public func readAnalysis(frames: Int) -> (pre: [Float], post: [Float], written: UInt64) {
+        let n = max(0, min(frames, Int(FERAL_ANALYSIS_FRAMES)))
+        var pre = [Float](repeating: 0, count: n), post = [Float](repeating: 0, count: n)
+        let written = pre.withUnsafeMutableBufferPointer { a in
+            post.withUnsafeMutableBufferPointer { b in feral_core_read_analysis(pointer, a.baseAddress, b.baseAddress, Int32(n)) }
+        }
+        return (pre, post, written)
     }
 
     public struct Stats: Equatable {
@@ -113,6 +216,12 @@ public final class RenderState {
     public func setOutput(_ output: Int, _ params: OutputParams) {
         var p = params.cValue
         precondition(feral_state_set_output(live, Int32(output), &p) == 0, "output out of range")
+    }
+
+    /// An input's EQ and compressor (input from 0).
+    public func setInput(_ input: Int, _ params: InputParams) {
+        var p = params.cValue
+        precondition(feral_state_set_input(live, Int32(input), &p) == 0, "input out of range")
     }
 
     public func setMotion(_ motion: DelayMotion) {

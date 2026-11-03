@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <atomic>
 #include <cstring>
+#include <os/workgroup.h>
 #include <vector>
 
 namespace {
@@ -131,6 +132,21 @@ OSStatus feral_io_proc(AudioObjectID, const AudioTimeStamp *, const AudioBufferL
 }
 
 AudioDeviceIOProc feral_io_proc_pointer(void) { return feral_io_proc; }
+
+OSStatus feral_io_share_workgroup(feral_core *core, AudioObjectID device) {
+    const AudioObjectPropertyAddress address{kAudioDevicePropertyIOThreadOSWorkgroup, kAudioObjectPropertyScopeGlobal,
+                                             kAudioObjectPropertyElementMain};
+    os_workgroup_t workgroup = nullptr;
+    UInt32 size = sizeof(workgroup);
+    const OSStatus status = AudioObjectGetPropertyData(device, &address, 0, nullptr, &size, &workgroup);
+    if (status != noErr || !workgroup) {
+        feral_core_set_workgroup(core, nullptr);
+        return status != noErr ? status : kAudioHardwareUnspecifiedError;
+    }
+    feral_core_set_workgroup(core, workgroup); // the core keeps its own reference
+    os_release(workgroup);
+    return noErr;
+}
 
 }
 

@@ -59,6 +59,28 @@ for i in $(seq 1 20); do
 done
 cli osc /feral/ping | grep -q pong
 
+# The control monitor hears OSC and says what the engine did; the meters answer (silence: no device).
+cli monitor --seconds 2 > "$DIR/monitor.txt" &
+MONITOR=$!
+sleep 0.7
+cli osc /feral/ping 7
+cli osc /nobody/listens 1
+wait "$MONITOR"
+cat "$DIR/monitor.txt"
+grep -q "/feral/ping 7" "$DIR/monitor.txt"
+grep -q "answered /feral/pong 7" "$DIR/monitor.txt"
+grep -q "nothing listens for /nobody/listens" "$DIR/monitor.txt"
+cli meters --seconds 0.5 | tee "$DIR/meters.txt"
+grep -q "OUTPUTS" "$DIR/meters.txt"
+
+# The patch: in order from the start, then a free patch written to engine.json.
+cli patch | tee "$DIR/patch.txt"
+grep -q "FERAL INPUT" "$DIR/patch.txt"
+cli patch in 1-2 33 | tee "$DIR/patch.txt"
+grep -q "1 .*<- card 33" "$DIR/patch.txt"
+grep -q '"inputPatch"' "$DIR/engine.json"
+cli patch out 3 none > /dev/null
+
 # MIDI through the engine's own "Feral" destination, where the runner has Core MIDI.
 if "$BIN/feral-cli" midi list | grep -q "^Feral$"; then
     cli trigger add program any go "{value}"

@@ -12,6 +12,7 @@
 //   feral-cli trigger list|add|remove | admbox | release SOURCE...      the trigger map, ADM box, owners
 //   feral-cli osc ADDRESS [ARGS] | osc-watch [--adm]                     OSC to and from the engine
 //   feral-cli midi program N | note N | cc N V | msc go [CUE] | list     MIDI to the engine
+//   feral-cli meters [all] [--seconds S] | monitor [--seconds S]         levels, and the OSC/MIDI it hears
 //
 // --config defaults to the engine's own settings, ~/Library/Application Support/Feral/engine.json.
 // taps, impulse and render use the show engine.json names (or --show PATH), as the engine does.
@@ -260,7 +261,7 @@ case "midi":
     fail("MIDI needs macOS")
     #endif
 
-case "status", "go", "recall", "move", "store", "cue", "stop", "save", "trigger", "admbox", "release":
+case "status", "go", "recall", "move", "store", "cue", "stop", "save", "trigger", "admbox", "release", "meters", "monitor", "device", "patch":
     #if canImport(Network)
     runEngineCommand(command, files)
     #else
@@ -289,6 +290,12 @@ default:
     feral-cli stop                                    stop every running fade where it is
     feral-cli save                                    save the show (and empty its journal)
     feral-cli release SOURCE...                       hand sources' positions back to cues from QLab/OSC
+    feral-cli meters [all] [--seconds S]              input and output levels (loudest over S seconds, default 2);
+                                                      all: every channel, not only the ones the show uses
+    feral-cli monitor [--seconds S]                   every OSC and MIDI message the engine gets, and what it did
+    feral-cli device [NAME]                           the audio devices on the engine's Mac, or switch the engine to one
+    feral-cli patch [in|out CHANNELS FIRST|none]      the patch between the sound card and Feral's inputs and outputs;
+                                                      e.g. patch in 1-2 33 (Feral inputs 1-2 from card inputs 33-34)
 
     The trigger map (console and QLab messages that fire cues) and the ADM-OSC box:
     feral-cli trigger list

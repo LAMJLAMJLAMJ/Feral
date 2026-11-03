@@ -1,6 +1,7 @@
 #if os(macOS)
 import AVFoundation
 import FeralControl
+import FeralCore
 import FeralIO
 import FeralScene
 import Foundation
@@ -58,6 +59,34 @@ final class Engine {
     /// When each repeated OSC or MIDI problem was last logged, so a flood of one logs every 10 s.
     private var lastLogged: [String: Date] = [:]
 
+    // Meters and the control monitor, for clients that asked (Request.watch)
+    private struct Watch { var meters = false, activity = false }
+    private var watchers: [ControlServer.ClientID: Watch] = [:]
+    /// The input (from 1) each client wants the spectrum of, and the one the core's tap has now.
+    private var analysers: [ControlServer.ClientID: Int] = [:]
+    private var analysed: Int?
+    /// OSC and MIDI received since the last `activity` event, and how many more were left out.
+    private var heard: [ControlActivity] = []
+    private var heardDropped = 0
+    /// The most messages one `activity` event carries (it is sent every 0.1 s).
+    private static let maxHeard = 100
+
+    // The binaural monitor and what it hears
+    private var listenSolo: [UUID] = []
+    private var listenPFL: [UUID] = []
+    private var monitorInfo = "off"
+    /// What the monitor was last built from, so a change elsewhere does not rebuild it.
+    private struct MonitorKey: Equatable {
+        var settings: MonitorSettings?
+        var speakers: [Speaker]
+        var listener: Listener
+        var sampleRate: Double
+        var air: Double
+        var outputs: Int
+    }
+    private var monitorKey: MonitorKey?
+    private var hrirCache: (path: String, rate: Double, set: HRIRSet)?
+
     init(options: Options, config: EngineConfig) {
         self.options = options
         self.config = config
@@ -72,8 +101,12 @@ final class Engine {
             activity = ProcessInfo.processInfo.beginActivity(
                 options: [.userInitiated, .latencyCritical], reason: "Feral engine is rendering live audio")
             checkMicrophoneAccess()
+            let workers = core.startWorkers(config.renderThreads ?? RenderCore.automaticWorkers)
+            log("render: \(workers) worker thread(s) beside the audio thread")
             openShow()
             do { try publishLayout(fadeFrames: 0) } catch { log("error: \(error); playing silence until the show or settings are fixed") }
+            rebuildMonitor()
+            applyListen()
             applyTestSignal()
             io = AudioEngineIO(core: core, config: config, queue: queue, log: log)
             io.start()
@@ -82,6 +115,8 @@ final class Engine {
             startMIDI()
             every(0.05) { [self] in core.collect() }
             every(0.1) { [self] in flushJournal() }
+            every(0.05) { [self] in sendMeters(); sendSpectrum() }
+            every(0.1) { [self] in sendActivity() }
             every(10) { [self] in report(force: false) }
             every(300) { [self] in report(force: true) }
             onSignal(SIGHUP) { [self] in reload() }
@@ -138,12 +173,19 @@ final class Engine {
         guard config.isSpatial else {
             stopMotion()
             spatial = nil
-            let routing = try Routing(routes: config.routes, inputs: config.inputs, outputs: config.outputs)
+            // A show with speakers or sources but no output group plays silence, not a passthrough
+            // straight onto the speakers.
+            let showHasLayout = !scene.show.sources.isEmpty || !scene.system.speakers.isEmpty
+            let routing = config.routes.isEmpty && showHasLayout
+                ? try Routing.silent(inputs: config.inputs, outputs: config.outputs)
+                : try Routing(routes: config.routes, inputs: config.inputs, outputs: config.outputs)
             core.publish(routing)
+            rebuildMonitor()
             let routed = routing.gains.filter { $0 != 0 }.count
             if !quiet {
                 log("routing: \(config.inputs) in by \(config.outputs) out, \(routed) gain(s) set"
-                    + (config.routes.isEmpty ? " (passthrough)" : " from \(config.routes.count) route(s)"))
+                    + (config.routes.isEmpty ? (showHasLayout ? " (no output group yet, so silence)" : " (passthrough)")
+                       : " from \(config.routes.count) route(s)"))
             }
             return
         }
@@ -152,6 +194,7 @@ final class Engine {
         let taps = state.tapCount
         try core.publish(state, fadeFrames: fadeFrames)
         spatial = renderer
+        rebuildMonitor()
         guard !quiet else { return }
         log("spatial: \(config.speakers.count) speaker(s), \(config.sources.count) source(s), \(taps) tap(s)"
             + (config.routes.isEmpty ? "" : ", plus \(config.routes.count) fixed route(s)")
@@ -193,8 +236,124 @@ final class Engine {
             unsaved += 1
         }
         server?.broadcast(.applied(seq: seq, origin: origin, command: command))
-        if case .removeSource(let id) = command, owners.removeValue(forKey: id) != nil { broadcastStatus() }
+        var statusChanged = applyListen()
+        if case .removeSource(let id) = command, owners.removeValue(forKey: id) != nil { statusChanged = true }
+        if statusChanged { broadcastStatus() }
         echo(command)
+    }
+
+    // MARK: - The monitor
+
+    /// Builds the binaural monitor from engine.json's `monitor` and the show's speakers and
+    /// listener, when either changed.
+    private func rebuildMonitor() {
+        let key = MonitorKey(settings: config.monitor, speakers: scene.system.speakers, listener: scene.system.listener,
+                             sampleRate: config.sampleRate, air: config.airTemperatureC, outputs: config.outputs)
+        guard key != monitorKey else { return }
+        let first = monitorKey == nil
+        monitorKey = key
+        guard let m = config.monitor, m.isOn else {
+            core.setMonitor(left: nil, right: nil, gain: 0, speakers: [])
+            if !first && monitorInfo != "off" { log("monitor: off") }
+            monitorInfo = "off"
+            return
+        }
+        guard config.hasMonitorOutputs else {
+            core.setMonitor(left: nil, right: nil, gain: 0, speakers: [])
+            monitorInfo = "off: Feral has \(config.outputs) outputs, which leaves no room for Binaural L and R (at most \(Routing.maxChannels - 2))"
+            log("monitor: \(monitorInfo)")
+            return
+        }
+        var notes: [String] = []
+        // Binaural L and R are the two outputs after Feral's own.
+        let left = m.left.map { _ in config.outputs }
+        let right = m.right.map { _ in config.outputs + 1 }
+        let hrirs: HRIRSet
+        do { hrirs = try hrirSet(m.hrtf) } catch {
+            notes.append("\(error); using the spherical head model")
+            hrirs = SphericalHead(sampleRate: config.sampleRate)
+        }
+        let speakers = scene.monitorSpeakers(hrirs: hrirs, sampleRate: config.sampleRate,
+                                             speedOfSound: feral_speed_of_sound(config.airTemperatureC))
+        core.setMonitor(left: left, right: right, gain: Float(pow(10, m.gainDB / 20)), speakers: speakers)
+        let outs = [m.left, m.right].map { $0.map { "\($0)" } ?? "-" }.joined(separator: "/")
+        monitorInfo = "card outputs \(outs), \(hrirs.name), \(speakers.count) speaker(s)" + (notes.isEmpty ? "" : "; " + notes.joined(separator: "; "))
+        log("monitor: binaural on \(monitorInfo)")
+    }
+
+    /// The HRIRs for engine.json's `hrtf` (a folder; none for the head model), kept while unchanged.
+    private func hrirSet(_ path: String?) throws -> HRIRSet {
+        if path == MonitorSettings.headModel { return SphericalHead(sampleRate: config.sampleRate) }
+        guard let path, !path.isEmpty else {
+            // The default: the HRTF folder next to engine.json, when it is there.
+            let folder = options.configURL.deletingLastPathComponent().appendingPathComponent("HRTF")
+            guard FileManager.default.fileExists(atPath: folder.path) else { return SphericalHead(sampleRate: config.sampleRate) }
+            do { return try hrirSet(folder.path) } catch {
+                log("monitor: \(error); using the spherical head model")
+                return SphericalHead(sampleRate: config.sampleRate)
+            }
+        }
+        let expanded = NSString(string: path).expandingTildeInPath
+        let url = expanded.hasPrefix("/") ? URL(fileURLWithPath: expanded)
+            : options.configURL.deletingLastPathComponent().appendingPathComponent(expanded)
+        if let c = hrirCache, c.path == url.path, c.rate == config.sampleRate { return c.set }
+        let set = try HRIRFolder(folder: url, sampleRate: config.sampleRate)
+        hrirCache = (url.path, config.sampleRate, set)
+        return set
+    }
+
+    /// Writes `monitor` into engine.json and plays it at once (a change of card outputs reopens
+    /// the audio, a short gap, as any patch change does).
+    private func setMonitor(_ m: MonitorSettings?, origin: String) throws {
+        var trial = config
+        trial.monitor = m
+        try trial.validate()
+        if let m, m.hrtf != nil { _ = try hrirSet(m.hrtf) }
+        var json = try readConfigJSON()
+        if let m {
+            json["monitor"] = try JSONSerialization.jsonObject(with: JSONEncoder().encode(m))
+        } else {
+            json.removeValue(forKey: "monitor")
+        }
+        try writeConfig(json)
+        log("\(origin): monitor \(m?.isOn == true ? "set" : "off")")
+        if trial.sameDeviceSettings(as: config) {
+            config.monitor = m
+            rebuildMonitor()
+            broadcastStatus()
+        } else {
+            reload()
+            server?.broadcast(.patch(patch: patchInfo))
+            queue.asyncAfter(deadline: .now() + 0.5) { [self] in broadcastStatus() }
+        }
+    }
+
+    /// Hands the core what the monitor hears, by input. Returns true when the solo or PFL lost a
+    /// source that is gone.
+    @discardableResult
+    private func applyListen() -> Bool {
+        let alive = Set(scene.show.sources.map(\.id))
+        let before = (listenSolo, listenPFL)
+        listenSolo = listenSolo.filter { alive.contains($0) }
+        listenPFL = listenPFL.filter { alive.contains($0) }
+        let n = Routing.maxChannels
+        var solo = [Bool](repeating: false, count: n)
+        var pfl = [(Float, Float)](repeating: (0, 0), count: n)
+        for id in listenSolo {
+            if let s = scene.source(id), (1...n).contains(s.input) { solo[s.input - 1] = true }
+        }
+        for id in listenPFL {
+            guard let s = scene.source(id), (1...n).contains(s.input) else { continue }
+            // A stereo pair's sides go left and right; a mono source to both at -3 dB.
+            var side: (Float, Float) = (0.7071, 0.7071)
+            if let g = scene.show.sourceGroups.first(where: { $0.stereo && $0.sources.prefix(2).contains(id) }), g.sources.count >= 2 {
+                side = g.sources[0] == id ? (1, 0) : (0, 1)
+            }
+            let i = s.input - 1
+            pfl[i] = (min(1, pfl[i].0 + side.0), min(1, pfl[i].1 + side.1))
+        }
+        for i in 0..<n { core.setListen(input: i, solo: solo[i], pflLeft: pfl[i].0, pflRight: pfl[i].1) }
+        return before.0 != listenSolo || before.1 != listenPFL
     }
 
     /// Hands the journal entries so far to the housekeeping queue, which writes them.
@@ -329,6 +488,8 @@ final class Engine {
         server.onDisconnect = { [weak self] id in
             guard let self else { return }
             if let name = clientNames.removeValue(forKey: id) { log("control: \(name) disconnected") }
+            watchers[id] = nil
+            if analysers.removeValue(forKey: id) != nil { pickAnalysis(newest: nil) }
         }
         server.onRequest = { [weak self] id, request in self?.handle(request, from: id) }
         do { try server.start(address: config.controlAddress, port: config.controlPort) } catch {
@@ -370,9 +531,148 @@ final class Engine {
             case .release(let sources):
                 release(sources, origin: origin)
                 broadcastStatus()
+            case .watch(let meters, let activity):
+                watchers[client] = meters || activity ? Watch(meters: meters, activity: activity) : nil
+            case .listDevices:
+                server?.send(.devices(list: deviceList(), selected: config.device), to: client)
+            case .setDevice(let device):
+                try setDevice(device, origin: origin)
+            case .getPatch:
+                server?.send(.patch(patch: patchInfo), to: client)
+            case .setPatch(let inputs, let outputs, let monitor):
+                try setPatch(inputs: inputs, outputs: outputs, monitor: monitor, origin: origin)
+            case .setChannelCounts(let inputs, let outputs):
+                try setChannelCounts(inputs: inputs, outputs: outputs, origin: origin)
+            case .analyse(let input):
+                analysers[client] = input.flatMap { $0 >= 1 && $0 <= config.inputs ? $0 : nil }
+                pickAnalysis(newest: analysers[client])
+            case .setMonitor(let monitor):
+                try setMonitor(monitor, origin: origin)
+            case .listen(let solo, let pfl):
+                listenSolo = solo
+                listenPFL = pfl
+                applyListen()
+                broadcastStatus()
             }
         } catch {
             server?.send(.error(message: "\(error)"), to: client)
+        }
+    }
+
+    // MARK: - The audio device
+
+    private func deviceList() -> [AudioDeviceSummary] {
+        ((try? AudioDevices.all()) ?? []).map {
+            AudioDeviceSummary(uid: $0.uid, name: $0.name, transport: $0.transport, inputChannels: $0.inputChannels,
+                               outputChannels: $0.outputChannels, sampleRate: $0.sampleRate,
+                               sampleRates: $0.availableSampleRates, isAggregate: $0.isAggregate)
+        }
+    }
+
+    /// Writes `device` into engine.json (keeping everything else in it) and reopens the audio on it.
+    private func setDevice(_ device: String, origin: String) throws {
+        let list = deviceList()
+        guard let chosen = list.first(where: { $0.uid == device }) ?? list.first(where: { $0.matches(device) }) else {
+            throw ConfigError("no audio device \(device) on this Mac")
+        }
+        if chosen.isAggregate && config.refuseAggregateDevices {
+            throw ConfigError("\(chosen.name) is an aggregate device; aggregates drift or resample between clocks, so the engine refuses them")
+        }
+        var json = try readConfigJSON()
+        json["device"] = chosen.uid
+        try writeConfig(json)
+        log("\(origin): audio device set to \(chosen.name) (\(chosen.uid)) in \(options.configURL.path)")
+        reload()
+        server?.broadcast(.devices(list: list, selected: config.device))
+        // The device opens in the background; tell clients how it went.
+        for delay in [0.5, 2.0] {
+            queue.asyncAfter(deadline: .now() + delay) { [self] in
+                broadcastStatus()
+                server?.broadcast(.patch(patch: patchInfo))
+            }
+        }
+    }
+
+    /// engine.json as a JSON object, to change a few keys and keep the rest as written.
+    private func readConfigJSON() throws -> [String: Any] {
+        let url = options.configURL
+        guard FileManager.default.fileExists(atPath: url.path) else { return [:] }
+        guard let object = try JSONSerialization.jsonObject(with: Data(contentsOf: url)) as? [String: Any] else {
+            throw ConfigError("\(url.path) is not a JSON object")
+        }
+        return object
+    }
+
+    private func writeConfig(_ json: [String: Any]) throws {
+        let url = options.configURL
+        try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try JSONSerialization.data(withJSONObject: json, options: [.prettyPrinted, .sortedKeys]).write(to: url, options: .atomic)
+    }
+
+    private var patchInfo: PatchInfo {
+        let dev = io.openDevice
+        return PatchInfo(inputs: config.inputChannels, outputs: config.outputChannels, device: dev?.name,
+                         deviceInputs: dev?.inputChannels ?? 0, deviceOutputs: dev?.outputChannels ?? 0,
+                         customInputs: config.inputPatch != nil, customOutputs: config.outputPatch != nil,
+                         monitor: config.hasMonitorOutputs ? config.monitor?.channels ?? [0, 0] : nil)
+    }
+
+    /// Writes Feral's input and output counts into engine.json and reopens the audio with them.
+    private func setChannelCounts(inputs: Int?, outputs: Int?, origin: String) throws {
+        var trial = config
+        if let inputs {
+            let used = scene.show.sources.map(\.input).max() ?? 0
+            guard inputs >= used else { throw ConfigError("source on input \(used) needs at least \(used) inputs; move or delete it first") }
+            trial.inputs = inputs
+        }
+        if let outputs {
+            let used = scene.system.speakers.map(\.output).max() ?? 0
+            guard outputs >= used else { throw ConfigError("speaker on output \(used) needs at least \(used) outputs; move or delete it first") }
+            trial.outputs = outputs
+        }
+        try trial.validate()
+        var json = try readConfigJSON()
+        if inputs != nil { json["inputs"] = trial.inputs }
+        if outputs != nil { json["outputs"] = trial.outputs }
+        try writeConfig(json)
+        log("\(origin): Feral now has \(trial.inputs) inputs and \(trial.outputs) outputs")
+        reload()
+        server?.broadcast(.patch(patch: patchInfo))
+        for delay in [0.5, 2.0] {
+            queue.asyncAfter(deadline: .now() + delay) { [self] in
+                broadcastStatus()
+                server?.broadcast(.patch(patch: patchInfo))
+            }
+        }
+    }
+
+    /// Writes inputPatch and outputPatch into engine.json and reopens the audio on them.
+    private func setPatch(inputs: [Int]?, outputs: [Int]?, monitor: [Int]?, origin: String) throws {
+        var trial = config
+        if let inputs { trial.inputPatch = Array(inputs.prefix(config.inputs)) }
+        if let outputs { trial.outputPatch = Array(outputs.prefix(config.outputs)) }
+        if let monitor {
+            var m = trial.monitor ?? MonitorSettings()
+            let c = monitor + [0, 0]
+            m.left = c[0] > 0 ? c[0] : nil
+            m.right = c[1] > 0 ? c[1] : nil
+            trial.monitor = m
+        }
+        try trial.validate()
+        var json = try readConfigJSON()
+        if let p = trial.inputPatch, inputs != nil { json["inputPatch"] = p }
+        if let p = trial.outputPatch, outputs != nil { json["outputPatch"] = p }
+        if monitor != nil, let m = trial.monitor { json["monitor"] = try JSONSerialization.jsonObject(with: JSONEncoder().encode(m)) }
+        try writeConfig(json)
+        func count(_ p: [Int]?) -> Int { p?.filter { $0 > 0 }.count ?? 0 }
+        log("\(origin): patch set (\(count(trial.inputPatch)) inputs, \(count(trial.outputPatch)) outputs patched)")
+        reload()
+        server?.broadcast(.patch(patch: patchInfo))
+        for delay in [0.5, 2.0] {
+            queue.asyncAfter(deadline: .now() + delay) { [self] in
+                broadcastStatus()
+                server?.broadcast(.patch(patch: patchInfo))
+            }
         }
     }
 
@@ -385,7 +685,8 @@ final class Engine {
         }
         return EngineStatus(version: version, showPath: showURL.path, unsaved: unsaved, currentCue: currentCue,
                             nextCue: scene.cue(after: currentCue)?.id, fading: fades.flatMap { $0.fade.sources }, audio: audio,
-                            owners: owners, osc: oscState, midi: midiState)
+                            owners: owners, osc: oscState, midi: midiState, oscPort: osc?.port, solo: listenSolo, pfl: listenPFL,
+                            monitor: config.monitor, monitorInfo: monitorInfo)
     }
 
     private func broadcastStatus() {
@@ -449,31 +750,116 @@ final class Engine {
         let mapper = ControlMapper(state: scene)
         let triggered = mapper.triggered(by: m)
         if !triggered.isEmpty { log("osc: \(m.description) from \(peer) matches the trigger map") }
-        run(triggered, origin: "OSC trigger", peer: peer)
+        var problems = run(triggered, origin: "OSC trigger", peer: peer)
+        var did = triggered.isEmpty ? [] : ["trigger: " + summary(triggered)]
         let root = m.parts.first
         guard root == "feral" || root == "adm" else {
-            if triggered.isEmpty { logOnce(m.address, "osc: nothing listens for \(m.address) (from \(peer)); add a trigger for it") }
+            if triggered.isEmpty {
+                logOnce(m.address, "osc: nothing listens for \(m.address) (from \(peer)); add a trigger for it")
+                noteHeard(.osc, from: "\(peer)", m.description, ["nothing listens for \(m.address); add a trigger for it"], handled: false)
+            } else {
+                noteHeard(.osc, from: "\(peer)", m.description, did + problems, handled: problems.isEmpty)
+            }
             return
         }
         do {
-            run(try mapper.actions(for: m), origin: root == "adm" ? "ADM-OSC" : "OSC", peer: peer)
+            let actions = try mapper.actions(for: m)
+            did.append(summary(actions))
+            problems += run(actions, origin: root == "adm" ? "ADM-OSC" : "OSC", peer: peer)
         } catch {
             logOnce("err:\(m.address)", "osc: \(error) (from \(peer))")
+            problems.append("\(error)")
         }
+        noteHeard(.osc, from: "\(peer)", m.description, did + problems, handled: problems.isEmpty)
     }
 
     private func handle(_ m: MIDIMessage, from source: String) {
         let actions = ControlMapper(state: scene).triggered(by: m)
         guard !actions.isEmpty else {
             logOnce("midi:\(m)", "midi: \(m) from \(source); no trigger for it")
+            noteHeard(.midi, from: source, m.description, ["no trigger for it; add one to the trigger map"], handled: false)
             return
         }
         log("midi: \(m) from \(source)")
-        run(actions, origin: "MIDI", peer: nil)
+        let problems = run(actions, origin: "MIDI", peer: nil)
+        noteHeard(.midi, from: source, m.description, ["trigger: " + summary(actions)] + problems, handled: problems.isEmpty)
     }
 
-    /// Runs OSC's and MIDI's actions as the app's requests run.
-    private func run(_ actions: [ControlAction], origin: String, peer: OSCServer.Peer?) {
+    /// Notes a message for the control monitor, if a client is watching.
+    private func noteHeard(_ kind: ControlActivity.Kind, from: String, _ message: String, _ result: [String], handled: Bool) {
+        guard watchers.values.contains(where: { $0.activity }) else { return }
+        guard heard.count < Engine.maxHeard else { heardDropped += 1; return }
+        heard.append(ControlActivity(time: Date().timeIntervalSince1970, kind: kind, from: from, message: message,
+                                     result: result.joined(separator: "; "), handled: handled))
+    }
+
+    private func sendActivity() {
+        guard !heard.isEmpty || heardDropped > 0 else { return }
+        let clients = watchers.filter { $0.value.activity }.map(\.key)
+        server?.send(.activity(lines: heard, dropped: heardDropped), to: clients)
+        heard = []
+        heardDropped = 0
+    }
+
+    /// Points the core's analysis tap at the newest request, or at any still wanted, or off.
+    private func pickAnalysis(newest: Int?) {
+        let input = newest ?? (analysed.flatMap { a in analysers.values.contains(a) ? a : nil }) ?? analysers.values.first
+        guard input != analysed else { return }
+        analysed = input
+        core.setAnalysisInput(input.map { $0 - 1 })
+    }
+
+    private func sendSpectrum() {
+        guard let input = analysed else { return }
+        let clients = analysers.filter { $0.value == input }.map(\.key)
+        guard !clients.isEmpty else { return }
+        let a = core.readAnalysis(frames: Spectrum.fftSize)
+        guard a.written > 0 else { return }
+        let frame = SpectrumFrame(input: input, pre: Spectrum.analyse(a.pre, sampleRate: config.sampleRate).map { ($0 * 10).rounded() / 10 },
+                                  post: Spectrum.analyse(a.post, sampleRate: config.sampleRate).map { ($0 * 10).rounded() / 10 })
+        server?.send(.spectrum(frame: frame), to: clients)
+    }
+
+    private func sendMeters() {
+        let clients = watchers.filter { $0.value.meters }.map(\.key)
+        guard !clients.isEmpty else { return }
+        let l = core.readMeters(inputs: config.inputs, outputs: config.outputs)
+        let frame = MeterFrame(inputPeak: l.inputPeak.map(MeterFrame.dB), inputRMS: l.inputRMS.map(MeterFrame.dB),
+                               outputPeak: l.outputPeak.map(MeterFrame.dB), outputRMS: l.outputRMS.map(MeterFrame.dB),
+                               firstInputChannel: config.firstInputChannel, firstOutputChannel: config.firstOutputChannel,
+                               load: core.stats().maxLoad,
+                               inputReduction: core.readReduction(inputs: config.inputs).map { ($0 * 10).rounded() / 10 },
+                               inputBandReduction: core.readBandReduction(inputs: config.inputs).map { $0.map { ($0 * 10).rounded() / 10 } })
+        server?.send(.meters(frame: frame), to: clients)
+    }
+
+    /// What OSC's or MIDI's actions do, for the control monitor.
+    private func summary(_ actions: [ControlAction]) -> String {
+        func sources(_ ids: [UUID]) -> String {
+            let names = ids.compactMap { scene.source($0)?.label }
+            return names.count == 1 ? "source \(names[0])" : "\(ids.count) sources"
+        }
+        return actions.map { a -> String in
+            switch a {
+            case .go(let cue): return cue.map { "GO cue \($0)" } ?? "GO"
+            case .recall(let s, let f): return "recall snapshot \(s)" + (f.map { " over \($0) s" } ?? "")
+            case .stopFades: return "stop fades"
+            case .save: return "save"
+            case .apply(let c): return describe(c)
+            case .update(let u, let owner):
+                return "set \(sources(u.map(\.id)))" + (owner.map { "; \($0.label) owns its position" } ?? "")
+            case .release(let ids): return "hand \(sources(ids)) back to cues"
+            case .subscribe(let port, let adm): return "subscribed" + (port.map { " (to port \($0))" } ?? "") + (adm ? ", ADM-OSC" : "")
+            case .unsubscribe: return "unsubscribed"
+            case .reply(let r): return "answered \(r.description)"
+            }
+        }.joined(separator: "; ")
+    }
+
+    /// Runs OSC's and MIDI's actions as the app's requests run. Returns what went wrong.
+    @discardableResult
+    private func run(_ actions: [ControlAction], origin: String, peer: OSCServer.Peer?) -> [String] {
+        var problems: [String] = []
         for action in actions {
             do {
                 switch action {
@@ -525,9 +911,11 @@ final class Engine {
                 }
             } catch {
                 logOnce("run:\(error)", "\(origin): \(error)")
+                problems.append("\(error)")
                 if let peer { osc?.send([OSCMessage("/feral/error", [.string("\(error)")])], to: peer) }
             }
         }
+        return problems
     }
 
     /// Sends OSC subscribers what a command changed.
@@ -564,6 +952,10 @@ final class Engine {
         case .setGroup(let g): return "set group \(g.name)"
         case .removeGroup: return "removed a group"
         case .setLFESpeakers(let s): return "set \(s.count) LFE speaker(s)"
+        case .setLFE(let mode, let gainDB): return String(format: "set the LFE group to %@ at %+.1f dB", mode.rawValue, gainDB)
+        case .setSourceGroup(let g): return "set source group \(g.label)"
+        case .setListener(let l): return String(format: "moved the listener to %.1f %.1f %.1f, facing %.0f°", l.position.x, l.position.y, l.position.z, l.facing)
+        case .removeSourceGroup: return "removed a source group"
         case .captureSnapshot(let c): return "stored snapshot \(c.number) \(c.name)"
         case .setSnapshot(let s): return "set snapshot \(s.label)"
         case .removeSnapshot: return "removed a snapshot"
@@ -624,6 +1016,9 @@ final class Engine {
         }
         let old = config
         config = newConfig
+        // Rebuild the monitor even if nothing it uses changed (a new HRTF folder, say).
+        monitorKey = nil
+        hrirCache = nil
         if !old.sameDeviceSettings(as: newConfig) {
             if newConfig.sampleRate != old.sampleRate {
                 log("reload: sampleRate changed; load figures use the old rate until the engine restarts")

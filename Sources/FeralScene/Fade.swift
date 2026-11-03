@@ -7,6 +7,11 @@ import Foundation
 /// - Gains, send levels and the LFE send move in dB; a send that starts or ends absent fades from or to
 ///   `floorDB` and is added at the start or dropped at the end.
 /// - A source being unmuted unmutes at the start, one being muted mutes at the end.
+/// - Trim and delay move in a straight line, polarity flips halfway. EQ and compressor gains,
+///   thresholds and ratios move linearly and frequencies, Qs and times geometrically; an EQ or
+///   compressor turning on does so at the start (from flat), one turning off at the end; a high-pass
+///   appearing sweeps up from 20 Hz, one going sweeps down to it. Distance modelling moves the same
+///   way, from or to none (no roll-off, no air).
 ///
 /// The engine steps it every 20 ms and applies the values as `updateSources` commands, so the app,
 /// the journal and the audio all follow the same path.
@@ -83,6 +88,13 @@ public struct SnapshotFade {
                 }
             }
         }
+        if let x = b.trimDB { v.trimDB = done ? x : lerp(a.trimDB ?? x, x) }
+        if let x = b.delayMS { v.delayMS = done ? x : lerp(a.delayMS ?? x, x) }
+        // Polarity flips halfway.
+        if let x = b.invert { v.invert = t >= 0.5 ? x : (a.invert ?? x) }
+        if let x = b.eq { v.eq = done ? x : (a.eq ?? .flat).fading(to: x, at: t) }
+        if let x = b.compressor { v.compressor = done ? x : (a.compressor ?? .off).fading(to: x, at: t) }
+        if let x = b.distance { v.distance = done ? x : (a.distance ?? .off).fading(to: x, at: t) }
         if b.lfeOff != nil || b.lfeDB != nil {
             let y = b.lfeOff == true ? nil : b.lfeDB
             if done {
@@ -93,5 +105,76 @@ public struct SnapshotFade {
             }
         }
         return v
+    }
+}
+
+private func lerp(_ x: Double, _ y: Double, _ t: Double) -> Double { x + (y - x) * t }
+private func glide(_ x: Double, _ y: Double, _ t: Double) -> Double { x > 0 && y > 0 ? x * pow(y / x, t) : lerp(x, y, t) }
+
+extension SourceEQ {
+    /// This EQ a fraction `t` (after the curve, below 1) of the way to `to`.
+    func fading(to b: SourceEQ, at t: Double) -> SourceEQ {
+        // Off is flat: an EQ turning on starts flat and is on from the start; one turning off flattens
+        // out and goes off at the end.
+        let a = on ? self : SourceEQ(on: false, lowHz: b.lowHz, lowMidHz: b.lowMidHz, midHz: b.midHz, highMidHz: b.highMidHz,
+                                     highHz: b.highHz)
+        let target = b.on ? b : SourceEQ(on: false, lowHz: a.lowHz, lowMidHz: a.lowMidHz, lowMidQ: a.lowMidQ, midHz: a.midHz,
+                                         midQ: a.midQ, highMidHz: a.highMidHz, highMidQ: a.highMidQ, highHz: a.highHz)
+        var v = SourceEQ(on: on || b.on)
+        switch (a.highPassHz, target.highPassHz) {
+        case let (x?, y?): v.highPassHz = glide(x, y, t)
+        case let (nil, y?): v.highPassHz = glide(20, y, t)
+        case let (x?, nil): v.highPassHz = glide(x, 20, t)
+        case (nil, nil): v.highPassHz = nil
+        }
+        v.lowHz = glide(a.lowHz, target.lowHz, t); v.lowDB = lerp(a.lowDB, target.lowDB, t)
+        v.lowMidHz = glide(a.lowMidHz, target.lowMidHz, t); v.lowMidDB = lerp(a.lowMidDB, target.lowMidDB, t)
+        v.lowMidQ = glide(a.lowMidQ, target.lowMidQ, t)
+        v.midHz = glide(a.midHz, target.midHz, t); v.midDB = lerp(a.midDB, target.midDB, t); v.midQ = glide(a.midQ, target.midQ, t)
+        v.highMidHz = glide(a.highMidHz, target.highMidHz, t); v.highMidDB = lerp(a.highMidDB, target.highMidDB, t)
+        v.highMidQ = glide(a.highMidQ, target.highMidQ, t)
+        v.highHz = glide(a.highHz, target.highHz, t); v.highDB = lerp(a.highDB, target.highDB, t)
+        return v
+    }
+}
+
+extension Compressor {
+    /// This compressor a fraction `t` (after the curve, below 1) of the way to `to`.
+    func fading(to b: Compressor, at t: Double) -> Compressor {
+        // Off is a ratio of 1 and no makeup: one turning on starts there, one turning off ends there.
+        var a = self, target = b
+        if !a.on { a.ratio = 1; a.makeupDB = 0; a.bands = a.bands.map { var x = $0; x.ratio = 1; x.gainDB = 0; return x } }
+        if !target.on { target.ratio = 1; target.makeupDB = 0; target.bands = target.bands.map { var x = $0; x.ratio = 1; x.gainDB = 0; return x } }
+        var v = target
+        v.on = on || b.on
+        // The mode changes at the start when going multiband, at the end when leaving it.
+        v.multiband = b.multiband || multiband
+        v.thresholdDB = lerp(a.thresholdDB, target.thresholdDB, t)
+        v.ratio = lerp(a.ratio, target.ratio, t)
+        v.attackMS = glide(a.attackMS, target.attackMS, t)
+        v.releaseMS = glide(a.releaseMS, target.releaseMS, t)
+        v.makeupDB = lerp(a.makeupDB, target.makeupDB, t)
+        v.crossoverLowHz = glide(a.crossoverLowHz, target.crossoverLowHz, t)
+        v.crossoverHighHz = glide(a.crossoverHighHz, target.crossoverHighHz, t)
+        if a.bands.count == target.bands.count {
+            v.bands = zip(a.bands, target.bands).map { x, y in
+                CompressorBand(thresholdDB: lerp(x.thresholdDB, y.thresholdDB, t), ratio: lerp(x.ratio, y.ratio, t),
+                               attackMS: glide(x.attackMS, y.attackMS, t), releaseMS: glide(x.releaseMS, y.releaseMS, t),
+                               gainDB: lerp(x.gainDB, y.gainDB, t))
+            }
+        }
+        return v
+    }
+}
+
+extension SourceDistance {
+    /// This distance modelling a fraction `t` (after the curve, below 1) of the way to `to`.
+    func fading(to b: SourceDistance, at t: Double) -> SourceDistance {
+        // Off is no roll-off and no air: one turning on starts there, one turning off ends there.
+        var a = self, target = b
+        if !a.on { a.rolloffDB = 0; a.air = 0; a.referenceM = b.referenceM }
+        if !target.on { target.rolloffDB = 0; target.air = 0; target.referenceM = a.referenceM }
+        return SourceDistance(on: on || b.on, rolloffDB: lerp(a.rolloffDB, target.rolloffDB, t),
+                              referenceM: glide(a.referenceM, target.referenceM, t), air: lerp(a.air, target.air, t))
     }
 }

@@ -10,6 +10,48 @@ import Foundation
 /// ones are refused.
 public let showSchema = 1
 
+/// A group of sources, like a VCA: its gain adds to each member's and its mute mutes them all, and
+/// with `linked` on the app moves its members together as a block. A source may be in several
+/// groups; their gains add up.
+public struct SourceGroup: Codable, Equatable, Identifiable {
+    public var id: UUID
+    public var number: Int
+    public var name: String
+    public var sources: [UUID]
+    public var gainDB: Double
+    public var mute: Bool
+    /// Dragging one member moves the others by the same amount.
+    public var linked: Bool
+    /// "#RRGGBB" for the app; none picks one from the number.
+    public var colour: String?
+    /// A stereo source: two members, left then right, spread by an azimuth spacing.
+    public var stereo: Bool
+
+    public init(id: UUID = UUID(), number: Int, name: String, sources: [UUID] = [], gainDB: Double = 0,
+                mute: Bool = false, linked: Bool = true, colour: String? = nil, stereo: Bool = false) {
+        self.id = id; self.number = number; self.name = name; self.sources = sources; self.gainDB = gainDB
+        self.mute = mute; self.linked = linked; self.colour = colour; self.stereo = stereo
+    }
+
+    enum CodingKeys: String, CodingKey { case id, number, name, sources, gainDB, mute, linked, colour, stereo }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(UUID.self, forKey: .id)
+        number = try c.decodeIfPresent(Int.self, forKey: .number) ?? 1
+        name = try c.decodeIfPresent(String.self, forKey: .name) ?? "Group"
+        sources = try c.decodeIfPresent([UUID].self, forKey: .sources) ?? []
+        gainDB = try c.decodeIfPresent(Double.self, forKey: .gainDB) ?? 0
+        mute = try c.decodeIfPresent(Bool.self, forKey: .mute) ?? false
+        linked = try c.decodeIfPresent(Bool.self, forKey: .linked) ?? true
+        colour = try c.decodeIfPresent(String.self, forKey: .colour)
+        stereo = try c.decodeIfPresent(Bool.self, forKey: .stereo) ?? false
+    }
+
+    /// "2 Band".
+    public var label: String { "\(number) \(name)" }
+}
+
 /// A source's send to one speaker group.
 public struct GroupSend: Codable, Equatable, Hashable {
     public var group: UUID
@@ -30,7 +72,7 @@ public struct Source: Codable, Equatable, Identifiable {
     public var position: Position
     public var gainDB: Double
     public var mute: Bool
-    /// Spread in degrees (VBAP groups).
+    /// Spread in degrees, for every algorithm.
     public var width: Double
     /// "#RRGGBB" for the app; none picks one from the number.
     public var colour: String?
@@ -38,14 +80,31 @@ public struct Source: Codable, Equatable, Identifiable {
     public var sends: [GroupSend]
     /// Send to the LFE speakers in dB; none sends nothing.
     public var lfeDB: Double?
+    /// The channel EQ and compressor, before anything else (off when none).
+    public var eq: SourceEQ?
+    public var compressor: Compressor?
+    /// At the very start: trim (±24 dB), polarity, and a delay (0 to 1000 ms) to line the source up
+    /// with its acoustic sound.
+    public var trimDB: Double
+    public var invert: Bool
+    public var delayMS: Double
+    /// Level and air absorption with distance from the listener (off when none).
+    public var distance: SourceDistance?
 
     public init(id: UUID = UUID(), number: Int, name: String? = nil, input: Int, position: Position, gainDB: Double = 0,
-                mute: Bool = false, width: Double = 0, colour: String? = nil, sends: [GroupSend] = [], lfeDB: Double? = nil) {
+                mute: Bool = false, width: Double = 0, colour: String? = nil, sends: [GroupSend] = [], lfeDB: Double? = nil,
+                eq: SourceEQ? = nil, compressor: Compressor? = nil, trimDB: Double = 0, invert: Bool = false, delayMS: Double = 0,
+                distance: SourceDistance? = nil) {
+        self.distance = distance
         self.id = id; self.number = number; self.name = name; self.input = input; self.position = position
         self.gainDB = gainDB; self.mute = mute; self.width = width; self.colour = colour; self.sends = sends; self.lfeDB = lfeDB
+        self.eq = eq; self.compressor = compressor; self.trimDB = trimDB; self.invert = invert; self.delayMS = delayMS
     }
 
-    enum CodingKeys: String, CodingKey { case id, number, name, input, position, gainDB, mute, width, colour, sends, lfeDB }
+    enum CodingKeys: String, CodingKey {
+        case id, number, name, input, position, gainDB, mute, width, colour, sends, lfeDB, eq, compressor, trimDB, invert, delayMS,
+             distance
+    }
 
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -60,6 +119,12 @@ public struct Source: Codable, Equatable, Identifiable {
         colour = try c.decodeIfPresent(String.self, forKey: .colour)
         sends = try c.decodeIfPresent([GroupSend].self, forKey: .sends) ?? []
         lfeDB = try c.decodeIfPresent(Double.self, forKey: .lfeDB)
+        eq = try c.decodeIfPresent(SourceEQ.self, forKey: .eq)
+        compressor = try c.decodeIfPresent(Compressor.self, forKey: .compressor)
+        trimDB = try c.decodeIfPresent(Double.self, forKey: .trimDB) ?? 0
+        invert = try c.decodeIfPresent(Bool.self, forKey: .invert) ?? false
+        delayMS = try c.decodeIfPresent(Double.self, forKey: .delayMS) ?? 0
+        distance = try c.decodeIfPresent(SourceDistance.self, forKey: .distance)
     }
 
     /// "12 Vox" or "12".
@@ -143,11 +208,22 @@ public struct SpeakerGroup: Codable, Equatable, Identifiable {
     public var dimensions: Int?
     public var blur: Double
     public var rolloffDB: Double
+    /// KNN: K, how many of the nearest speakers may play.
+    public var neighbours: Int
+    /// KNN: degrees from the nearest speaker within which the others play.
+    public var spread: Double
+    /// SPCAP: the cardioid's exponent, 1 or more.
+    public var tightness: Double
+    /// Pan: how far a source halfway between two speakers is down in each, in dB (3 constant power,
+    /// 4.5, 6 linear).
+    public var panLawDB: Double
 
     public init(id: UUID = UUID(), number: Int, name: String, renderer: Renderer, speakers: [UUID], gainDB: Double = 0,
                 weightsDB: [String: Double] = [:], colour: String? = nil, precedenceMS: Double = 10, rolloff: Double = 1,
                 referenceDistance: Double? = nil, distanceOffset: Double? = nil, reference: Position? = nil,
-                dimensions: Int? = nil, blur: Double = 0.5, rolloffDB: Double = 6) {
+                dimensions: Int? = nil, blur: Double = 0.5, rolloffDB: Double = 6, neighbours: Int = 3, spread: Double = 30,
+                tightness: Double = 1, panLawDB: Double = 3) {
+        self.neighbours = neighbours; self.spread = spread; self.tightness = tightness; self.panLawDB = panLawDB
         self.id = id; self.number = number; self.name = name; self.renderer = renderer; self.speakers = speakers
         self.gainDB = gainDB; self.weightsDB = weightsDB; self.colour = colour; self.precedenceMS = precedenceMS
         self.rolloff = rolloff; self.referenceDistance = referenceDistance; self.distanceOffset = distanceOffset
@@ -156,7 +232,7 @@ public struct SpeakerGroup: Codable, Equatable, Identifiable {
 
     enum CodingKeys: String, CodingKey {
         case id, number, name, renderer, speakers, gainDB, weightsDB, colour, precedenceMS, rolloff, referenceDistance,
-             distanceOffset, reference, dimensions, blur, rolloffDB
+             distanceOffset, reference, dimensions, blur, rolloffDB, neighbours, spread, tightness, panLawDB
     }
 
     public init(from decoder: Decoder) throws {
@@ -178,6 +254,10 @@ public struct SpeakerGroup: Codable, Equatable, Identifiable {
         dimensions = try c.decodeIfPresent(Int.self, forKey: .dimensions)
         blur = try c.decodeIfPresent(Double.self, forKey: .blur) ?? d.blur
         rolloffDB = try c.decodeIfPresent(Double.self, forKey: .rolloffDB) ?? d.rolloffDB
+        neighbours = try c.decodeIfPresent(Int.self, forKey: .neighbours) ?? d.neighbours
+        spread = try c.decodeIfPresent(Double.self, forKey: .spread) ?? d.spread
+        tightness = try c.decodeIfPresent(Double.self, forKey: .tightness) ?? d.tightness
+        panLawDB = try c.decodeIfPresent(Double.self, forKey: .panLawDB) ?? d.panLawDB
     }
 }
 
@@ -212,11 +292,21 @@ public struct SourceValues: Codable, Equatable {
     public var lfeDB: Double?
     /// True turns the LFE send off (lfeDB is then ignored).
     public var lfeOff: Bool?
+    public var eq: SourceEQ?
+    public var compressor: Compressor?
+    public var trimDB: Double?
+    public var invert: Bool?
+    public var delayMS: Double?
+    public var distance: SourceDistance?
 
     public init(position: Position? = nil, gainDB: Double? = nil, mute: Bool? = nil, width: Double? = nil,
-                sends: [GroupSend]? = nil, lfeDB: Double? = nil, lfeOff: Bool? = nil) {
+                sends: [GroupSend]? = nil, lfeDB: Double? = nil, lfeOff: Bool? = nil,
+                eq: SourceEQ? = nil, compressor: Compressor? = nil, trimDB: Double? = nil, invert: Bool? = nil,
+                delayMS: Double? = nil, distance: SourceDistance? = nil) {
+        self.distance = distance
         self.position = position; self.gainDB = gainDB; self.mute = mute; self.width = width
         self.sends = sends; self.lfeDB = lfeDB; self.lfeOff = lfeOff
+        self.eq = eq; self.compressor = compressor; self.trimDB = trimDB; self.invert = invert; self.delayMS = delayMS
     }
 
     /// These values with `newer`'s on top.
@@ -227,6 +317,12 @@ public struct SourceValues: Codable, Equatable {
         if let m = newer.mute { v.mute = m }
         if let w = newer.width { v.width = w }
         if let s = newer.sends { v.sends = s }
+        if let e = newer.eq { v.eq = e }
+        if let c = newer.compressor { v.compressor = c }
+        if let t = newer.trimDB { v.trimDB = t }
+        if let i = newer.invert { v.invert = i }
+        if let d = newer.delayMS { v.delayMS = d }
+        if let d = newer.distance { v.distance = d }
         if newer.lfeOff == true { v.lfeOff = true; v.lfeDB = nil } else if let l = newer.lfeDB { v.lfeDB = l; v.lfeOff = nil }
         return v
     }
@@ -247,6 +343,43 @@ public struct SourceUpdate: Codable, Equatable {
 /// The source values a snapshot can store.
 public enum SnapshotField: String, Codable, CaseIterable, Equatable {
     case position, gain, mute, width, sends, lfe
+    /// Trim, polarity and input delay.
+    case input
+    case eq, compressor
+    /// Level and air absorption with distance.
+    case distance
+
+    /// The fields a set of stored values holds.
+    public static func present(in v: SourceValues) -> Set<SnapshotField> {
+        var f = Set<SnapshotField>()
+        if v.position != nil { f.insert(.position) }
+        if v.gainDB != nil { f.insert(.gain) }
+        if v.mute != nil { f.insert(.mute) }
+        if v.width != nil { f.insert(.width) }
+        if v.sends != nil { f.insert(.sends) }
+        if v.lfeDB != nil || v.lfeOff != nil { f.insert(.lfe) }
+        if v.trimDB != nil || v.invert != nil || v.delayMS != nil { f.insert(.input) }
+        if v.eq != nil { f.insert(.eq) }
+        if v.compressor != nil { f.insert(.compressor) }
+        if v.distance != nil { f.insert(.distance) }
+        return f
+    }
+
+    /// Copies this field from `all` into `v`, or clears it from `v`.
+    public func copy(from all: SourceValues, into v: inout SourceValues, _ on: Bool = true) {
+        switch self {
+        case .position: v.position = on ? all.position : nil
+        case .gain: v.gainDB = on ? all.gainDB : nil
+        case .mute: v.mute = on ? all.mute : nil
+        case .width: v.width = on ? all.width : nil
+        case .sends: v.sends = on ? all.sends : nil
+        case .lfe: v.lfeDB = on ? all.lfeDB : nil; v.lfeOff = on ? all.lfeOff : nil
+        case .input: v.trimDB = on ? all.trimDB : nil; v.invert = on ? all.invert : nil; v.delayMS = on ? all.delayMS : nil
+        case .eq: v.eq = on ? all.eq : nil
+        case .compressor: v.compressor = on ? all.compressor : nil
+        case .distance: v.distance = on ? all.distance : nil
+        }
+    }
 }
 
 /// Stored source values, recalled with a fade. It holds only what its scope included when stored:
@@ -354,6 +487,8 @@ public struct Show: Codable, Equatable {
     public var schema: Int
     public var name: String
     public var sources: [Source]
+    /// Groups of sources (VCA-like level and mute, moving together).
+    public var sourceGroups: [SourceGroup]
     public var groups: [SpeakerGroup]
     public var snapshots: [Snapshot]
     public var cues: [Cue]
@@ -364,9 +499,10 @@ public struct Show: Codable, Equatable {
         schema = showSchema
         self.name = name; self.sources = sources; self.groups = groups; self.snapshots = snapshots; self.cues = cues
         self.control = control
+        sourceGroups = []
     }
 
-    enum CodingKeys: String, CodingKey { case schema, name, sources, groups, snapshots, cues, control }
+    enum CodingKeys: String, CodingKey { case schema, name, sources, sourceGroups, groups, snapshots, cues, control }
 
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -376,6 +512,7 @@ public struct Show: Codable, Equatable {
         }
         name = try c.decodeIfPresent(String.self, forKey: .name) ?? "Untitled"
         sources = try c.decodeIfPresent([Source].self, forKey: .sources) ?? []
+        sourceGroups = try c.decodeIfPresent([SourceGroup].self, forKey: .sourceGroups) ?? []
         groups = try c.decodeIfPresent([SpeakerGroup].self, forKey: .groups) ?? []
         snapshots = try c.decodeIfPresent([Snapshot].self, forKey: .snapshots) ?? []
         cues = try c.decodeIfPresent([Cue].self, forKey: .cues) ?? []
@@ -385,19 +522,73 @@ public struct Show: Codable, Equatable {
     }
 }
 
+/// The listening point: where it is in the speakers' coordinates and which way it faces. Sources'
+/// azimuth, elevation and distance are measured from it; azimuth 0 is the way it faces.
+public struct Listener: Codable, Equatable {
+    public var position: Position
+    /// The direction azimuth 0 points, in degrees from +y (down the plan, towards the audience),
+    /// positive towards -x; 180 faces the stage, the default.
+    public var facing: Double
+
+    public init(position: Position = Position(0, 0, 1.2), facing: Double = 180) {
+        self.position = position; self.facing = facing
+    }
+
+    /// At the speakers' centre in plan, at ear height (1.2 m).
+    public static func centre(of speakers: [Speaker]) -> Listener {
+        guard !speakers.isEmpty else { return Listener() }
+        let n = Double(speakers.count)
+        let x = speakers.map(\.position.x).reduce(0, +) / n, y = speakers.map(\.position.y).reduce(0, +) / n
+        return Listener(position: Position((x * 100).rounded() / 100, (y * 100).rounded() / 100, 1.2))
+    }
+
+    enum CodingKeys: String, CodingKey { case position, facing }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        position = try c.decodeIfPresent(Position.self, forKey: .position) ?? Position(0, 0, 1.2)
+        facing = try c.decodeIfPresent(Double.self, forKey: .facing) ?? 180
+    }
+}
+
+/// How the LFE group feeds its subs from each source's LFE send.
+public enum LFEMode: String, Codable, Equatable, CaseIterable {
+    /// Every sub at the same level and no delay of its own: the array's own trims and delays (arc,
+    /// end-fire, cardioid) shape the coverage. The default.
+    case equal
+    /// Level and delay from the source's position, as a Delay group does.
+    case delay
+    /// Level from each sub's distance to the source, as a DBAP group does.
+    case dbap
+    /// Left to right across the subs with a pan law, as a console's pan pot does (a left and a
+    /// right sub stack, or L, C and R).
+    case pan
+}
+
 /// system.json: the speakers and which of them take the sources' LFE sends.
 public struct SystemLayer: Codable, Equatable {
     public var schema: Int
     public var speakers: [Speaker]
-    /// The speakers a source's lfeDB send feeds.
+    /// The speakers a source's lfeDB send feeds: the LFE group, which is always there.
     public var lfeSpeakers: [UUID]
+    /// How the LFE group feeds them, and its level (added to every source's LFE send).
+    public var lfeMode: LFEMode
+    public var lfeGainDB: Double
+    /// The listening point that sources' azimuth, elevation and distance are measured from, in the
+    /// speakers' coordinates.
+    public var listener: Listener
 
-    public init(speakers: [Speaker] = [], lfeSpeakers: [UUID] = []) {
+    /// No listener: one at the speakers' centre in plan, at ear height (where VBAP panned from before
+    /// there was a listener).
+    public init(speakers: [Speaker] = [], lfeSpeakers: [UUID] = [], listener: Listener? = nil) {
         schema = showSchema
         self.speakers = speakers; self.lfeSpeakers = lfeSpeakers
+        self.listener = listener ?? Listener.centre(of: speakers)
+        lfeMode = .equal
+        lfeGainDB = 0
     }
 
-    enum CodingKeys: String, CodingKey { case schema, speakers, lfeSpeakers }
+    enum CodingKeys: String, CodingKey { case schema, speakers, lfeSpeakers, listener, lfeMode, lfeGainDB }
 
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -407,6 +598,9 @@ public struct SystemLayer: Codable, Equatable {
         }
         speakers = try c.decodeIfPresent([Speaker].self, forKey: .speakers) ?? []
         lfeSpeakers = try c.decodeIfPresent([UUID].self, forKey: .lfeSpeakers) ?? []
+        listener = try c.decodeIfPresent(Listener.self, forKey: .listener) ?? Listener.centre(of: speakers)
+        lfeMode = try c.decodeIfPresent(LFEMode.self, forKey: .lfeMode) ?? .equal
+        lfeGainDB = try c.decodeIfPresent(Double.self, forKey: .lfeGainDB) ?? 0
         schema = showSchema
     }
 }

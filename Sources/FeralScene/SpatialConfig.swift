@@ -29,6 +29,12 @@ public struct Position: Codable, Equatable {
         try c.encode(x); try c.encode(y); try c.encode(z)
     }
 
+    /// Turned about the vertical axis through `centre` by `degrees` (positive anticlockwise in x, y).
+    public func turned(by degrees: Double, around centre: Position) -> Position {
+        let a = degrees * .pi / 180, dx = x - centre.x, dy = y - centre.y
+        return Position(centre.x + dx * cos(a) - dy * sin(a), centre.y + dx * sin(a) + dy * cos(a), z)
+    }
+
     public func distance(to o: Position) -> Double { ((x - o.x) * (x - o.x) + (y - o.y) * (y - o.y) + (z - o.z) * (z - o.z)).squareRoot() }
 
     var c: feral_point { feral_point(x: x, y: y, z: z) }
@@ -121,13 +127,25 @@ public struct SpeakerConfig: Codable, Equatable {
     public var label: String { name.map { "\($0) (output \(output))" } ?? "output \(output)" }
 }
 
-public enum Renderer: String, Codable, Equatable {
+public enum Renderer: String, Codable, Equatable, CaseIterable {
     /// Delay-based reinforcement (TiMax and Soundscape style): the main one for live.
     case delay
     /// Vector-base amplitude panning, for overheads, domes, rings and lines.
     case vbap
     /// Distance-based amplitude panning, for irregular layouts with no sweet spot.
     case dbap
+    /// K nearest neighbours: as few speakers as possible, the nearest K with a spread.
+    case knn
+    /// Speaker-placement correction amplitude panning: a cardioid over every speaker, corrected for
+    /// how crowded each one is, for irregular layouts.
+    case spcap
+    /// A console's pan pot: the source's position across the stage, left to right as the listener
+    /// faces, pans between the two neighbouring speakers on that line (stereo, LCR, a row of
+    /// speakers) with a pan law. Sources past the ends stay in the end speaker.
+    case pan
+
+    /// Pans by direction from a listening point (by default the listener).
+    public var isDirectional: Bool { self == .vbap || self == .knn || self == .spcap }
 }
 
 /// A speaker group and the renderer that feeds it. Only the keys for its renderer are used.
@@ -154,7 +172,8 @@ public struct GroupConfig: Codable, Equatable {
     // VBAP
     /// The listening point directions are taken from. None: the speakers' centre in plan, 1.2 m up.
     public var reference: Position?
-    /// 2 or 3; none chooses 2D when the speakers are all at about the same elevation.
+    /// 2D is flat: azimuth and distance in plan only, ignoring height. VBAP: 2 or 3, none chooses 2D
+    /// when the speakers are all at about the same elevation. Delay and DBAP: 2, or 3 or none for 3D.
     public var dimensions: Int?
 
     // DBAP
@@ -163,10 +182,29 @@ public struct GroupConfig: Codable, Equatable {
     /// R: dB per doubling of distance.
     public var rolloffDB: Double
 
+    // KNN
+    /// K: how many of the nearest speakers may play.
+    public var neighbours: Int
+    /// Degrees: how far from the nearest speaker the others still play.
+    public var spread: Double
+
+    // SPCAP
+    /// The cardioid's exponent, 1 or more: higher is narrower.
+    public var tightness: Double
+
+    // Pan
+    /// The level halfway between two speakers, in dB down in each: 3 (constant power), 4.5 or 6 (linear).
+    public var panLawDB: Double
+    /// The direction across the stage, left to right as the listener faces (a unit vector in plan);
+    /// none is +x. The show sets it from its listener.
+    public var panAxis: Position?
+
     public init(name: String, renderer: Renderer, speakers: String, gainDB: Double = 0, weightsDB: [String: Double] = [:],
                 precedenceMS: Double = 10, rolloff: Double = 1, referenceDistance: Double? = nil,
                 distanceOffset: Double? = nil, reference: Position? = nil, dimensions: Int? = nil,
-                blur: Double = 0.5, rolloffDB: Double = 6) {
+                blur: Double = 0.5, rolloffDB: Double = 6, neighbours: Int = 3, spread: Double = 30, tightness: Double = 1,
+                panLawDB: Double = 3) {
+        self.neighbours = neighbours; self.spread = spread; self.tightness = tightness; self.panLawDB = panLawDB
         self.name = name; self.renderer = renderer; self.speakers = speakers; self.gainDB = gainDB
         self.weightsDB = weightsDB; self.precedenceMS = precedenceMS; self.rolloff = rolloff
         self.referenceDistance = referenceDistance; self.distanceOffset = distanceOffset
@@ -175,7 +213,7 @@ public struct GroupConfig: Codable, Equatable {
 
     enum CodingKeys: String, CodingKey {
         case name, renderer, speakers, gainDB, weightsDB, precedenceMS, rolloff, referenceDistance, distanceOffset,
-             reference, dimensions, blur, rolloffDB
+             reference, dimensions, blur, rolloffDB, neighbours, spread, tightness, panLawDB, panAxis
     }
 
     public init(from decoder: Decoder) throws {
@@ -196,6 +234,11 @@ public struct GroupConfig: Codable, Equatable {
         dimensions = try c.decodeIfPresent(Int.self, forKey: .dimensions)
         blur = try c.decodeIfPresent(Double.self, forKey: .blur) ?? d.blur
         rolloffDB = try c.decodeIfPresent(Double.self, forKey: .rolloffDB) ?? d.rolloffDB
+        neighbours = try c.decodeIfPresent(Int.self, forKey: .neighbours) ?? d.neighbours
+        spread = try c.decodeIfPresent(Double.self, forKey: .spread) ?? d.spread
+        tightness = try c.decodeIfPresent(Double.self, forKey: .tightness) ?? d.tightness
+        panLawDB = try c.decodeIfPresent(Double.self, forKey: .panLawDB) ?? d.panLawDB
+        panAxis = try c.decodeIfPresent(Position.self, forKey: .panAxis)
     }
 }
 
@@ -213,14 +256,30 @@ public struct SourceConfig: Codable, Equatable {
     public var groups: [String: Double]?
     /// Send to the LFE outputs in dB; none sends nothing.
     public var lfeDB: Double?
+    public var eq: SourceEQ?
+    public var compressor: Compressor?
+    /// Input trim (dB), polarity and delay (ms), before the EQ.
+    public var trimDB: Double?
+    public var invert: Bool?
+    public var delayMS: Double?
+    /// A stereo partner's input (from 1), whose level also drives this compressor.
+    public var link: Int?
+    /// Air absorption: a high shelf's gain in dB (below 0), after the EQ.
+    public var airDB: Double?
 
     public init(input: Int, name: String? = nil, position: Position, gainDB: Double = 0, mute: Bool = false,
-                width: Double = 0, groups: [String: Double]? = nil, lfeDB: Double? = nil) {
+                width: Double = 0, groups: [String: Double]? = nil, lfeDB: Double? = nil,
+                eq: SourceEQ? = nil, compressor: Compressor? = nil, trimDB: Double? = nil, invert: Bool? = nil,
+                delayMS: Double? = nil, link: Int? = nil) {
         self.input = input; self.name = name; self.position = position; self.gainDB = gainDB; self.mute = mute
         self.width = width; self.groups = groups; self.lfeDB = lfeDB
+        self.eq = eq; self.compressor = compressor; self.trimDB = trimDB; self.invert = invert; self.delayMS = delayMS
+        self.link = link
     }
 
-    enum CodingKeys: String, CodingKey { case input, name, position, gainDB, mute, width, groups, lfeDB }
+    enum CodingKeys: String, CodingKey {
+        case input, name, position, gainDB, mute, width, groups, lfeDB, eq, compressor, trimDB, invert, delayMS, link, airDB
+    }
 
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -237,6 +296,13 @@ public struct SourceConfig: Codable, Equatable {
             groups = try c.decodeIfPresent([String: Double].self, forKey: .groups)
         }
         lfeDB = try c.decodeIfPresent(Double.self, forKey: .lfeDB)
+        eq = try c.decodeIfPresent(SourceEQ.self, forKey: .eq)
+        compressor = try c.decodeIfPresent(Compressor.self, forKey: .compressor)
+        trimDB = try c.decodeIfPresent(Double.self, forKey: .trimDB)
+        invert = try c.decodeIfPresent(Bool.self, forKey: .invert)
+        delayMS = try c.decodeIfPresent(Double.self, forKey: .delayMS)
+        link = try c.decodeIfPresent(Int.self, forKey: .link)
+        airDB = try c.decodeIfPresent(Double.self, forKey: .airDB)
     }
 
     /// "Vox (input 1)" or "input 1".

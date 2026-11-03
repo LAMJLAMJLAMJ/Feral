@@ -17,6 +17,13 @@ public enum Command: Codable, Equatable {
     case setGroup(group: SpeakerGroup)
     case removeGroup(id: UUID)
     case setLFESpeakers(speakers: [UUID])
+    /// Sets the LFE group's algorithm and level.
+    case setLFE(mode: LFEMode, gainDB: Double)
+    /// Moves or turns the listening point that azimuth, elevation and distance are measured from.
+    case setListener(listener: Listener)
+    /// Adds a source group, or replaces the one with the same id (members, gain, mute, name).
+    case setSourceGroup(group: SourceGroup)
+    case removeSourceGroup(id: UUID)
     /// Stores the sources' current values as a snapshot (adding it, or updating the one with that id).
     case captureSnapshot(capture: SnapshotCapture)
     /// Adds a snapshot as given, or replaces the one with the same id (a rename or a new fade time).
@@ -66,6 +73,11 @@ public struct ShowState: Equatable {
     public func source(_ id: UUID) -> Source? { show.sources.first { $0.id == id } }
     public func speaker(_ id: UUID) -> Speaker? { system.speakers.first { $0.id == id } }
     public func group(_ id: UUID) -> SpeakerGroup? { show.groups.first { $0.id == id } }
+    public func sourceGroup(_ id: UUID) -> SourceGroup? { show.sourceGroups.first { $0.id == id } }
+    /// The source groups a source is in.
+    public func sourceGroups(of source: UUID) -> [SourceGroup] { show.sourceGroups.filter { $0.sources.contains(source) } }
+    public var nextSourceGroupNumber: Int { (show.sourceGroups.map(\.number).max() ?? 0) + 1 }
+    public var nextGroupNumber: Int { (show.groups.map(\.number).max() ?? 0) + 1 }
     public func snapshot(_ id: UUID) -> Snapshot? { show.snapshots.first { $0.id == id } }
     public func cue(_ id: UUID) -> Cue? { show.cues.first { $0.id == id } }
 
@@ -124,11 +136,21 @@ public struct ShowState: Equatable {
     private mutating func applyUnchecked(_ command: Command) throws -> Change {
         switch command {
         case .updateSources(let updates):
+            var ids: [UUID] = []
             for u in updates {
                 guard let i = sourceIndex(u.id) else { throw ConfigError("no source has id \(u.id)") }
                 show.sources[i] = try applying(u.values, to: show.sources[i])
+                if !ids.contains(u.id) { ids.append(u.id) }
+                // A stereo pair's level, mute, EQ and compressor are always the same on both sides.
+                let shared = SourceValues(gainDB: u.values.gainDB, mute: u.values.mute, width: u.values.width, eq: u.values.eq,
+                                          compressor: u.values.compressor, trimDB: u.values.trimDB,
+                                          invert: u.values.invert, delayMS: u.values.delayMS, distance: u.values.distance)
+                if !shared.isEmpty, let partner = stereoPartner(of: u.id), let j = sourceIndex(partner) {
+                    show.sources[j] = try applying(shared, to: show.sources[j])
+                    if !ids.contains(partner) { ids.append(partner) }
+                }
             }
-            return .sources(updates.map(\.id))
+            return .sources(ids)
 
         case .setSource(let source):
             try checkValues(source)
@@ -143,7 +165,34 @@ public struct ShowState: Equatable {
         case .removeSource(let id):
             guard let i = sourceIndex(id) else { throw ConfigError("no source has id \(id)") }
             show.sources.remove(at: i)
+            for g in show.sourceGroups.indices { show.sourceGroups[g].sources.removeAll { $0 == id } }
             return .layout(crossfade: true)
+
+        case .setSourceGroup(let group):
+            guard group.gainDB.isFinite, group.gainDB <= 24 else { throw ConfigError("group \(group.label): gainDB must be 24 or below") }
+            for m in group.sources where sourceIndex(m) == nil { throw ConfigError("group \(group.label) lists source \(m), which does not exist") }
+            var touched = Set(group.sources)
+            if let i = show.sourceGroups.firstIndex(where: { $0.id == group.id }) {
+                touched.formUnion(show.sourceGroups[i].sources)
+                show.sourceGroups[i] = group
+            } else {
+                show.sourceGroups.append(group)
+            }
+            return .sources(show.sources.map(\.id).filter { touched.contains($0) })
+
+        case .setListener(let l):
+            let p = l.position
+            guard p.x.isFinite, p.y.isFinite, p.z.isFinite, abs(p.x) < 10_000, abs(p.y) < 10_000, abs(p.z) < 10_000,
+                  l.facing.isFinite else { throw ConfigError("the listener must be finite and within 10 km") }
+            system.listener = Listener(position: p, facing: Self.wrap(l.facing))
+            // Panning by direction, spread and distance modelling all work from the listener.
+            return .layout(crossfade: true)
+
+        case .removeSourceGroup(let id):
+            guard let i = show.sourceGroups.firstIndex(where: { $0.id == id }) else { throw ConfigError("no source group has id \(id)") }
+            let members = Set(show.sourceGroups[i].sources)
+            show.sourceGroups.remove(at: i)
+            return .sources(show.sources.map(\.id).filter { members.contains($0) })
 
         case .setSpeaker(let speaker):
             if let i = system.speakers.firstIndex(where: { $0.id == speaker.id }) {
@@ -164,6 +213,7 @@ public struct ShowState: Equatable {
             return .layout(crossfade: true)
 
         case .setGroup(let group):
+            guard group.name != Self.lfeGroupName else { throw ConfigError("\(Self.lfeGroupName) is the LFE group's name; pick another") }
             if let i = show.groups.firstIndex(where: { $0.id == group.id }) {
                 show.groups[i] = group
             } else {
@@ -184,6 +234,12 @@ public struct ShowState: Equatable {
 
         case .setLFESpeakers(let speakers):
             system.lfeSpeakers = speakers
+            return .layout(crossfade: true)
+
+        case .setLFE(let mode, let gainDB):
+            guard gainDB.isFinite, (-60...20).contains(gainDB) else { throw ConfigError("the LFE group's level must be from -60 to 20 dB") }
+            system.lfeMode = mode
+            system.lfeGainDB = gainDB
             return .layout(crossfade: true)
 
         case .captureSnapshot(let capture):
@@ -245,6 +301,12 @@ public struct ShowState: Equatable {
         if let w = v.width { s.width = w }
         if let sends = v.sends { s.sends = sends }
         if v.lfeOff == true { s.lfeDB = nil } else if let l = v.lfeDB { s.lfeDB = l }
+        if let e = v.eq { s.eq = e }
+        if let c = v.compressor { s.compressor = c }
+        if let t = v.trimDB { s.trimDB = t }
+        if let i = v.invert { s.invert = i }
+        if let d = v.delayMS { s.delayMS = d }
+        if let d = v.distance { s.distance = d }
         try checkValues(s)
         return s
     }
@@ -261,6 +323,11 @@ public struct ShowState: Equatable {
             guard send.gainDB.isFinite, send.gainDB <= 24 else { throw ConfigError("source \(s.label): send levels must be 24 dB or below") }
         }
         if let l = s.lfeDB { guard l.isFinite, l <= 24 else { throw ConfigError("source \(s.label): lfeDB must be 24 or below") } }
+        guard s.trimDB.isFinite, abs(s.trimDB) <= 24 else { throw ConfigError("source \(s.label): trim must be within ±24 dB") }
+        guard s.delayMS.isFinite, (0...1000).contains(s.delayMS) else { throw ConfigError("source \(s.label): delay must be from 0 to 1000 ms") }
+        try s.eq?.check("source \(s.label)")
+        try s.compressor?.check("source \(s.label)")
+        try s.distance?.check("source \(s.label)")
     }
 
     /// Checks ids and references. Rendering checks (inputs and outputs in range, VBAP layouts) are
@@ -272,10 +339,12 @@ public struct ShowState: Equatable {
         }
         try unique(show.sources.map(\.id), "sources have the id")
         try unique(show.groups.map(\.id), "groups have the id")
+        try unique(show.sourceGroups.map(\.id), "source groups have the id")
         try unique(system.speakers.map(\.id), "speakers have the id")
         try unique(show.snapshots.map(\.id), "snapshots have the id")
         try unique(show.cues.map(\.id), "cues have the id")
         try unique(show.groups.map(\.name), "groups are called")
+        if show.groups.contains(where: { $0.name == Self.lfeGroupName }) { throw ConfigError("a group is called \(Self.lfeGroupName), the LFE group's name") }
         try unique(system.speakers.map(\.output), "speakers play on output")
         try unique(show.sources.map(\.input), "sources use input")
         for g in show.groups {
@@ -291,7 +360,24 @@ public struct ShowState: Equatable {
     /// A source's current values, every field.
     public func values(of s: Source) -> SourceValues {
         SourceValues(position: s.position, gainDB: s.gainDB, mute: s.mute, width: s.width, sends: s.sends,
-                     lfeDB: s.lfeDB, lfeOff: s.lfeDB == nil ? true : nil)
+                     lfeDB: s.lfeDB, lfeOff: s.lfeDB == nil ? true : nil, eq: s.eq ?? .flat, compressor: s.compressor ?? .off,
+                     trimDB: s.trimDB, invert: s.invert, delayMS: s.delayMS, distance: s.distance ?? .off)
+    }
+
+    /// The fields a snapshot stores (for any of its sources).
+    public func fields(of snapshot: Snapshot) -> Set<SnapshotField> {
+        snapshot.sources.reduce(into: Set<SnapshotField>()) { $0.formUnion(SnapshotField.present(in: $1.values)) }
+    }
+
+    /// A snapshot that stores one more field, taken from its sources as they are now, or one fewer.
+    public func snapshot(_ snapshot: Snapshot, storing field: SnapshotField, _ on: Bool) -> Snapshot {
+        var s = snapshot
+        s.sources = s.sources.map { stored in
+            var v = stored.values
+            if let source = source(stored.id) { field.copy(from: values(of: source), into: &v, on) } else if !on { field.copy(from: v, into: &v, false) }
+            return SourceUpdate(id: stored.id, values: v)
+        }
+        return s
     }
 
     /// The snapshot a capture makes from the sources as they are now.
@@ -301,12 +387,7 @@ public struct ShowState: Equatable {
         let stored = show.sources.filter { scope?.contains($0.id) ?? true }.map { s -> SourceUpdate in
             let all = values(of: s)
             var v = SourceValues()
-            if fields.contains(.position) { v.position = all.position }
-            if fields.contains(.gain) { v.gainDB = all.gainDB }
-            if fields.contains(.mute) { v.mute = all.mute }
-            if fields.contains(.width) { v.width = all.width }
-            if fields.contains(.sends) { v.sends = all.sends }
-            if fields.contains(.lfe) { v.lfeDB = all.lfeDB; v.lfeOff = all.lfeOff }
+            for f in fields { f.copy(from: all, into: &v) }
             return SourceUpdate(id: s.id, values: v)
         }
         return Snapshot(id: c.id, number: c.number, name: c.name, fadeSeconds: c.fadeSeconds, curve: c.curve, sources: stored)
@@ -314,12 +395,50 @@ public struct ShowState: Equatable {
 
     // MARK: To and from the renderer's settings
 
+    /// Moves sources onto their nearest speakers: of the speakers in the groups each one sends to
+    /// (any speaker when it sends nowhere), not LFE speakers. Several can land on one speaker.
+    public func snappedToNearestSpeakers(_ ids: [UUID]) -> [SourceUpdate] {
+        ids.compactMap { id -> SourceUpdate? in
+            guard let s = source(id) else { return nil }
+            let groups = Set(s.sends.map(\.group))
+            let inGroups = Set(show.groups.filter { groups.contains($0.id) }.flatMap(\.speakers))
+            var candidates = system.speakers.filter { !system.lfeSpeakers.contains($0.id) }
+            if !inGroups.isEmpty, candidates.contains(where: { inGroups.contains($0.id) }) {
+                candidates = candidates.filter { inGroups.contains($0.id) }
+            }
+            guard let nearest = candidates.min(by: { $0.position.distance(to: s.position) < $1.position.distance(to: s.position) }) else {
+                return nil
+            }
+            return SourceUpdate(id: id, values: SourceValues(position: nearest.position))
+        }
+    }
+
+    /// Whether a speaker group has enough speakers to render. One that has not (none, or one for
+    /// VBAP) plays nothing and is left out of the renderer's settings, so a group can be built up a
+    /// speaker at a time.
+    public func isPlayable(_ g: SpeakerGroup) -> Bool {
+        g.speakers.filter { speaker($0) != nil }.count >= (g.renderer == .vbap ? 2 : 1)
+    }
+
     /// A source as the renderer takes it, with its sends by group name.
     public func sourceConfig(_ s: Source) -> SourceConfig {
         var sends: [String: Double] = [:]
-        for send in s.sends { if let g = group(send.group) { sends[g.name] = send.gainDB } }
-        return SourceConfig(input: s.input, name: s.name, position: s.position, gainDB: s.gainDB, mute: s.mute,
-                            width: s.width, groups: sends, lfeDB: system.lfeSpeakers.isEmpty ? nil : s.lfeDB)
+        for send in s.sends { if let g = group(send.group), isPlayable(g) { sends[g.name] = send.gainDB } }
+        // The LFE send, with the LFE group's level: straight to every sub (equal), or through a
+        // Delay or DBAP group of the subs.
+        let lfeSend = system.lfeSpeakers.contains { speaker($0) != nil } ? s.lfeDB.map { $0 + system.lfeGainDB } : nil
+        if system.lfeMode != .equal, let l = lfeSend { sends[Self.lfeGroupName] = l }
+        // Source groups act like VCAs: their gains add, and any muted group mutes the source.
+        let groups = sourceGroups(of: s.id)
+        let d = s.position.distance(to: system.listener.position)
+        let gain = groups.reduce(s.gainDB) { $0 + $1.gainDB } + (s.distance?.levelDB(at: d) ?? 0)
+        let mute = s.mute || groups.contains { $0.mute }
+        var c = SourceConfig(input: s.input, name: s.name, position: s.position, gainDB: gain, mute: mute,
+                            width: s.width, groups: sends, lfeDB: system.lfeMode == .equal ? lfeSend : nil,
+                            eq: s.eq, compressor: s.compressor, trimDB: s.trimDB, invert: s.invert, delayMS: s.delayMS,
+                            link: stereoPartner(of: s.id).flatMap { source($0)?.input })
+        if let air = s.distance?.airDB(at: d), air < 0 { c.airDB = air }
+        return c
     }
 
     /// The engine's settings with this show's speakers, groups and sources in place of engine.json's.
@@ -329,22 +448,49 @@ public struct ShowState: Equatable {
         var outputOf: [UUID: Int] = [:]
         for s in system.speakers { outputOf[s.id] = s.output }
         c.speakers = system.speakers.map(\.config)
-        c.groups = show.groups.map { g -> GroupConfig in
+        // Left to right as the listener faces, in plan, for Pan groups.
+        let right = system.listener.point(Polar(azimuth: -90, elevation: 0, distance: 1))
+        let l = system.listener.position
+        let axis = Position(right.x - l.x, right.y - l.y, 0)
+        c.groups = show.groups.filter(isPlayable).map { g -> GroupConfig in
             var weights: [String: Double] = [:]
             for (key, db) in g.weightsDB {
                 if let id = UUID(uuidString: key), let o = outputOf[id] { weights[String(o)] = db }
             }
-            return GroupConfig(name: g.name, renderer: g.renderer,
+            var config = GroupConfig(name: g.name, renderer: g.renderer,
                                speakers: g.speakers.compactMap { outputOf[$0] }.map(String.init).joined(separator: ", "),
                                gainDB: g.gainDB, weightsDB: weights, precedenceMS: g.precedenceMS, rolloff: g.rolloff,
                                referenceDistance: g.referenceDistance, distanceOffset: g.distanceOffset,
-                               reference: g.reference, dimensions: g.dimensions, blur: g.blur, rolloffDB: g.rolloffDB)
+                               // Directional panners pan around it; every algorithm spreads around it.
+                               reference: g.reference ?? system.listener.position,
+                               dimensions: g.dimensions, blur: g.blur, rolloffDB: g.rolloffDB, neighbours: g.neighbours,
+                               spread: g.spread, tightness: g.tightness, panLawDB: g.panLawDB)
+            config.panAxis = axis
+            return config
         }
-        c.sources = show.sources.map(sourceConfig)
         let lfe = system.lfeSpeakers.compactMap { outputOf[$0] }
-        c.lfeOutputs = lfe.isEmpty ? nil : lfe.map(String.init).joined(separator: ", ")
+        if system.lfeMode == .equal {
+            c.lfeOutputs = lfe.isEmpty ? nil : lfe.map(String.init).joined(separator: ", ")
+        } else {
+            // The subs as a group of their own, which the sources' LFE sends play through.
+            c.lfeOutputs = nil
+            if !lfe.isEmpty {
+                let renderer: Renderer = system.lfeMode == .delay ? .delay : (system.lfeMode == .pan ? .pan : .dbap)
+                var sub = GroupConfig(name: Self.lfeGroupName, renderer: renderer,
+                                      speakers: lfe.map(String.init).joined(separator: ", "),
+                                      reference: system.listener.position)
+                sub.panAxis = axis
+                c.groups.append(sub)
+            }
+        }
+        // With no group to play through (none yet, the last deleted, or none with enough speakers),
+        // the sources play nothing rather than fail the layout.
+        c.sources = c.groups.isEmpty ? [] : show.sources.map(sourceConfig)
         return c
     }
+
+    /// The name the LFE group goes by in the renderer when it is a Delay or DBAP group.
+    public static let lfeGroupName = "LFE (subs)"
 
     /// A show made from engine.json's speakers, groups and sources (milestone 2's layout keys).
     public static func importing(_ config: EngineConfig, name: String) throws -> ShowState {
@@ -369,7 +515,8 @@ public struct ShowState: Equatable {
             groups.append(SpeakerGroup(number: i + 1, name: g.name, renderer: g.renderer, speakers: ids, gainDB: g.gainDB,
                                        weightsDB: weights, precedenceMS: g.precedenceMS, rolloff: g.rolloff,
                                        referenceDistance: g.referenceDistance, distanceOffset: g.distanceOffset,
-                                       reference: g.reference, dimensions: g.dimensions, blur: g.blur, rolloffDB: g.rolloffDB))
+                                       reference: g.reference, dimensions: g.dimensions, blur: g.blur, rolloffDB: g.rolloffDB,
+                                       neighbours: g.neighbours, spread: g.spread, tightness: g.tightness))
         }
         let lfe = try config.lfeOutputs.map { try Routing.channelList($0, limit: config.outputs, side: "output") } ?? []
         let lfeIDs = lfe.map { speakerID(output: $0) }
