@@ -268,7 +268,8 @@ public final class SpatialRenderer {
         while a + 2 < n && u(speakers[order[a + 1]]) <= s { a += 1 }
         let ua = u(speakers[order[a]]), ub = u(speakers[order[a + 1]])
         let t = ub > ua ? (s - ua) / (ub - ua) : 0.5
-        let k = lawDB / (20 * log10(2.0.squareRoot()))
+        // As consoles name them: "3 dB" is constant power (cos, sin), "6 dB" linear (cos², sin²).
+        let k = lawDB / 3
         gains[order[a]] = pow(cos(t * .pi / 2), k)
         gains[order[a + 1]] = pow(sin(t * .pi / 2), k)
         return gains
