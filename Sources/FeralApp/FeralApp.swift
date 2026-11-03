@@ -215,6 +215,7 @@ struct SidebarView: View {
     /// Several sources waiting for the person to confirm deleting them.
     @State private var deletingMany: [Source] = []
     @State private var deletingSpeakers: [Speaker] = []
+    @State private var deletingGroup: SpeakerGroup?
     /// The rows selected when there are more than one (⌘-click or ⇧-click); otherwise `selection` is it.
     @State private var multiple: Set<Selection> = []
 
@@ -307,7 +308,7 @@ struct SidebarView: View {
                                             }
                                         }
                                         Divider()
-                                        Button("Delete group…", role: .destructive) { selection = .speakerGroup(g.id) }
+                                        Button("Delete group…", role: .destructive) { deletingGroup = g }
                                     }
                                 }
                         }
@@ -363,6 +364,20 @@ struct SidebarView: View {
             Button("Cancel", role: .cancel) { deletingSpeakers = [] }
         } message: {
             Text("They leave every output group and stop playing at once. The system layer (delay, EQ, trim) goes with them.")
+        }
+        .confirmationDialog("Delete \(deletingGroup?.name ?? "the group")?",
+                            isPresented: Binding(get: { deletingGroup != nil }, set: { if !$0 { deletingGroup = nil } }),
+                            titleVisibility: .visible) {
+            Button("Delete group", role: .destructive) {
+                if let g = deletingGroup {
+                    model.apply(.removeGroup(id: g.id))
+                    if selection == .speakerGroup(g.id) { selection = nil }
+                }
+                deletingGroup = nil
+            }
+            Button("Cancel", role: .cancel) { deletingGroup = nil }
+        } message: {
+            Text("Every source's send to it goes too, also in snapshots. Its speakers stay.")
         }
         .onChange(of: selection) { _, new in
             // Something picked elsewhere (the plan, the mixer) ends a multiple selection.

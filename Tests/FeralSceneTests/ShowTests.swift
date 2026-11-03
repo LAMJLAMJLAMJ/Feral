@@ -76,6 +76,22 @@ final class ShowTests: XCTestCase {
         XCTAssertEqual(Position(Polar(azimuth: 0, elevation: 90, distance: 2)).z, 2, accuracy: 1e-9)
     }
 
+    func testDeletingTheLastGroupLeavesAValidLayout() throws {
+        var state = ShowState(show: Show(name: "D"), system: SystemLayer(speakers: [
+            Speaker(number: 1, output: 1, position: Position(-4, 0, 5)), Speaker(number: 2, output: 2, position: Position(4, 0, 5)),
+        ]))
+        let g = SpeakerGroup(number: 1, name: "Main", renderer: .delay, speakers: state.system.speakers.map(\.id))
+        try state.apply(.setGroup(group: g))
+        try state.apply(.setSource(source: Source(number: 1, input: 1, position: Position(0, 2, 1.6))))
+        try state.engineConfig(base: EngineConfig()).validate()
+        try state.apply(.removeGroup(id: g.id))
+        let config = state.engineConfig(base: EngineConfig())
+        XCTAssertTrue(config.groups.isEmpty)
+        XCTAssertTrue(config.sources.isEmpty, "with no group the sources play nothing")
+        XCTAssertNoThrow(try config.validate())
+        XCTAssertTrue(try Routing.silent(inputs: 2, outputs: 2).gains.allSatisfy { $0 == 0 })
+    }
+
     func testListenerIsTheDefaultVBAPReference() throws {
         var state = ShowState(show: Show(name: "V"), system: SystemLayer(speakers: [
             Speaker(number: 1, output: 1, position: Position(-4, 0, 5)), Speaker(number: 2, output: 2, position: Position(4, 4, 5)),

@@ -41,6 +41,13 @@ public struct Routing: Equatable {
     /// Linear gains, outputs rows of inputs each: gains[out * inputs + in], from 0.
     public private(set) var gains: [Float]
 
+    /// Nothing to anywhere: what a show with no output groups plays.
+    public static func silent(inputs: Int, outputs: Int) throws -> Routing {
+        var r = try Routing(routes: [], inputs: inputs, outputs: outputs)
+        r.gains = [Float](repeating: 0, count: inputs * outputs)
+        return r
+    }
+
     /// Builds the matrix. No routes means a passthrough: input n to output n.
     public init(routes: [Route], inputs: Int, outputs: Int) throws {
         self.inputs = inputs

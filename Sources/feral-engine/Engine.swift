@@ -173,13 +173,19 @@ final class Engine {
         guard config.isSpatial else {
             stopMotion()
             spatial = nil
-            let routing = try Routing(routes: config.routes, inputs: config.inputs, outputs: config.outputs)
+            // A show with speakers or sources but no output group plays silence, not a passthrough
+            // straight onto the speakers.
+            let showHasLayout = !scene.show.sources.isEmpty || !scene.system.speakers.isEmpty
+            let routing = config.routes.isEmpty && showHasLayout
+                ? try Routing.silent(inputs: config.inputs, outputs: config.outputs)
+                : try Routing(routes: config.routes, inputs: config.inputs, outputs: config.outputs)
             core.publish(routing)
             rebuildMonitor()
             let routed = routing.gains.filter { $0 != 0 }.count
             if !quiet {
                 log("routing: \(config.inputs) in by \(config.outputs) out, \(routed) gain(s) set"
-                    + (config.routes.isEmpty ? " (passthrough)" : " from \(config.routes.count) route(s)"))
+                    + (config.routes.isEmpty ? (showHasLayout ? " (no output group yet, so silence)" : " (passthrough)")
+                       : " from \(config.routes.count) route(s)"))
             }
             return
         }

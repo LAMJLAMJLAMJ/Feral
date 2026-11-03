@@ -448,7 +448,9 @@ public struct ShowState: Equatable {
                                dimensions: g.dimensions, blur: g.blur, rolloffDB: g.rolloffDB, neighbours: g.neighbours,
                                spread: g.spread, tightness: g.tightness)
         }
-        c.sources = show.sources.map(sourceConfig)
+        // With no group to play through (none yet, the last deleted, or none with enough speakers),
+        // the sources play nothing rather than fail the layout.
+        c.sources = c.groups.isEmpty ? [] : show.sources.map(sourceConfig)
         let lfe = system.lfeSpeakers.compactMap { outputOf[$0] }
         c.lfeOutputs = lfe.isEmpty ? nil : lfe.map(String.init).joined(separator: ", ")
         return c
