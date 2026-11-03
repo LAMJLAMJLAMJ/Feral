@@ -1,6 +1,7 @@
 #if os(macOS)
 import AVFoundation
 import FeralControl
+import FeralCore
 import FeralIO
 import FeralScene
 import Foundation
@@ -70,6 +71,21 @@ final class Engine {
     /// The most messages one `activity` event carries (it is sent every 0.1 s).
     private static let maxHeard = 100
 
+    // The binaural monitor and what it hears
+    private var listenSolo: [UUID] = []
+    private var listenPFL: [UUID] = []
+    private var monitorInfo = "off"
+    /// What the monitor was last built from, so a change elsewhere does not rebuild it.
+    private struct MonitorKey: Equatable {
+        var settings: MonitorSettings?
+        var speakers: [Speaker]
+        var listener: Listener
+        var sampleRate: Double
+        var air: Double
+    }
+    private var monitorKey: MonitorKey?
+    private var hrirCache: (path: String, rate: Double, set: HRIRSet)?
+
     init(options: Options, config: EngineConfig) {
         self.options = options
         self.config = config
@@ -88,6 +104,8 @@ final class Engine {
             log("render: \(workers) worker thread(s) beside the audio thread")
             openShow()
             do { try publishLayout(fadeFrames: 0) } catch { log("error: \(error); playing silence until the show or settings are fixed") }
+            rebuildMonitor()
+            applyListen()
             applyTestSignal()
             io = AudioEngineIO(core: core, config: config, queue: queue, log: log)
             io.start()
@@ -156,6 +174,7 @@ final class Engine {
             spatial = nil
             let routing = try Routing(routes: config.routes, inputs: config.inputs, outputs: config.outputs)
             core.publish(routing)
+            rebuildMonitor()
             let routed = routing.gains.filter { $0 != 0 }.count
             if !quiet {
                 log("routing: \(config.inputs) in by \(config.outputs) out, \(routed) gain(s) set"
@@ -168,6 +187,7 @@ final class Engine {
         let taps = state.tapCount
         try core.publish(state, fadeFrames: fadeFrames)
         spatial = renderer
+        rebuildMonitor()
         guard !quiet else { return }
         log("spatial: \(config.speakers.count) speaker(s), \(config.sources.count) source(s), \(taps) tap(s)"
             + (config.routes.isEmpty ? "" : ", plus \(config.routes.count) fixed route(s)")
@@ -209,8 +229,108 @@ final class Engine {
             unsaved += 1
         }
         server?.broadcast(.applied(seq: seq, origin: origin, command: command))
-        if case .removeSource(let id) = command, owners.removeValue(forKey: id) != nil { broadcastStatus() }
+        var statusChanged = applyListen()
+        if case .removeSource(let id) = command, owners.removeValue(forKey: id) != nil { statusChanged = true }
+        if statusChanged { broadcastStatus() }
         echo(command)
+    }
+
+    // MARK: - The monitor
+
+    /// Builds the binaural monitor from engine.json's `monitor` and the show's speakers and
+    /// listener, when either changed.
+    private func rebuildMonitor() {
+        let key = MonitorKey(settings: config.monitor, speakers: scene.system.speakers, listener: scene.system.listener,
+                             sampleRate: config.sampleRate, air: config.airTemperatureC)
+        guard key != monitorKey else { return }
+        let first = monitorKey == nil
+        monitorKey = key
+        guard let m = config.monitor, m.isOn else {
+            core.setMonitor(left: nil, right: nil, gain: 0, speakers: [])
+            if !first && monitorInfo != "off" { log("monitor: off") }
+            monitorInfo = "off"
+            return
+        }
+        var notes: [String] = []
+        let clashes = m.clashes(with: scene.system.speakers)
+        if !clashes.isEmpty { notes.append("output \(clashes.map { "\($0)" }.joined(separator: " and ")) is a speaker's, so stays silent here") }
+        let left = m.left.flatMap { clashes.contains($0) ? nil : $0 - 1 }
+        let right = m.right.flatMap { clashes.contains($0) ? nil : $0 - 1 }
+        let hrirs: HRIRSet
+        do { hrirs = try hrirSet(m.hrtf) } catch {
+            notes.append("\(error); using the spherical head model")
+            hrirs = SphericalHead(sampleRate: config.sampleRate)
+        }
+        let speakers = scene.monitorSpeakers(hrirs: hrirs, sampleRate: config.sampleRate,
+                                             speedOfSound: feral_speed_of_sound(config.airTemperatureC),
+                                             skipping: Set([m.left, m.right].compactMap { $0 }))
+        core.setMonitor(left: left, right: right, gain: Float(pow(10, m.gainDB / 20)), speakers: speakers)
+        let outs = [m.left, m.right].map { $0.map { "\($0)" } ?? "-" }.joined(separator: "/")
+        monitorInfo = "outputs \(outs), \(hrirs.name), \(speakers.count) speaker(s)" + (notes.isEmpty ? "" : "; " + notes.joined(separator: "; "))
+        log("monitor: binaural on \(monitorInfo)")
+    }
+
+    /// The HRIRs for engine.json's `hrtf` (a folder; none for the head model), kept while unchanged.
+    private func hrirSet(_ path: String?) throws -> HRIRSet {
+        guard let path, !path.isEmpty else { return SphericalHead(sampleRate: config.sampleRate) }
+        let expanded = NSString(string: path).expandingTildeInPath
+        let url = expanded.hasPrefix("/") ? URL(fileURLWithPath: expanded)
+            : options.configURL.deletingLastPathComponent().appendingPathComponent(expanded)
+        if let c = hrirCache, c.path == url.path, c.rate == config.sampleRate { return c.set }
+        let set = try HRIRFolder(folder: url, sampleRate: config.sampleRate)
+        hrirCache = (url.path, config.sampleRate, set)
+        return set
+    }
+
+    /// Writes `monitor` into engine.json and plays it at once.
+    private func setMonitor(_ m: MonitorSettings?, origin: String) throws {
+        if let m {
+            try m.check(outputs: config.outputs)
+            let clashes = m.clashes(with: scene.system.speakers)
+            guard clashes.isEmpty else {
+                throw ConfigError("monitor: output \(clashes[0]) is a speaker's output; pick outputs no speaker uses")
+            }
+            if m.hrtf != nil { _ = try hrirSet(m.hrtf) }
+        }
+        var json = try readConfigJSON()
+        if let m {
+            json["monitor"] = try JSONSerialization.jsonObject(with: JSONEncoder().encode(m))
+        } else {
+            json.removeValue(forKey: "monitor")
+        }
+        try writeConfig(json)
+        config.monitor = m
+        log("\(origin): monitor \(m?.isOn == true ? "set" : "off")")
+        rebuildMonitor()
+        broadcastStatus()
+    }
+
+    /// Hands the core what the monitor hears, by input. Returns true when the solo or PFL lost a
+    /// source that is gone.
+    @discardableResult
+    private func applyListen() -> Bool {
+        let alive = Set(scene.show.sources.map(\.id))
+        let before = (listenSolo, listenPFL)
+        listenSolo = listenSolo.filter { alive.contains($0) }
+        listenPFL = listenPFL.filter { alive.contains($0) }
+        let n = Routing.maxChannels
+        var solo = [Bool](repeating: false, count: n)
+        var pfl = [(Float, Float)](repeating: (0, 0), count: n)
+        for id in listenSolo {
+            if let s = scene.source(id), (1...n).contains(s.input) { solo[s.input - 1] = true }
+        }
+        for id in listenPFL {
+            guard let s = scene.source(id), (1...n).contains(s.input) else { continue }
+            // A stereo pair's sides go left and right; a mono source to both at -3 dB.
+            var side: (Float, Float) = (0.7071, 0.7071)
+            if let g = scene.show.sourceGroups.first(where: { $0.stereo && $0.sources.prefix(2).contains(id) }), g.sources.count >= 2 {
+                side = g.sources[0] == id ? (1, 0) : (0, 1)
+            }
+            let i = s.input - 1
+            pfl[i] = (min(1, pfl[i].0 + side.0), min(1, pfl[i].1 + side.1))
+        }
+        for i in 0..<n { core.setListen(input: i, solo: solo[i], pflLeft: pfl[i].0, pflRight: pfl[i].1) }
+        return before.0 != listenSolo || before.1 != listenPFL
     }
 
     /// Hands the journal entries so far to the housekeeping queue, which writes them.
@@ -403,6 +523,13 @@ final class Engine {
             case .analyse(let input):
                 analysers[client] = input.flatMap { $0 >= 1 && $0 <= config.inputs ? $0 : nil }
                 pickAnalysis(newest: analysers[client])
+            case .setMonitor(let monitor):
+                try setMonitor(monitor, origin: origin)
+            case .listen(let solo, let pfl):
+                listenSolo = solo
+                listenPFL = pfl
+                applyListen()
+                broadcastStatus()
             }
         } catch {
             server?.send(.error(message: "\(error)"), to: client)
@@ -526,7 +653,8 @@ final class Engine {
         }
         return EngineStatus(version: version, showPath: showURL.path, unsaved: unsaved, currentCue: currentCue,
                             nextCue: scene.cue(after: currentCue)?.id, fading: fades.flatMap { $0.fade.sources }, audio: audio,
-                            owners: owners, osc: oscState, midi: midiState, oscPort: osc?.port)
+                            owners: owners, osc: oscState, midi: midiState, oscPort: osc?.port, solo: listenSolo, pfl: listenPFL,
+                            monitor: config.monitor, monitorInfo: monitorInfo)
     }
 
     private func broadcastStatus() {

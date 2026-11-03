@@ -1,5 +1,6 @@
 #include "feral_core.h"
 #include "render_state.hpp"
+#include "binaural.hpp"
 
 #include <algorithm>
 #include <array>
@@ -408,6 +409,21 @@ struct feral_core {
     std::array<std::atomic<float>, FERAL_ANALYSIS_FRAMES> analysisPre{}, analysisPost{};
     int meteredInputs = 0, meteredOutputs = 0;
 
+    // The monitor, handed over like the render states: the control side stores the newest into
+    // monitorLatest, the audio thread stores the sequence of the one it uses into monitorAcknowledged,
+    // and feral_core_collect frees the older ones. The convolver is made with the first monitor.
+    std::atomic<feral_monitor *> monitorLatest{nullptr};
+    std::atomic<uint64_t> monitorAcknowledged{0};
+    std::vector<feral_monitor *> monitors; // control side, oldest first
+    uint64_t nextMonitor = 1;
+    feral::BinauralRuntime *binaural = nullptr;
+    uint64_t monitorSeen = 0;      // audio thread
+    bool binauralRunning = false;  // audio thread: false after the monitor was off or on PFL
+    const float *monitorSignals[FERAL_MAX_CHANNELS] = {};
+    // What the monitor hears from each input.
+    std::array<std::atomic<uint8_t>, FERAL_MAX_CHANNELS> solo{};
+    std::array<std::atomic<float>, FERAL_MAX_CHANNELS> pflLeft{}, pflRight{};
+
     DelayLine inputLine(int in) { return {lineMemory + static_cast<size_t>(in) * (lineMask + 1), lineMask}; }
     DelayLine preLine(int in) {
         return {lineMemory + static_cast<size_t>(2 * FERAL_MAX_CHANNELS + in) * (lineMask + 1), lineMask};
@@ -514,6 +530,8 @@ void feral_core_destroy(feral_core *core) {
         delete p;
     }
     for (RenderState *s : core->published) delete s;
+    for (feral_monitor *m : core->monitors) delete m;
+    delete core->binaural;
     std::free(core->lineMemory);
     std::free(core->inputScratch);
     delete core;
@@ -594,6 +612,13 @@ size_t feral_core_collect(feral_core *core) {
     for (size_t i = 0; i < freeable; ++i) delete list[i];
     list.erase(list.begin(), list.begin() + static_cast<std::ptrdiff_t>(freeable));
     core->liveStates.fetch_sub(freeable, std::memory_order_relaxed);
+
+    const uint64_t monitorInUse = core->monitorAcknowledged.load(std::memory_order_acquire);
+    auto &monitors = core->monitors;
+    size_t old = 0;
+    while (old + 1 < monitors.size() && monitors[old]->sequence < monitorInUse) ++old;
+    for (size_t i = 0; i < old; ++i) delete monitors[i];
+    monitors.erase(monitors.begin(), monitors.begin() + static_cast<std::ptrdiff_t>(old));
     return freeable;
 }
 
@@ -629,6 +654,11 @@ void feral_core_audio_detached(feral_core *core) {
     RenderState *newest = core->latest.load(std::memory_order_acquire);
     // Nothing reads the older states now; the newest stays for the next start.
     core->acknowledged.store(newest ? newest->sequence : 0, std::memory_order_release);
+    core->binauralRunning = false;
+    if (feral_monitor *m = core->monitorLatest.load(std::memory_order_acquire)) {
+        core->monitorAcknowledged.store(m->sequence, std::memory_order_release);
+        core->monitorSeen = m->sequence;
+    }
 }
 
 void feral_core_set_test_signal(feral_core *core, int kind, float level_db, float sine_hz) {
@@ -649,6 +679,52 @@ void feral_core_read_meters(feral_core *core, float *input_peak, float *input_rm
         if (output_peak) output_peak[o] = core->outputPeak[o].exchange(0, std::memory_order_relaxed);
         if (output_rms) output_rms[o] = std::sqrt(core->outputPower[o].load(std::memory_order_relaxed));
     }
+}
+
+feral_monitor *feral_monitor_create(int left_output, int right_output, float gain) {
+    auto *m = new feral_monitor;
+    m->left = left_output >= 0 && left_output < FERAL_MAX_CHANNELS ? left_output : -1;
+    m->right = right_output >= 0 && right_output < FERAL_MAX_CHANNELS ? right_output : -1;
+    m->gain = std::isfinite(gain) ? gain : 0.0f;
+    m->speakers.reserve(16);
+    return m;
+}
+
+int feral_monitor_add_speaker(feral_monitor *monitor, int output, float gain, int delay, const float *left,
+                              const float *right, int length) {
+    if (output < 0 || output >= FERAL_MAX_CHANNELS || delay < 0 || delay > FERAL_MONITOR_MAX_DELAY) return -1;
+    if (!left || !right || length <= 0 || !std::isfinite(gain)) return -1;
+    if (monitor->speakers.size() >= static_cast<size_t>(FERAL_MAX_CHANNELS)) return -1;
+    feral_monitor::Speaker s;
+    s.output = output;
+    s.gain = gain;
+    s.delay = delay;
+    const int p = feral::monitorSpectra(left, right, length, s.spectra);
+    monitor->partitions = std::max(monitor->speakers.empty() ? 1 : monitor->partitions, p);
+    monitor->speakers.push_back(std::move(s));
+    return 0;
+}
+
+void feral_monitor_destroy(feral_monitor *monitor) { delete monitor; }
+
+void feral_core_set_monitor(feral_core *core, feral_monitor *monitor) {
+    if (!monitor) return;
+    std::lock_guard<std::mutex> lock(core->controlMutex);
+    if (!core->binaural) core->binaural = new feral::BinauralRuntime(FERAL_MAX_CHANNELS);
+    monitor->sequence = core->nextMonitor++;
+    core->monitors.push_back(monitor);
+    core->monitorLatest.store(monitor, std::memory_order_release);
+}
+
+void feral_core_set_listen(feral_core *core, int input, int solo, float pfl_left, float pfl_right) {
+    if (input < 0 || input >= FERAL_MAX_CHANNELS) return;
+    core->solo[input].store(solo ? 1 : 0, std::memory_order_relaxed);
+    core->pflLeft[input].store(std::isfinite(pfl_left) ? pfl_left : 0.0f, std::memory_order_relaxed);
+    core->pflRight[input].store(std::isfinite(pfl_right) ? pfl_right : 0.0f, std::memory_order_relaxed);
+}
+
+void feral_core_clear_listen(feral_core *core) {
+    for (int i = 0; i < FERAL_MAX_CHANNELS; ++i) feral_core_set_listen(core, i, 0, 0, 0);
 }
 
 void feral_core_set_analysis_input(feral_core *core, int input) {
@@ -1213,6 +1289,77 @@ void workerMain(feral_core *core) {
 #endif
 }
 
+/// The monitor's two outputs, written over whatever the render left there (nothing, when they are
+/// not speakers): PFL in stereo, or the binaural render of the speakers or the solo.
+void renderMonitor(feral_core *core, float *const *outputs, int rendered, int frames, uint32_t block, int lines) {
+    const feral_monitor *m = core->monitorLatest.load(std::memory_order_acquire);
+    if (!m) return;
+    if (m->sequence != core->monitorSeen) {
+        core->monitorSeen = m->sequence;
+        core->monitorAcknowledged.store(m->sequence, std::memory_order_release);
+    }
+    float *left = m->left >= 0 && m->left < rendered ? outputs[m->left] : nullptr;
+    float *right = m->right >= 0 && m->right < rendered ? outputs[m->right] : nullptr;
+    if (!left && !right) {
+        core->binauralRunning = false;
+        return;
+    }
+
+    bool pfl = false, solo = false;
+    for (int in = 0; in < lines; ++in) {
+        if (core->pflLeft[in].load(std::memory_order_relaxed) != 0 || core->pflRight[in].load(std::memory_order_relaxed) != 0)
+            pfl = true;
+        if (core->solo[in].load(std::memory_order_relaxed)) solo = true;
+    }
+    if (pfl) {
+        // Straight from the inputs (after their processing), no binaural render and no latency.
+        if (left) std::fill(left, left + frames, 0.0f);
+        if (right) std::fill(right, right + frames, 0.0f);
+        for (int in = 0; in < lines; ++in) {
+            const float *x = core->inputSources[in];
+            if (!x) continue;
+            const float gl = core->pflLeft[in].load(std::memory_order_relaxed) * m->gain;
+            const float gr = core->pflRight[in].load(std::memory_order_relaxed) * m->gain;
+            if (left && gl != 0) accumulate(left, x, gl, frames);
+            if (right && gr != 0) accumulate(right, x, gr, frames);
+        }
+        core->binauralRunning = false;
+        return;
+    }
+
+    feral::BinauralRuntime &b = *core->binaural;
+    const int n = std::min(static_cast<int>(m->speakers.size()), b.maxSpeakers);
+    if (!core->binauralRunning) {
+        b.reset(n);
+        core->binauralRunning = true;
+    }
+    for (int k = 0; k < n; ++k) {
+        const int out = m->speakers[static_cast<size_t>(k)].output;
+        const float *feed = out < rendered ? outputs[out] : nullptr;
+        if (feed && solo) {
+            // Only the soloed inputs, through this speaker's taps as they are now (before the
+            // speaker's own processing).
+            float *y = b.feed(k);
+            std::fill(y, y + frames, 0.0f);
+            const Voice *vs = core->outputVoices(out);
+            const int count = out < core->voiceOutputs ? core->voiceCount[out] : 0;
+            for (int i = 0; i < count; ++i) {
+                const Voice &v = vs[i];
+                if (v.input >= lines || !core->solo[v.input].load(std::memory_order_relaxed) || v.gain == 0.0f) continue;
+                if (v.kind == FERAL_TAP_GAIN) {
+                    if (const float *x = core->inputSources[v.input]) accumulate(y, x, v.gain, frames);
+                } else {
+                    core->inputLine(v.input).accumulate(block, frames, v.delay.current, v.delay.current, v.gain, v.gain, y);
+                }
+            }
+            feed = y;
+        }
+        core->monitorSignals[k] = feed;
+    }
+    b.follow(*m);
+    b.process(*m, core->monitorSignals, frames, left, right);
+}
+
 void renderBlock(feral_core *core, const float *const *inputs, int num_inputs, float *const *outputs,
                  int num_outputs, int frames) {
     RenderState *previous = core->current;
@@ -1287,6 +1434,7 @@ void renderBlock(feral_core *core, const float *const *inputs, int num_inputs, f
             break;
         }
     }
+    renderMonitor(core, outputs, rendered, frames, block, lines);
     core->writeIndex = block + static_cast<uint32_t>(frames);
     core->activeTaps.store(active, std::memory_order_relaxed);
 

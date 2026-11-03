@@ -77,6 +77,8 @@ public struct EngineConfig: Codable, Equatable {
     /// Render worker threads beside the audio thread (0 to 32); none picks one fewer than the Mac's
     /// performance cores. 0 renders on the audio thread alone.
     public var renderThreads: Int?
+    /// The binaural monitor for headphones (see MonitorSettings); none is off.
+    public var monitor: MonitorSettings?
 
     public init(device: String? = nil, sampleRate: Double = 48_000, bufferFrames: Int = 64,
                 inputs: Int = 128, outputs: Int = 128, firstInputChannel: Int = 1, firstOutputChannel: Int = 1,
@@ -125,7 +127,7 @@ public struct EngineConfig: Codable, Equatable {
         case device, sampleRate, bufferFrames, inputs, outputs, firstInputChannel, firstOutputChannel, inputPatch, outputPatch, routes,
              refuseAggregateDevices, testSignal, testSignalDB, testSignalHz, speakers, groups, sources, lfeOutputs,
              airTemperatureC, delayGlidePercent, delayJumpMS, delayCrossfadeMS, groupCrossfadeMS, testMotion, show,
-             controlAddress, controlPort, oscAddress, oscPort, midi, midiInputs, renderThreads
+             controlAddress, controlPort, oscAddress, oscPort, midi, midiInputs, renderThreads, monitor
     }
 
     /// Every key is optional in the file; missing ones take the defaults above.
@@ -164,6 +166,7 @@ public struct EngineConfig: Codable, Equatable {
         midi = try c.decodeIfPresent(Bool.self, forKey: .midi) ?? d.midi
         midiInputs = try c.decodeIfPresent([String].self, forKey: .midiInputs)
         renderThreads = try c.decodeIfPresent(Int.self, forKey: .renderThreads)
+        monitor = try c.decodeIfPresent(MonitorSettings.self, forKey: .monitor)
     }
 
     /// True when sources are rendered to speaker groups, rather than only the fixed routing played.
@@ -262,6 +265,7 @@ public struct EngineConfig: Codable, Equatable {
         }
         guard (0...10_000).contains(groupCrossfadeMS) else { throw ConfigError("groupCrossfadeMS must be from 0 to 10000") }
         if let n = renderThreads, !(0...32).contains(n) { throw ConfigError("renderThreads must be from 0 to 32") }
+        try monitor?.check(outputs: outputs)
         guard (-30...50).contains(airTemperatureC) else { throw ConfigError("airTemperatureC must be from -30 to 50") }
 
         var speakerOutputs = Set<Int>()

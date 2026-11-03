@@ -212,6 +212,7 @@ struct SourceInspector: View {
                     }
                 }
                 .help("The Feral input this source plays. Which card input feeds it is set in Audio > Patch.")
+                LabeledContent("Headphones") { ListenButtons(model: model, source: source.id) }
             } header: {
                 HStack(spacing: 8) {
                     Circle().fill(source.color).frame(width: 12, height: 12)

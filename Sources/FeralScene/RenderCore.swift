@@ -121,6 +121,29 @@ public final class RenderCore {
         return (0..<i).map { Array(flat[$0 * n ..< ($0 + 1) * n]) }
     }
 
+    /// Hands the core a new monitor: the two outputs (from 0; none for neither turns it off), its
+    /// linear gain, and the speakers it hears. Older monitors are freed by `collect`.
+    public func setMonitor(left: Int?, right: Int?, gain: Float, speakers: [MonitorSpeaker]) {
+        guard let m = feral_monitor_create(Int32(left ?? -1), Int32(right ?? -1), gain) else { return }
+        for s in speakers {
+            let n = min(s.left.count, s.right.count)
+            guard n > 0 else { continue }
+            s.left.withUnsafeBufferPointer { l in
+                s.right.withUnsafeBufferPointer { r in
+                    _ = feral_monitor_add_speaker(m, Int32(s.output), s.gain, Int32(s.delay), l.baseAddress, r.baseAddress, Int32(n))
+                }
+            }
+        }
+        feral_core_set_monitor(pointer, m)
+    }
+
+    /// What the monitor hears from an input (from 0): in the solo, and on PFL at a linear gain per ear.
+    public func setListen(input: Int, solo: Bool, pflLeft: Float, pflRight: Float) {
+        feral_core_set_listen(pointer, Int32(input), solo ? 1 : 0, pflLeft, pflRight)
+    }
+
+    public func clearListen() { feral_core_clear_listen(pointer) }
+
     /// Picks the input (from 0) the analysis tap keeps, or none.
     public func setAnalysisInput(_ input: Int?) { feral_core_set_analysis_input(pointer, Int32(input ?? -1)) }
 

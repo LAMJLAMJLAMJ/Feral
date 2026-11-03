@@ -48,6 +48,13 @@ public enum Request: Codable, Equatable {
     /// (`spectrum` events, 20 a second), or none to stop. The engine analyses one input at a time: the
     /// newest request wins.
     case analyse(input: Int?)
+    /// Sets the binaural monitor (engine.json's `monitor`; none turns it off). Written to engine.json
+    /// and played at once; refused if an output is a speaker's.
+    case setMonitor(monitor: MonitorSettings?)
+    /// What the monitor hears: the sources in `solo` through their panning, or (winning over solo)
+    /// the sources in `pfl` straight to the monitor's two outputs in stereo; neither is the whole
+    /// mix. Replaces the last listen from any client.
+    case listen(solo: [UUID], pfl: [UUID])
 }
 
 /// One input's spectrum before and after its EQ and compressor: dB per point, the points spaced
@@ -132,16 +139,26 @@ public struct EngineStatus: Codable, Equatable {
     public var midi: String
     /// The UDP port the engine's OSC listens on, once it is listening.
     public var oscPort: Int?
+    /// The sources the monitor solos and has on PFL.
+    public var solo: [UUID]
+    public var pfl: [UUID]
+    /// engine.json's monitor, and what it plays: "outputs 63/64, spherical head model, 24 speakers",
+    /// or why it is off.
+    public var monitor: MonitorSettings?
+    public var monitorInfo: String
 
     public init(version: String, showPath: String, unsaved: Int = 0, currentCue: UUID? = nil, nextCue: UUID? = nil,
                 fading: [UUID] = [], audio: String = "", owners: [UUID: PositionOwner] = [:], osc: String = "", midi: String = "",
-                oscPort: Int? = nil) {
+                oscPort: Int? = nil, solo: [UUID] = [], pfl: [UUID] = [], monitor: MonitorSettings? = nil, monitorInfo: String = "") {
         self.version = version; self.showPath = showPath; self.unsaved = unsaved; self.currentCue = currentCue
         self.nextCue = nextCue; self.fading = fading; self.audio = audio; self.owners = owners; self.osc = osc; self.midi = midi
         self.oscPort = oscPort
+        self.solo = solo; self.pfl = pfl; self.monitor = monitor; self.monitorInfo = monitorInfo
     }
 
-    enum CodingKeys: String, CodingKey { case version, showPath, unsaved, currentCue, nextCue, fading, audio, owners, osc, midi, oscPort }
+    enum CodingKeys: String, CodingKey {
+        case version, showPath, unsaved, currentCue, nextCue, fading, audio, owners, osc, midi, oscPort, solo, pfl, monitor, monitorInfo
+    }
 
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -158,6 +175,10 @@ public struct EngineStatus: Codable, Equatable {
         osc = try c.decodeIfPresent(String.self, forKey: .osc) ?? ""
         midi = try c.decodeIfPresent(String.self, forKey: .midi) ?? ""
         oscPort = try c.decodeIfPresent(Int.self, forKey: .oscPort)
+        solo = try c.decodeIfPresent([UUID].self, forKey: .solo) ?? []
+        pfl = try c.decodeIfPresent([UUID].self, forKey: .pfl) ?? []
+        monitor = try c.decodeIfPresent(MonitorSettings.self, forKey: .monitor)
+        monitorInfo = try c.decodeIfPresent(String.self, forKey: .monitorInfo) ?? ""
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -173,6 +194,10 @@ public struct EngineStatus: Codable, Equatable {
         try c.encode(osc, forKey: .osc)
         try c.encode(midi, forKey: .midi)
         try c.encodeIfPresent(oscPort, forKey: .oscPort)
+        try c.encode(solo, forKey: .solo)
+        try c.encode(pfl, forKey: .pfl)
+        try c.encodeIfPresent(monitor, forKey: .monitor)
+        try c.encode(monitorInfo, forKey: .monitorInfo)
     }
 
     /// Who moves a source's position now.

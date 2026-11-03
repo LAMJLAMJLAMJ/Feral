@@ -3,9 +3,11 @@
 //
 // Threads:
 //   control thread   feral_state_*, feral_core_publish, feral_core_publish_gains, feral_core_collect,
+//                    feral_monitor_*, feral_core_set_monitor,
 //                    feral_core_audio_detached, and the geometry functions in feral_geometry.h
 //   audio thread     feral_core_render (never allocates, locks or logs)
 //   any thread       feral_core_get_stats, feral_core_live_states, feral_core_set_test_signal,
+//                    feral_core_set_listen, feral_core_clear_listen,
 //                    feral_core_read_meters (one reader at a time)
 #ifndef FERAL_CORE_H
 #define FERAL_CORE_H
@@ -280,6 +282,45 @@ uint64_t feral_core_read_analysis(feral_core *core, float *pre, float *post, int
 /// The same per multiband band: reduction_db holds FERAL_COMP_BANDS values per input, input by
 /// input (0 for an input that is not multiband).
 void feral_core_read_band_reduction(feral_core *core, float *reduction_db, int inputs);
+
+// The monitor: a binaural render of the speakers on two outputs, for headphones. The control side
+// builds a monitor (every speaker's output, distance gain and delay, and HRIR pair) and hands it to
+// the core whole; the audio thread convolves each speaker's feed with its pair, 64 samples behind
+// the speakers. What the monitor hears is picked per input: the full mix (nothing soloed), only the
+// soloed inputs through their panning (solo), or the inputs on PFL straight to the two outputs in
+// stereo, with no binaural render and no latency (PFL wins over solo).
+
+typedef struct feral_monitor feral_monitor;
+
+/// The longest HRIR used, in samples (longer ones are cut).
+#define FERAL_MONITOR_MAX_HRIR 512
+/// The longest distance delay a monitor speaker can have, in samples.
+#define FERAL_MONITOR_MAX_DELAY 8192
+
+/// Starts a monitor on outputs left and right (from 0; -1 for none: a monitor with neither is off)
+/// at a linear gain. Control thread.
+feral_monitor *feral_monitor_create(int left_output, int right_output, float gain);
+
+/// Adds a speaker: its output, a linear gain and delay in samples (0 to FERAL_MONITOR_MAX_DELAY) for
+/// its distance, and its HRIR pair (`length` samples each). Returns -1 if the output or the delay is
+/// out of range or the monitor is full (FERAL_MAX_CHANNELS speakers).
+int feral_monitor_add_speaker(feral_monitor *monitor, int output, float gain, int delay, const float *left,
+                              const float *right, int length);
+
+/// Frees a monitor that was never handed to a core.
+void feral_monitor_destroy(feral_monitor *monitor);
+
+/// Hands a monitor to the core (which owns it from now on); the audio thread switches at its next
+/// buffer. Never null: turn the monitor off with one that has no outputs. Control thread; older
+/// monitors are freed by feral_core_collect.
+void feral_core_set_monitor(feral_core *core, feral_monitor *monitor);
+
+/// What the monitor hears from one input (from 0): solo non-zero puts it in the solo; pfl_left and
+/// pfl_right non-zero put it on PFL at those linear gains on the two monitor outputs. Any thread.
+void feral_core_set_listen(feral_core *core, int input, int solo, float pfl_left, float pfl_right);
+
+/// Clears every solo and PFL. Any thread.
+void feral_core_clear_listen(feral_core *core);
 
 /// Reads the counters. When reset_max_load is non-zero, max_load starts again from 0.
 void feral_core_get_stats(feral_core *core, feral_core_stats *stats, int reset_max_load);

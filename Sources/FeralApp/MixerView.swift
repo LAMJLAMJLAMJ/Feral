@@ -156,6 +156,7 @@ private struct SourceStrip: View {
                     .font(.system(size: 8).monospacedDigit()).foregroundStyle(groupMuted ? Color.red : Color.secondary)
             }
             MuteButton(on: source.mute) { model.update(source.id, SourceValues(mute: !source.mute)) }
+            ListenButtons(model: model, source: source.id, compact: true)
             Text(right.map { "in \(source.input)·\($0.input)" } ?? "in \(source.input)").font(.system(size: 8)).foregroundStyle(.secondary)
         }
     }
