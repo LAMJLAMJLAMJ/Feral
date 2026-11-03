@@ -277,7 +277,16 @@ final class Engine {
 
     /// The HRIRs for engine.json's `hrtf` (a folder; none for the head model), kept while unchanged.
     private func hrirSet(_ path: String?) throws -> HRIRSet {
-        guard let path, !path.isEmpty else { return SphericalHead(sampleRate: config.sampleRate) }
+        if path == MonitorSettings.headModel { return SphericalHead(sampleRate: config.sampleRate) }
+        guard let path, !path.isEmpty else {
+            // The default: the HRTF folder next to engine.json, when it is there.
+            let folder = options.configURL.deletingLastPathComponent().appendingPathComponent("HRTF")
+            guard FileManager.default.fileExists(atPath: folder.path) else { return SphericalHead(sampleRate: config.sampleRate) }
+            do { return try hrirSet(folder.path) } catch {
+                log("monitor: \(error); using the spherical head model")
+                return SphericalHead(sampleRate: config.sampleRate)
+            }
+        }
         let expanded = NSString(string: path).expandingTildeInPath
         let url = expanded.hasPrefix("/") ? URL(fileURLWithPath: expanded)
             : options.configURL.deletingLastPathComponent().appendingPathComponent(expanded)
@@ -1000,6 +1009,9 @@ final class Engine {
         }
         let old = config
         config = newConfig
+        // Rebuild the monitor even if nothing it uses changed (a new HRTF folder, say).
+        monitorKey = nil
+        hrirCache = nil
         if !old.sameDeviceSettings(as: newConfig) {
             if newConfig.sampleRate != old.sampleRate {
                 log("reload: sampleRate changed; load figures use the old rate until the engine restarts")

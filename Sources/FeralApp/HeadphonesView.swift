@@ -103,7 +103,8 @@ struct BinauralGroupRow: View {
     private func detail(_ m: MonitorSettings?) -> String {
         guard let m, m.isOn else { return "Headphones · not patched" }
         let sides = [m.left.map { "L → \($0)" }, m.right.map { "R → \($0)" }].compactMap { $0 }.joined(separator: ", ")
-        return "Headphones · " + sides + (m.hrtf == nil ? " · head model" : " · KEMAR")
+        let info = model.status?.monitorInfo ?? ""
+        return "Headphones · " + sides + (info.contains("KEMAR") ? " · KEMAR" : " · head model")
     }
 }
 
@@ -142,16 +143,23 @@ struct HeadphonesPanel: View {
                      + "It plays once Binaural L or R is patched to a card output (Patch window, Outputs, the last two rows).")
             }
             Section("Ear responses (HRTF)") {
-                Picker("Model", selection: Binding(get: { m.hrtf == nil }, set: { builtIn in
+                Picker("Model", selection: Binding(get: { choice(m) }, set: { c in
                     var n = m
-                    n.hrtf = builtIn ? nil : (path.isEmpty ? nil : path)
-                    if builtIn || !path.isEmpty { model.setMonitor(n) } else { choose(m) }
+                    switch c {
+                    case 0: n.hrtf = nil
+                    case 1: n.hrtf = MonitorSettings.headModel
+                    default:
+                        guard !path.isEmpty, path != MonitorSettings.headModel else { choose(m); return }
+                        n.hrtf = path
+                    }
+                    model.setMonitor(n)
                 })) {
-                    Text("Built-in head model").tag(true)
-                    Text("Measured (KEMAR folder)").tag(false)
+                    Text("Default: the HRTF folder (~/Library/Application Support/Feral/HRTF), else the head model").tag(0)
+                    Text("Built-in head model").tag(1)
+                    Text("Another folder").tag(2)
                 }
                 .pickerStyle(.radioGroup)
-                if m.hrtf != nil || !path.isEmpty {
+                if choice(m) == 2 {
                     HStack {
                         TextField("Folder", text: $path).onSubmit { var n = m; n.hrtf = path.isEmpty ? nil : path; model.setMonitor(n) }
                         Button("Choose…") { choose(m) }
@@ -174,9 +182,15 @@ struct HeadphonesPanel: View {
         }
         .formStyle(.grouped)
         .onAppear {
-            path = monitor?.hrtf ?? ""
+            path = monitor?.hrtf == MonitorSettings.headModel ? "" : monitor?.hrtf ?? ""
             model.refreshPatch()
         }
+    }
+
+    /// 0 the default folder, 1 the head model, 2 another folder.
+    private func choice(_ m: MonitorSettings) -> Int {
+        guard let h = m.hrtf, !h.isEmpty else { return 0 }
+        return h == MonitorSettings.headModel ? 1 : 2
     }
 
     private var hearing: String {

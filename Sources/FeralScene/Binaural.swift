@@ -16,9 +16,13 @@ public struct MonitorSettings: Codable, Equatable {
     public var right: Int?
     /// The monitor's level in dB.
     public var gainDB: Double
-    /// A folder of measured HRIRs (the MIT KEMAR "compact" set: elev0/H0e090a.wav and so on); none
-    /// uses a built-in spherical head model.
+    /// A folder of measured HRIRs (the MIT KEMAR "compact" set: elev0/H0e090a.wav and so on), or
+    /// `headModel` for the built-in spherical head. None: the HRTF folder next to engine.json
+    /// (~/Library/Application Support/Feral/HRTF) if it is there, else the head model.
     public var hrtf: String?
+
+    /// `hrtf` for the built-in spherical head model.
+    public static let headModel = "head model"
 
     public init(left: Int? = nil, right: Int? = nil, gainDB: Double = 0, hrtf: String? = nil) {
         self.left = left; self.right = right; self.gainDB = gainDB; self.hrtf = hrtf
