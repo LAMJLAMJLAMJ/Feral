@@ -99,19 +99,19 @@ struct PlanView: View {
             .overlay(alignment: .topLeading) { legend.padding(8) }
             .overlay(alignment: .topTrailing) { controls.padding(8) }
             .overlay(alignment: .bottomLeading) {
-                Text(hint).font(.caption).foregroundStyle(.secondary).padding(8)
+                // Only the dragged source's position, while dragging: no instructions over the plan.
+                if let drag {
+                    Text(String(format: "x %.2f  y %.2f  z %.2f m", drag.position.x, drag.position.y, drag.position.z))
+                        .font(.caption.monospacedDigit()).foregroundStyle(.secondary)
+                        .padding(.horizontal, 6).padding(.vertical, 3)
+                        .background(.bar, in: RoundedRectangle(cornerRadius: 4))
+                        .padding(8)
+                }
             }
             .overlay(alignment: .bottomTrailing) { scaleBar(frame).padding(10) }
         }
         .background(Color(nsColor: .textBackgroundColor))
         .clipped()
-    }
-
-    private var hint: String {
-        if let drag {
-            return String(format: "x %.2f  y %.2f  z %.2f m", drag.position.x, drag.position.y, drag.position.z)
-        }
-        return "Drag a source to move it · drag empty space to pan, pinch to zoom · stage at the top"
     }
 
     // MARK: Overlays
