@@ -283,6 +283,72 @@ uint64_t feral_core_read_analysis(feral_core *core, float *pre, float *post, int
 /// input (0 for an input that is not multiband).
 void feral_core_read_band_reduction(feral_core *core, float *reduction_db, int inputs);
 
+// ----- Rooms (the spatial reverb) -----------------------------------------------------------------
+//
+// A render state can hold up to FERAL_MAX_ROOMS rooms. Each room is a late tail: the inputs' sends
+// are summed, pre-delayed, diffused and fed to a feedback delay network of FERAL_ROOM_LINES lines
+// with a three-band decay, and the lines' outputs are taps on the outputs like any other (they fade
+// and crossfade the same way). Each input can also have up to FERAL_MAX_REFLECTIONS early
+// reflections: copies of it through a wall filter, each at its own delay and gain (gliding and
+// crossfading like a delay tap), each panned to outputs by its own taps. The direct sound is never
+// delayed by any of this; the reverb is added to the outputs before their processing.
+
+#define FERAL_MAX_ROOMS 4
+#define FERAL_ROOM_LINES 16
+#define FERAL_MAX_REFLECTIONS 16
+/// The longest pre-delay, in seconds.
+#define FERAL_ROOM_MAX_PREDELAY 0.5
+/// The shortest and longest mean line length a room takes, in seconds.
+#define FERAL_ROOM_MIN_LINE 0.004
+#define FERAL_ROOM_MAX_LINE 0.1
+/// The wall filter's sections on each input's reflections.
+#define FERAL_REFLECTION_FILTER 2
+
+typedef struct feral_room_params {
+    /// Non-zero runs the room. A room that is off is silent and costs nothing; turning it on starts
+    /// it empty.
+    int on;
+    /// Decay times (RT60) in seconds, below crossover[0], between, and above crossover[1]
+    /// (0.1 to 30).
+    float decay[3];
+    /// The decay bands' crossovers in Hz (SPAT uses 177 and 5657).
+    float crossover[2];
+    /// Samples from the send to the start of the tail (0 to FERAL_ROOM_MAX_PREDELAY). Changes glide.
+    float predelay;
+    /// The lines' mean length in samples (FERAL_ROOM_MIN_LINE to FERAL_ROOM_MAX_LINE seconds): a
+    /// bigger room has longer lines. Changes glide slowly (a slight, brief pitch change in the tail).
+    float line_length;
+    /// 0 to 1: how much the input is smeared before the lines (input all-passes).
+    float diffusion;
+    /// 0 to 1: how much the line lengths wander (slowly), which smooths the tail's colour.
+    float modulation;
+} feral_room_params;
+
+/// A room with a 2 s decay at the given rate, 20 ms lines, 177 Hz and 5657 Hz crossovers, no
+/// pre-delay, diffusion 0.7 and modulation 0.5, switched off.
+feral_room_params feral_room_defaults(double sample_rate);
+
+/// Sets a room's parameters (room from 0). Returns 0, or -1 when the room is out of range.
+int feral_state_set_room(feral_state *state, int room, const feral_room_params *params);
+
+/// Sends an input to a room at a linear gain (adding to any send already there). Sends change over
+/// one buffer. Returns 0, or -1 when out of range.
+int feral_state_add_room_send(feral_state *state, int input, int room, float gain);
+
+/// A tap from one of a room's lines (from 0 to FERAL_ROOM_LINES - 1) to an output. Returns 0, or
+/// -1 when out of range.
+int feral_state_add_room_output(feral_state *state, int room, int line, int output, float gain);
+
+/// Sets an input's early reflections: `count` (up to FERAL_MAX_REFLECTIONS) delays in samples and
+/// linear gains, and the wall filter (FERAL_REFLECTION_FILTER sections; null is flat) every one of
+/// them goes through. Count 0 removes them. Returns 0, or -1 when out of range.
+int feral_state_set_reflections(feral_state *state, int input, int count, const float *delays, const float *gains,
+                                const feral_biquad *filter);
+
+/// Pans one of an input's reflections to an output at a linear gain (the reflection's own gain
+/// comes on top). Returns 0, or -1 when out of range.
+int feral_state_add_reflection_output(feral_state *state, int input, int reflection, int output, float gain);
+
 // The monitor: a binaural render of the speakers on two outputs, for headphones. The control side
 // builds a monitor (every speaker's output, distance gain and delay, and HRIR pair) and hands it to
 // the core whole; the audio thread convolves each speaker's feed with its pair, 64 samples behind

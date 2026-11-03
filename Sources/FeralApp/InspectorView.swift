@@ -39,6 +39,8 @@ struct InspectorView: View {
                     }
                 case .cue(let id):
                     if let c = state.cue(id) { CueInspector(model: model, state: state, cue: c, selection: $selection) }
+                case .room(let id):
+                    if let r = state.room(id) { RoomInspector(model: model, state: state, room: r, selection: $selection) }
                 case nil:
                     ShowSummary(state: state)
                 }
@@ -270,6 +272,7 @@ struct SourceInspector: View {
                 .help("Spreads the source across this many degrees around the listener, in every algorithm")
             }
             DistanceSection(model: model, state: state, source: source)
+            ReverbSection(model: model, state: state, source: source)
             if let pair = model.stereoPair(of: source.id) {
                 StereoSection(model: model, state: state, group: pair.group, current: source.id, selection: $selection)
             }
@@ -594,6 +597,7 @@ func fieldName(_ f: SnapshotField) -> String {
     case .eq: return "EQ"
     case .compressor: return "Compressor"
     case .distance: return "Distance modelling"
+    case .reverb: return "Reverb (room, send, reflections)"
     }
 }
 

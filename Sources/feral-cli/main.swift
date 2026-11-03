@@ -2,6 +2,7 @@
 // files, and the running engine from Terminal.
 //
 //   feral-cli check                                 run the known-answer checks
+//   feral-cli bench                                 time the render core at 128 x 128, with and without reverb
 //   feral-cli taps    [--config PATH]               every source's gain and delay per speaker
 //   feral-cli impulse [--config PATH] [--source N]  render an impulse and measure what each output gets
 //   feral-cli render  [--config PATH] [IN.wav] OUT.wav [--seconds S] [--tail S]
@@ -129,6 +130,9 @@ case "check":
     let failed = results.filter { !$0.passed }.count
     print(failed == 0 ? "All \(results.count) checks passed." : "\(failed) of \(results.count) checks FAILED.")
     exit(failed == 0 ? 0 : 1)
+
+case "bench":
+    runBench()
 
 case "taps":
     let config = loadConfig()
@@ -273,6 +277,7 @@ default:
     feral-cli: offline checks and renders through Feral's render core
 
     feral-cli check                                   run the known-answer checks
+    feral-cli bench                                   time the render core at 128 in x 128 out, with and without the reverb
     feral-cli taps    [--config PATH]                 every source's gain and delay per speaker
     feral-cli impulse [--config PATH] [--source N]    play an impulse into input N and measure each output
     feral-cli render  [--config PATH] [IN.wav] OUT.wav [--seconds S] [--tail S]

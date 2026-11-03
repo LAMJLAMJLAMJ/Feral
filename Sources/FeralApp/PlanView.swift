@@ -77,6 +77,7 @@ struct PlanView: View {
             let frame = PlanFrame(bounds: frozen ?? PlanFrame.bounds(state), size: geo.size, zoom: zoom, pan: pan)
             Canvas { ctx, size in
                 drawGrid(ctx, frame, size)
+                drawRoom(ctx, frame)
                 drawSpeakers(ctx, frame)
                 drawListener(ctx, frame)
                 drawSources(ctx, frame)
@@ -98,19 +99,19 @@ struct PlanView: View {
             .overlay(alignment: .topLeading) { legend.padding(8) }
             .overlay(alignment: .topTrailing) { controls.padding(8) }
             .overlay(alignment: .bottomLeading) {
-                Text(hint).font(.caption).foregroundStyle(.secondary).padding(8)
+                // Only the dragged source's position, while dragging: no instructions over the plan.
+                if let drag {
+                    Text(String(format: "x %.2f  y %.2f  z %.2f m", drag.position.x, drag.position.y, drag.position.z))
+                        .font(.caption.monospacedDigit()).foregroundStyle(.secondary)
+                        .padding(.horizontal, 6).padding(.vertical, 3)
+                        .background(.bar, in: RoundedRectangle(cornerRadius: 4))
+                        .padding(8)
+                }
             }
             .overlay(alignment: .bottomTrailing) { scaleBar(frame).padding(10) }
         }
         .background(Color(nsColor: .textBackgroundColor))
         .clipped()
-    }
-
-    private var hint: String {
-        if let drag {
-            return String(format: "x %.2f  y %.2f  z %.2f m", drag.position.x, drag.position.y, drag.position.z)
-        }
-        return "Drag a source to move it · drag empty space to pan, pinch to zoom · stage at the top"
     }
 
     // MARK: Overlays
@@ -241,6 +242,17 @@ struct PlanView: View {
 
     /// The listening point that azimuth, elevation and distance are measured from: a head with a
     /// nose pointing the way it faces.
+    /// The selected room's box, dashed, so its size and place can be seen against the speakers.
+    private func drawRoom(_ ctx: GraphicsContext, _ f: PlanFrame) {
+        guard case .room(let id) = selection, let r = state.room(id) else { return }
+        let c = r.centre ?? Position(state.system.listener.position.x, state.system.listener.position.y, 0)
+        let a = f.point(c.x - r.width / 2, c.y - r.depth / 2), b = f.point(c.x + r.width / 2, c.y + r.depth / 2)
+        let rect = CGRect(x: min(a.x, b.x), y: min(a.y, b.y), width: abs(b.x - a.x), height: abs(b.y - a.y))
+        ctx.fill(Path(rect), with: .color(r.color.opacity(0.06)))
+        ctx.stroke(Path(rect), with: .color(r.color.opacity(0.8)), style: StrokeStyle(lineWidth: 1.5, dash: [6, 4]))
+        ctx.draw(Text(r.name).font(.caption).foregroundColor(r.color), at: CGPoint(x: rect.minX + 6, y: rect.minY + 4), anchor: .topLeading)
+    }
+
     private func drawListener(_ ctx: GraphicsContext, _ f: PlanFrame) {
         let l = state.system.listener
         var at = l.position

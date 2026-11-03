@@ -16,7 +16,7 @@ public enum KnownAnswers {
     public static func run() -> [Result] {
         [delayRenderer(), fractionalDelay(), delayGlide(), delayCrossfade(), gainRamp(), groupCrossfade(),
          vbap2D(), vbap3D(), vbapOpenDome(), vbapWidth(), dbap(), outputEQ(), outputDelayAndPolarity(),
-         outputLimiter(), outputMute(), speedOfSound()]
+         outputLimiter(), outputMute(), speedOfSound(), roomDecay(), roomBands(), reflection()]
     }
 
     // MARK: Helpers
@@ -341,5 +341,82 @@ public enum KnownAnswers {
     static func speedOfSound() -> Result {
         check("Speed of sound from temperature", [("0 C", feral_speed_of_sound(0), 331.3), ("20 C", feral_speed_of_sound(20), 343.2)],
               tolerance: 0.05)
+    }
+
+    // MARK: The reverb
+
+    /// A room's tail on four outputs (every line on each, Hadamard signs), fed by input 1.
+    static func room(decay: (Double, Double, Double)) -> RenderState {
+        let s = RenderState(inputs: 1, outputs: 4)
+        var p = RoomParams(sampleRate: rate)
+        p.on = true
+        p.decay = decay
+        p.lineLength = 0.03 * rate
+        s.setRoom(0, p)
+        s.addRoomSend(input: 0, room: 0, gain: 1)
+        for o in 0..<4 {
+            for line in 0..<Int(FERAL_ROOM_LINES) {
+                s.addRoomOutput(room: 0, line: line, output: o, gain: ImageSources.tailSign(speaker: o, line: line) ? -0.5 : 0.5)
+            }
+        }
+        return s
+    }
+
+    /// RT60 from the Schroeder integral's -5 to -35 dB, and the total energy, of every output together.
+    static func decay(_ y: [[Float]]) -> (rt: Double, energy: Double) {
+        let n = y[0].count
+        var e = [Double](repeating: 0, count: n)
+        for ch in y { for k in 0..<n { e[k] += Double(ch[k]) * Double(ch[k]) } }
+        let total = e.reduce(0, +)
+        var rest = total, t5 = -1, t35 = -1
+        for k in 0..<n {
+            rest -= e[k]
+            let db = 10 * log10(max(rest, 1e-30) / max(total, 1e-30))
+            if t5 < 0 && db < -5 { t5 = k }
+            if t35 < 0 && db < -35 { t35 = k; break }
+        }
+        return (t35 > t5 && t5 >= 0 ? 2 * Double(t35 - t5) / rate : 0, total)
+    }
+
+    static func roomDecay() -> Result {
+        var pairs: [(String, Double, Double)] = []
+        for rt in [0.5, 2.0, 8.0] {
+            let core = RenderCore(sampleRate: rate)
+            do { try core.publish(room(decay: (rt, rt, rt))) } catch { return Result(name: "Room tail decay", passed: false, detail: "\(error)") }
+            let y = play(core, outputs: 4, length: Int((rt * 1.5 + 0.5) * rate)) { $0 == 0 ? 1 : 0 }
+            let d = decay(y)
+            pairs.append(("RT60 \(rt) s:", d.rt / rt, 1))
+            pairs.append(("energy:", d.energy, 1))
+        }
+        // Within 8 % of the decay asked for, and the tail holds the send's energy within 15 %.
+        return check("Room tail: RT60 at 0.5, 2 and 8 s (as a ratio) and energy", pairs, tolerance: 0.15)
+    }
+
+    static func roomBands() -> Result {
+        // Lows 4 s, mids 2 s, highs 0.5 s: a 100 Hz and an 10 kHz tone burst decay at about those.
+        var pairs: [(String, Double, Double)] = []
+        for (hz, want) in [(40.0, 4.0), (1_000.0, 2.0), (16_000.0, 0.5)] {
+            let core = RenderCore(sampleRate: rate)
+            do { try core.publish(room(decay: (4, 2, 0.5))) } catch { return Result(name: "Room tail bands", passed: false, detail: "\(error)") }
+            let burst = Int(0.05 * rate)
+            let y = play(core, outputs: 4, length: Int((want * 1.5 + 0.5) * rate)) { n in
+                n < burst ? Float(sin(2 * Double.pi * hz * Double(n) / rate) * 0.5 * (1 - cos(2 * Double.pi * Double(n) / Double(burst)))) : 0
+            }
+            pairs.append(("\(Int(hz)) Hz:", decay(y).rt / want, 1))
+        }
+        return check("Room tail: three-band decay (ratio to 4 s low, 2 s mid, 0.5 s high)", pairs, tolerance: 0.2)
+    }
+
+    static func reflection() -> Result {
+        let core = RenderCore(sampleRate: rate)
+        let s = RenderState(inputs: 1, outputs: 2)
+        s.setReflections(input: 0, delays: [240], gains: [0.5], filter: [])
+        s.addReflectionOutput(input: 0, reflection: 0, output: 1, gain: 0.8)
+        do { try core.publish(s) } catch { return Result(name: "Early reflection", passed: false, detail: "\(error)") }
+        let y = play(core, outputs: 2, length: 1024) { $0 == 64 ? 1 : 0 }
+        let peak = y[1].indices.max { abs(y[1][$0]) < abs(y[1][$1]) } ?? 0
+        return check("Early reflection: delay (samples) and gain", [("arrival", Double(peak - 64), 240), ("gain", Double(y[1][peak]), 0.4),
+                                                                   ("output 1", Double(y[0].map { abs($0) }.max() ?? 0), 0)],
+                     tolerance: 1e-6)
     }
 }

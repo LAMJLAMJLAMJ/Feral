@@ -90,6 +90,8 @@ public struct Source: Codable, Equatable, Identifiable {
     public var delayMS: Double
     /// Level and air absorption with distance from the listener (off when none).
     public var distance: SourceDistance?
+    /// The room it plays into, its send to the room's tail and its early reflections (off when none).
+    public var reverb: SourceReverb?
 
     public init(id: UUID = UUID(), number: Int, name: String? = nil, input: Int, position: Position, gainDB: Double = 0,
                 mute: Bool = false, width: Double = 0, colour: String? = nil, sends: [GroupSend] = [], lfeDB: Double? = nil,
@@ -103,7 +105,7 @@ public struct Source: Codable, Equatable, Identifiable {
 
     enum CodingKeys: String, CodingKey {
         case id, number, name, input, position, gainDB, mute, width, colour, sends, lfeDB, eq, compressor, trimDB, invert, delayMS,
-             distance
+             distance, reverb
     }
 
     public init(from decoder: Decoder) throws {
@@ -125,6 +127,7 @@ public struct Source: Codable, Equatable, Identifiable {
         invert = try c.decodeIfPresent(Bool.self, forKey: .invert) ?? false
         delayMS = try c.decodeIfPresent(Double.self, forKey: .delayMS) ?? 0
         distance = try c.decodeIfPresent(SourceDistance.self, forKey: .distance)
+        reverb = try c.decodeIfPresent(SourceReverb.self, forKey: .reverb)
     }
 
     /// "12 Vox" or "12".
@@ -298,12 +301,15 @@ public struct SourceValues: Codable, Equatable {
     public var invert: Bool?
     public var delayMS: Double?
     public var distance: SourceDistance?
+    /// The room, its send and early reflections (SourceReverb.off for none).
+    public var reverb: SourceReverb?
 
     public init(position: Position? = nil, gainDB: Double? = nil, mute: Bool? = nil, width: Double? = nil,
                 sends: [GroupSend]? = nil, lfeDB: Double? = nil, lfeOff: Bool? = nil,
                 eq: SourceEQ? = nil, compressor: Compressor? = nil, trimDB: Double? = nil, invert: Bool? = nil,
-                delayMS: Double? = nil, distance: SourceDistance? = nil) {
+                delayMS: Double? = nil, distance: SourceDistance? = nil, reverb: SourceReverb? = nil) {
         self.distance = distance
+        self.reverb = reverb
         self.position = position; self.gainDB = gainDB; self.mute = mute; self.width = width
         self.sends = sends; self.lfeDB = lfeDB; self.lfeOff = lfeOff
         self.eq = eq; self.compressor = compressor; self.trimDB = trimDB; self.invert = invert; self.delayMS = delayMS
@@ -323,6 +329,7 @@ public struct SourceValues: Codable, Equatable {
         if let i = newer.invert { v.invert = i }
         if let d = newer.delayMS { v.delayMS = d }
         if let d = newer.distance { v.distance = d }
+        if let r = newer.reverb { v.reverb = r }
         if newer.lfeOff == true { v.lfeOff = true; v.lfeDB = nil } else if let l = newer.lfeDB { v.lfeDB = l; v.lfeOff = nil }
         return v
     }
@@ -348,6 +355,8 @@ public enum SnapshotField: String, Codable, CaseIterable, Equatable {
     case eq, compressor
     /// Level and air absorption with distance.
     case distance
+    /// The room, the send to it and the early reflections.
+    case reverb
 
     /// The fields a set of stored values holds.
     public static func present(in v: SourceValues) -> Set<SnapshotField> {
@@ -362,6 +371,7 @@ public enum SnapshotField: String, Codable, CaseIterable, Equatable {
         if v.eq != nil { f.insert(.eq) }
         if v.compressor != nil { f.insert(.compressor) }
         if v.distance != nil { f.insert(.distance) }
+        if v.reverb != nil { f.insert(.reverb) }
         return f
     }
 
@@ -378,6 +388,7 @@ public enum SnapshotField: String, Codable, CaseIterable, Equatable {
         case .eq: v.eq = on ? all.eq : nil
         case .compressor: v.compressor = on ? all.compressor : nil
         case .distance: v.distance = on ? all.distance : nil
+        case .reverb: v.reverb = on ? all.reverb : nil
         }
     }
 }
@@ -493,16 +504,19 @@ public struct Show: Codable, Equatable {
     public var snapshots: [Snapshot]
     public var cues: [Cue]
     public var control: ControlSettings
+    /// The reverb's rooms (up to Room.maxRooms).
+    public var rooms: [Room]
 
     public init(name: String, sources: [Source] = [], groups: [SpeakerGroup] = [], snapshots: [Snapshot] = [],
-                cues: [Cue] = [], control: ControlSettings = ControlSettings()) {
+                cues: [Cue] = [], control: ControlSettings = ControlSettings(), rooms: [Room] = []) {
         schema = showSchema
         self.name = name; self.sources = sources; self.groups = groups; self.snapshots = snapshots; self.cues = cues
         self.control = control
+        self.rooms = rooms
         sourceGroups = []
     }
 
-    enum CodingKeys: String, CodingKey { case schema, name, sources, sourceGroups, groups, snapshots, cues, control }
+    enum CodingKeys: String, CodingKey { case schema, name, sources, sourceGroups, groups, snapshots, cues, control, rooms }
 
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -517,6 +531,7 @@ public struct Show: Codable, Equatable {
         snapshots = try c.decodeIfPresent([Snapshot].self, forKey: .snapshots) ?? []
         cues = try c.decodeIfPresent([Cue].self, forKey: .cues) ?? []
         control = try c.decodeIfPresent(ControlSettings.self, forKey: .control) ?? ControlSettings()
+        rooms = try c.decodeIfPresent([Room].self, forKey: .rooms) ?? []
         // Migrations from older schemas go here, oldest first.
         schema = showSchema
     }

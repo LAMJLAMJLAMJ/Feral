@@ -42,6 +42,7 @@ public struct SnapshotFade {
             guard let s = state.source(stored.id) else { return nil }
             var to = stored.values
             to.sends = to.sends?.filter { state.group($0.group) != nil }
+            if let r = to.reverb?.room, state.room(r) == nil { to.reverb = .off }
             return Part(id: s.id, from: state.values(of: s), to: to)
         }
     }
@@ -95,6 +96,7 @@ public struct SnapshotFade {
         if let x = b.eq { v.eq = done ? x : (a.eq ?? .flat).fading(to: x, at: t) }
         if let x = b.compressor { v.compressor = done ? x : (a.compressor ?? .off).fading(to: x, at: t) }
         if let x = b.distance { v.distance = done ? x : (a.distance ?? .off).fading(to: x, at: t) }
+        if let x = b.reverb { v.reverb = done ? x : (a.reverb ?? .off).fading(to: x, at: t) }
         if b.lfeOff != nil || b.lfeDB != nil {
             let y = b.lfeOff == true ? nil : b.lfeDB
             if done {

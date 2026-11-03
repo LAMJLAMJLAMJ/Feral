@@ -79,6 +79,8 @@ public struct EngineConfig: Codable, Equatable {
     public var renderThreads: Int?
     /// The binaural monitor for headphones (see MonitorSettings); none is off.
     public var monitor: MonitorSettings?
+    /// The reverb's rooms (set from the show; not in engine.json).
+    public var rooms: [RoomConfig] = []
 
     public init(device: String? = nil, sampleRate: Double = 48_000, bufferFrames: Int = 64,
                 inputs: Int = 128, outputs: Int = 128, firstInputChannel: Int = 1, firstOutputChannel: Int = 1,
@@ -329,6 +331,13 @@ public struct EngineConfig: Codable, Equatable {
                 throw ConfigError("source \(s.label) sends to group \(name), which does not exist")
             }
             if s.lfeDB != nil && lfeOutputs == nil { throw ConfigError("source \(s.label) has lfeDB but lfeOutputs is not set") }
+        }
+        guard rooms.count <= Room.maxRooms else { throw ConfigError("at most \(Room.maxRooms) rooms") }
+        for r in rooms {
+            for o in r.speakers where !speakerOutputs.contains(o) { throw ConfigError("room \(r.name): output \(o) has no speaker") }
+        }
+        for s in sources {
+            if let r = s.reverb, !rooms.indices.contains(r.room) { throw ConfigError("source \(s.label): its room does not exist") }
         }
         if let lfe = lfeOutputs { _ = try Routing.channelList(lfe, limit: outputs, side: "output") }
         if !sources.isEmpty && groups.isEmpty { throw ConfigError("sources need at least one group to play through") }
