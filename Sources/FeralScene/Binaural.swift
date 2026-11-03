@@ -1,15 +1,17 @@
 import FeralCore
 import Foundation
 
-// The monitor: the speakers as a listener at the show's listening point would hear them, on two
-// outputs for headphones. Each speaker's feed is delayed and turned down for its distance (relative
+// The monitor (the Binaural output group): the speakers as a listener at the show's listening point
+// would hear them, on two card outputs for headphones. It has its own two outputs, Binaural L and R,
+// after Feral's speaker outputs, patched in the Patch window like them. Each speaker's feed is delayed and turned down for its distance (relative
 // to the nearest speaker) and played through the head-related impulse responses (HRIRs) for its
 // direction. What the monitor hears (the mix, the soloed sources, or PFL) is picked in the core.
 
 /// engine.json's `monitor`: where the binaural monitor plays and how.
 public struct MonitorSettings: Codable, Equatable {
-    /// The Feral outputs (from 1) for the left and right ear; neither turns the monitor off. They
-    /// must not be speakers' outputs.
+    /// The card output channels (from 1, as in outputPatch) Binaural L and R play on; neither
+    /// patched leaves the monitor off. A card output takes one Feral output, so these must not be
+    /// patched to a speaker output too.
     public var left: Int?
     public var right: Int?
     /// The monitor's level in dB.
@@ -34,19 +36,22 @@ public struct MonitorSettings: Codable, Equatable {
 
     public var isOn: Bool { left != nil || right != nil }
 
-    public func check(outputs: Int) throws {
-        for o in [left, right].compactMap({ $0 }) where !(1...max(outputs, 1)).contains(o) || outputs < 1 {
-            throw ConfigError("monitor: output \(o) must be from 1 to \(outputs)")
+    /// Checks the settings against the card channels Feral's outputs are patched to.
+    public func check(outputChannels: [Int]) throws {
+        for c in [left, right].compactMap({ $0 }) where c < 1 {
+            throw ConfigError("monitor: left and right are card output channels, from 1")
         }
-        if let l = left, l == right { throw ConfigError("monitor: left and right must be different outputs") }
+        if let l = left, l == right { throw ConfigError("monitor: Binaural L and R must be on different card outputs") }
+        for c in [left, right].compactMap({ $0 }) {
+            if let k = outputChannels.firstIndex(of: c) {
+                throw ConfigError("monitor: card output \(c) already plays Feral output \(k + 1); a card output takes one output")
+            }
+        }
         guard (-60...20).contains(gainDB) else { throw ConfigError("monitor: gainDB must be from -60 to 20") }
     }
 
-    /// The monitor's outputs that a speaker plays on.
-    public func clashes(with speakers: [Speaker]) -> [Int] {
-        let used = Set(speakers.map(\.output))
-        return [left, right].compactMap { $0 }.filter { used.contains($0) }
-    }
+    /// The card channels for Binaural L and R (0 for none), as the patch lists them.
+    public var channels: [Int] { [left ?? 0, right ?? 0] }
 }
 
 /// HRIRs by direction, at a sample rate.

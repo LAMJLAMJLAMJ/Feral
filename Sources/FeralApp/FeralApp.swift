@@ -214,6 +214,7 @@ struct SidebarView: View {
     @State private var deleting: Source?
     /// Several sources waiting for the person to confirm deleting them.
     @State private var deletingMany: [Source] = []
+    @State private var deletingSpeakers: [Speaker] = []
     /// The rows selected when there are more than one (⌘-click or ⇧-click); otherwise `selection` is it.
     @State private var multiple: Set<Selection> = []
 
@@ -290,24 +291,25 @@ struct SidebarView: View {
                         }
                     case .speakers:
                         let groups = groupOf(state)
-                        if !state.show.groups.isEmpty {
-                            Section("Output groups") {
-                                ForEach(state.show.groups) { g in
-                                    OutputGroupRow(group: g, state: state)
-                                        .tag(Selection.speakerGroup(g.id))
-                                        .contextMenu {
-                                            Menu("Algorithm") {
-                                                ForEach(Renderer.allCases, id: \.self) { r in
-                                                    Button { var c = g; c.renderer = r; model.apply(.setGroup(group: c)) } label: {
-                                                        if g.renderer == r { Label(r.title, systemImage: "checkmark") } else { Text(r.title) }
-                                                    }
+                        Section("Output groups") {
+                            // The Binaural group is always there and cannot be deleted.
+                            BinauralGroupRow(model: model)
+                                .tag(Selection.binaural)
+                            ForEach(state.show.groups) { g in
+                                OutputGroupRow(group: g, state: state)
+                                    .tag(Selection.speakerGroup(g.id))
+                                    .contextMenu {
+                                        Menu("Algorithm") {
+                                            ForEach(Renderer.allCases, id: \.self) { r in
+                                                Button { var c = g; c.renderer = r; model.apply(.setGroup(group: c)) } label: {
+                                                    if g.renderer == r { Label(r.title, systemImage: "checkmark") } else { Text(r.title) }
                                                 }
                                             }
-                                            Divider()
-                                            Button("Delete group…", role: .destructive) { selection = .speakerGroup(g.id) }
                                         }
+                                        Divider()
+                                        Button("Delete group…", role: .destructive) { selection = .speakerGroup(g.id) }
+                                    }
                                 }
-                            }
                         }
                         Section {
                             ForEach(state.system.speakers.sorted { $0.number < $1.number }) { s in
@@ -316,12 +318,16 @@ struct SidebarView: View {
                                     .contextMenu { speakerMenu(s, state) }
                             }
                         } header: {
-                            if !state.show.groups.isEmpty { Text("Speakers") }
+                            Text("Speakers")
                         }
                     }
                 }
                 .listStyle(.inset)
                 .onDeleteCommand {
+                    if tab == .speakers {
+                        deletingSpeakers = selectedSpeakers(state)
+                        return
+                    }
                     let targets = selectedSources(state)
                     if targets.count == 1 { deleting = targets[0] } else if targets.count > 1 { deletingMany = targets }
                 }
@@ -344,6 +350,19 @@ struct SidebarView: View {
             Button("Cancel", role: .cancel) { deletingMany = [] }
         } message: {
             Text(deletingMany.map(\.label).joined(separator: ", ") + ". They stop playing at once.")
+        }
+        .confirmationDialog(deletingSpeakers.count == 1 ? "Delete \(deletingSpeakers[0].label)?" : "Delete \(deletingSpeakers.count) speakers?",
+                            isPresented: Binding(get: { !deletingSpeakers.isEmpty }, set: { if !$0 { deletingSpeakers = [] } }),
+                            titleVisibility: .visible) {
+            Button(deletingSpeakers.count == 1 ? "Delete speaker" : "Delete \(deletingSpeakers.count) speakers", role: .destructive) {
+                model.deleteSpeakers(deletingSpeakers.map(\.id))
+                multiple = []
+                if case .speaker(let id) = selection, deletingSpeakers.contains(where: { $0.id == id }) { selection = nil }
+                deletingSpeakers = []
+            }
+            Button("Cancel", role: .cancel) { deletingSpeakers = [] }
+        } message: {
+            Text("They leave every output group and stop playing at once. The system layer (delay, EQ, trim) goes with them.")
         }
         .onChange(of: selection) { _, new in
             // Something picked elsewhere (the plan, the mixer) ends a multiple selection.
@@ -401,6 +420,10 @@ struct SidebarView: View {
                 multiple = []
                 if let id = model.addSpeakerGroup(with: ids) { selection = .speakerGroup(id) }
             }
+        }
+        Divider()
+        Button(targets.count > 1 ? "Delete \(targets.count) speakers…" : "Delete speaker…", role: .destructive) {
+            deletingSpeakers = targets
         }
     }
 
@@ -466,6 +489,11 @@ struct SidebarView: View {
                 Text("Speaker")
                 Spacer()
                 Text("Output level")
+                Button { if let id = model.addSpeaker() { selection = .speaker(id) } } label: {
+                    Label("Add", systemImage: "plus")
+                }
+                .buttonStyle(.borderless)
+                .help("Add a speaker on the next free Feral output; set its position in the inspector and tick its output groups")
                 Button {
                     let members = selectedSpeakers(state).map(\.id)
                     multiple = []
@@ -719,6 +747,10 @@ struct SpeakerRow: View {
                 Text("out \(speaker.output)" + (group.map { " · \($0.name)" } ?? "") + (lfe ? " · LFE" : "")
                      + (speaker.mute ? " · muted" : ""))
                     .font(.caption).foregroundStyle(.secondary).lineLimit(1)
+            }
+            if group == nil && !lfe {
+                Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange)
+                    .help("In no output group: it plays nothing. Tick a group in its inspector, or right-click > Output groups.")
             }
             Spacer(minLength: 4)
             MeterBar(channel: meters.output(speaker.output), vertical: false, clear: { meters.clearClip(output: speaker.output) }).frame(width: 70, height: 7)

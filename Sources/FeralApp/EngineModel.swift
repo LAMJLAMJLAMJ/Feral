@@ -105,7 +105,9 @@ final class EngineModel: ObservableObject {
 
     func refreshPatch() { send(.getPatch) }
 
-    func setPatch(inputs: [Int]?, outputs: [Int]?) { send(.setPatch(inputs: inputs, outputs: outputs)) }
+    func setPatch(inputs: [Int]?, outputs: [Int]?, monitor: [Int]? = nil) {
+        send(.setPatch(inputs: inputs, outputs: outputs, monitor: monitor))
+    }
 
     func setChannelCounts(inputs: Int?, outputs: Int?) { send(.setChannelCounts(inputs: inputs, outputs: outputs)) }
 
@@ -227,6 +229,31 @@ final class EngineModel: ObservableObject {
 
     /// Adds an output (speaker) group with these speakers; returns its id. It starts as Delay, or as
     /// VBAP when one of the speakers is already in a Delay group (a speaker can be in one only).
+    /// Feral's outputs (speaker outputs, not counting Binaural L and R).
+    var feralOutputs: Int { patch?.outputs.count ?? (meters.outputs.isEmpty ? 128 : meters.outputs.count) }
+
+    /// Adds a speaker on the lowest free Feral output, a metre to the right of the last one (or 5 m
+    /// in front of the listener), in no group yet. Returns its id.
+    func addSpeaker() -> UUID? {
+        guard let state else { return nil }
+        let used = Set(state.system.speakers.map(\.output))
+        guard let output = (1...max(feralOutputs, 1)).first(where: { !used.contains($0) }) else {
+            lastError = "Every Feral output (\(feralOutputs)) already has a speaker. Add outputs in Audio > Patch (Outputs, the count at the top right)."
+            return nil
+        }
+        let n = (state.system.speakers.map(\.number).max() ?? 0) + 1
+        let last = state.system.speakers.max { $0.number < $1.number }
+        let position = last.map { Position($0.position.x + 1, $0.position.y, $0.position.z) }
+            ?? state.point(Polar(azimuth: 0, elevation: 0, distance: 5))
+        let speaker = Speaker(number: n, output: output, position: position)
+        apply(.setSpeaker(speaker: speaker))
+        return speaker.id
+    }
+
+    func deleteSpeakers(_ ids: [UUID]) {
+        for id in ids { apply(.removeSpeaker(id: id)) }
+    }
+
     func addSpeakerGroup(with speakers: [UUID] = []) -> UUID? {
         guard let state else { return nil }
         let n = state.nextGroupNumber
@@ -384,7 +411,7 @@ final class EngineModel: ObservableObject {
 
 /// What is selected, in the sidebar or on the plan.
 enum Selection: Hashable {
-    case source(UUID), speaker(UUID), snapshot(UUID), cue(UUID), sourceGroup(UUID), speakerGroup(UUID), listener
+    case source(UUID), speaker(UUID), snapshot(UUID), cue(UUID), sourceGroup(UUID), speakerGroup(UUID), listener, binaural
 }
 
 extension Color {

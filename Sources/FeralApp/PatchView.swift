@@ -5,8 +5,9 @@ import SwiftUI
 
 /// Audio > Patch (⌥⌘P): a crosspoint matrix between the sound card's channels and Feral's, with an
 /// Inputs tab (card inputs into Feral inputs, which sources play) and an Outputs tab (Feral outputs,
-/// which speakers are on, to card outputs). Changes are drafted here and sent with Apply, since the
-/// engine reopens the audio on a new patch (a short gap).
+/// which speakers are on, to card outputs, then Binaural L and R, the headphone monitor's two
+/// outputs). Changes are drafted here and sent with Apply, since the engine reopens the audio on a
+/// new patch (a short gap).
 struct PatchView: View {
     @ObservedObject var model: EngineModel
     @ObservedObject var meters: MeterStore
@@ -24,6 +25,7 @@ struct PatchView: View {
                 PatchMatrix(outputs: outputsTab, live: live(patch), patch: current(patch),
                             available: outputsTab ? patch.deviceOutputs : patch.deviceInputs,
                             deviceOpen: patch.device != nil, labels: labels(state, rows: live(patch).count),
+                            numbered: outputsTab ? patch.outputs.count : Int.max,
                             meters: meters) { row, column, on in
                     set(row: row, column: column, on: on, patch)
                 }
@@ -42,7 +44,7 @@ struct PatchView: View {
             guard let p else { return }
             // Drop a draft once the engine has it (or it matches anyway).
             if draftIn == p.inputs { draftIn = nil }
-            if draftOut == p.outputs { draftOut = nil }
+            if draftOut == p.outputs + (p.monitor ?? []) { draftOut = nil }
         }
     }
 
@@ -102,7 +104,7 @@ struct PatchView: View {
             Button("Apply") {
                 applied = true
                 model.lastError = nil
-                model.setPatch(inputs: draftIn, outputs: draftOut)
+                apply()
             }
             .buttonStyle(.borderedProminent)
             .keyboardShortcut(.return, modifiers: .command)
@@ -126,12 +128,23 @@ struct PatchView: View {
             guard let a else { return 0 }
             return zip(a, b).filter { $0 != $1 }.count
         }
-        return diff(draftIn, p.inputs) + diff(draftOut, p.outputs)
+        return diff(draftIn, p.inputs) + diff(draftOut, p.outputs + (p.monitor ?? []))
+    }
+
+    /// Sends the drafts: the output draft holds Feral's outputs, then Binaural L and R.
+    private func apply() {
+        guard let p = model.patch else { return }
+        var outputs: [Int]?, monitor: [Int]?
+        if let d = draftOut, d.count == p.outputs.count + (p.monitor?.count ?? 0) {
+            outputs = Array(d.prefix(p.outputs.count))
+            if p.monitor != nil { monitor = Array(d.suffix(2)) }
+        }
+        model.setPatch(inputs: draftIn, outputs: outputs, monitor: monitor)
     }
 
     // MARK: Editing
 
-    private func live(_ p: PatchInfo) -> [Int] { outputsTab ? p.outputs : p.inputs }
+    private func live(_ p: PatchInfo) -> [Int] { outputsTab ? p.outputs + (p.monitor ?? []) : p.inputs }
 
     private func current(_ p: PatchInfo) -> [Int] {
         // A draft from before the engine's channel count changed no longer fits.
@@ -174,6 +187,10 @@ struct PatchView: View {
         if outputsTab {
             for s in state.system.speakers where names.indices.contains(s.output - 1) {
                 names[s.output - 1] = s.name ?? "Speaker \(s.number)"
+            }
+            if let n = model.patch?.outputs.count, model.patch?.monitor != nil, rows == n + 2 {
+                names[n] = "Binaural L"
+                names[n + 1] = "Binaural R"
             }
         } else {
             for s in state.show.sources where names.indices.contains(s.input - 1) {
@@ -306,6 +323,8 @@ private struct PatchMatrix: View {
     let available: Int
     let deviceOpen: Bool
     let labels: [String]
+    /// Rows after this one are named only (Binaural L and R), not numbered.
+    var numbered = Int.max
     @ObservedObject var meters: MeterStore
     let change: (_ row: Int, _ column: Int, _ on: Bool) -> Void
 
@@ -496,10 +515,10 @@ private struct PatchMatrix: View {
                 ctx.fill(Path(CGRect(x: 0, y: y(r), width: size.width, height: cell)), with: .color(.accentColor.opacity(0.2)))
             }
             // Signal on the Feral channel.
-            let level = (outputs ? meters.output(r) : meters.input(r))?.peak ?? MeterFrame.silence
+            let level = r > numbered ? MeterFrame.silence : (outputs ? meters.output(r) : meters.input(r))?.peak ?? MeterFrame.silence
             let dot = level > -20 ? Color.green : (level > -60 ? Color.green.opacity(0.45) : Color.secondary.opacity(0.2))
             ctx.fill(Path(ellipseIn: CGRect(x: 6, y: mid - 3, width: 6, height: 6)), with: .color(dot))
-            ctx.draw(Text("\(r)").font(.system(size: 9, weight: .semibold).monospacedDigit()), at: CGPoint(x: 38, y: mid), anchor: .trailing)
+            ctx.draw(Text(r > numbered ? "B" : "\(r)").font(.system(size: 9, weight: .semibold).monospacedDigit()), at: CGPoint(x: 38, y: mid), anchor: .trailing)
             if !labels[r - 1].isEmpty {
                 ctx.draw(Text(labels[r - 1]).font(.system(size: 9)).foregroundColor(.secondary),
                          at: CGPoint(x: 44, y: mid), anchor: .leading)
@@ -523,7 +542,7 @@ private struct PatchMatrix: View {
             return "\(n) of \(rows) Feral \(outputs ? "outputs" : "inputs") patched"
         }
         let name = labels[hover.row - 1].isEmpty ? "" : " (\(labels[hover.row - 1]))"
-        let feral = "Feral \(outputs ? "output" : "input") \(hover.row)\(name)"
+        let feral = hover.row > numbered ? labels[hover.row - 1] : "Feral \(outputs ? "output" : "input") \(hover.row)\(name)"
         let card = "card \(outputs ? "output" : "input") \(hover.column)"
         let state = patch[hover.row - 1] == hover.column ? "patched" : "click to patch"
         let missing = deviceOpen && hover.column > available ? " · the card has only \(available)" : ""

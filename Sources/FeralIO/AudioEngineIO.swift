@@ -130,9 +130,10 @@ public final class AudioEngineIO {
         // Re-read the device so the channel counts are the ones at the rate just set.
         let dev = try AudioDevices.device(id: found.id)
         let inputMap = Self.channelMap(config.inputChannels, available: dev.inputChannels)
-        let outputMap = Self.channelMap(config.outputChannels, available: dev.outputChannels)
+        // Feral's outputs, then Binaural L and R.
+        let outputMap = Self.channelMap(config.renderedOutputChannels, available: dev.outputChannels)
         let connectedIn = inputMap.filter { $0 >= 0 }.count
-        let connectedOut = outputMap.filter { $0 >= 0 }.count
+        let connectedOut = outputMap.prefix(config.outputs).filter { $0 >= 0 }.count
 
         guard let io = inputMap.withUnsafeBufferPointer({ i in
             outputMap.withUnsafeBufferPointer { o in

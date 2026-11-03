@@ -177,7 +177,16 @@ public struct EngineConfig: Codable, Equatable {
         device == o.device && sampleRate == o.sampleRate && bufferFrames == o.bufferFrames && inputs == o.inputs
             && outputs == o.outputs && firstInputChannel == o.firstInputChannel
             && firstOutputChannel == o.firstOutputChannel && refuseAggregateDevices == o.refuseAggregateDevices
-            && inputPatch == o.inputPatch && outputPatch == o.outputPatch
+            && inputPatch == o.inputPatch && outputPatch == o.outputPatch && monitor?.channels == o.monitor?.channels
+    }
+
+    /// The core renders Binaural L and R as two outputs after Feral's own, when there is room.
+    public var hasMonitorOutputs: Bool { outputs + 2 <= Routing.maxChannels }
+
+    /// The card channel (from 1, 0 for none) every output the core renders plays on: Feral's
+    /// outputs, then Binaural L and R.
+    public var renderedOutputChannels: [Int] {
+        hasMonitorOutputs ? outputChannels + (monitor?.channels ?? [0, 0]) : outputChannels
     }
 
     /// The device channel (from 1) each engine input reads, 0 for none: inputPatch, or in order from
@@ -265,7 +274,7 @@ public struct EngineConfig: Codable, Equatable {
         }
         guard (0...10_000).contains(groupCrossfadeMS) else { throw ConfigError("groupCrossfadeMS must be from 0 to 10000") }
         if let n = renderThreads, !(0...32).contains(n) { throw ConfigError("renderThreads must be from 0 to 32") }
-        try monitor?.check(outputs: outputs)
+        try monitor?.check(outputChannels: outputChannels)
         guard (-30...50).contains(airTemperatureC) else { throw ConfigError("airTemperatureC must be from -30 to 50") }
 
         var speakerOutputs = Set<Int>()

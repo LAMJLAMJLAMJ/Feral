@@ -37,10 +37,11 @@ public enum Request: Codable, Equatable {
     case setDevice(device: String)
     /// Asks for the patch between the sound card's channels and the engine's (answered with `patch`).
     case getPatch
-    /// Sets the patch: the device channel (from 1, 0 for none) for each engine input and output.
-    /// Either may be left out to keep it. Written to engine.json as inputPatch and outputPatch; the
-    /// audio reopens on the new patch at once (a short gap).
-    case setPatch(inputs: [Int]?, outputs: [Int]?)
+    /// Sets the patch: the device channel (from 1, 0 for none) for each engine input and output,
+    /// and for Binaural L and R (`monitor`, two channels). Any may be left out to keep it. Written to
+    /// engine.json as inputPatch, outputPatch and monitor's left and right; the audio reopens on the
+    /// new patch at once (a short gap).
+    case setPatch(inputs: [Int]?, outputs: [Int]?, monitor: [Int]? = nil)
     /// Sets how many inputs and outputs Feral has (engine.json's inputs and outputs, up to 256);
     /// either may be left out to keep it. The audio reopens (a short gap).
     case setChannelCounts(inputs: Int?, outputs: Int?)
@@ -83,11 +84,15 @@ public struct PatchInfo: Codable, Equatable {
     /// engine.json has a free patch (inputPatch / outputPatch) rather than channels in order.
     public var customInputs: Bool
     public var customOutputs: Bool
+    /// The device channel (from 1, 0 for none) Binaural L and R play on; none when Feral has too
+    /// many outputs to leave room for them.
+    public var monitor: [Int]?
 
     public init(inputs: [Int], outputs: [Int], device: String?, deviceInputs: Int, deviceOutputs: Int,
-                customInputs: Bool, customOutputs: Bool) {
+                customInputs: Bool, customOutputs: Bool, monitor: [Int]? = nil) {
         self.inputs = inputs; self.outputs = outputs; self.device = device; self.deviceInputs = deviceInputs
         self.deviceOutputs = deviceOutputs; self.customInputs = customInputs; self.customOutputs = customOutputs
+        self.monitor = monitor
     }
 }
 

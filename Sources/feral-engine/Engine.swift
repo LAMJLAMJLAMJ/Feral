@@ -82,6 +82,7 @@ final class Engine {
         var listener: Listener
         var sampleRate: Double
         var air: Double
+        var outputs: Int
     }
     private var monitorKey: MonitorKey?
     private var hrirCache: (path: String, rate: Double, set: HRIRSet)?
@@ -241,7 +242,7 @@ final class Engine {
     /// listener, when either changed.
     private func rebuildMonitor() {
         let key = MonitorKey(settings: config.monitor, speakers: scene.system.speakers, listener: scene.system.listener,
-                             sampleRate: config.sampleRate, air: config.airTemperatureC)
+                             sampleRate: config.sampleRate, air: config.airTemperatureC, outputs: config.outputs)
         guard key != monitorKey else { return }
         let first = monitorKey == nil
         monitorKey = key
@@ -251,22 +252,26 @@ final class Engine {
             monitorInfo = "off"
             return
         }
+        guard config.hasMonitorOutputs else {
+            core.setMonitor(left: nil, right: nil, gain: 0, speakers: [])
+            monitorInfo = "off: Feral has \(config.outputs) outputs, which leaves no room for Binaural L and R (at most \(Routing.maxChannels - 2))"
+            log("monitor: \(monitorInfo)")
+            return
+        }
         var notes: [String] = []
-        let clashes = m.clashes(with: scene.system.speakers)
-        if !clashes.isEmpty { notes.append("output \(clashes.map { "\($0)" }.joined(separator: " and ")) is a speaker's, so stays silent here") }
-        let left = m.left.flatMap { clashes.contains($0) ? nil : $0 - 1 }
-        let right = m.right.flatMap { clashes.contains($0) ? nil : $0 - 1 }
+        // Binaural L and R are the two outputs after Feral's own.
+        let left = m.left.map { _ in config.outputs }
+        let right = m.right.map { _ in config.outputs + 1 }
         let hrirs: HRIRSet
         do { hrirs = try hrirSet(m.hrtf) } catch {
             notes.append("\(error); using the spherical head model")
             hrirs = SphericalHead(sampleRate: config.sampleRate)
         }
         let speakers = scene.monitorSpeakers(hrirs: hrirs, sampleRate: config.sampleRate,
-                                             speedOfSound: feral_speed_of_sound(config.airTemperatureC),
-                                             skipping: Set([m.left, m.right].compactMap { $0 }))
+                                             speedOfSound: feral_speed_of_sound(config.airTemperatureC))
         core.setMonitor(left: left, right: right, gain: Float(pow(10, m.gainDB / 20)), speakers: speakers)
         let outs = [m.left, m.right].map { $0.map { "\($0)" } ?? "-" }.joined(separator: "/")
-        monitorInfo = "outputs \(outs), \(hrirs.name), \(speakers.count) speaker(s)" + (notes.isEmpty ? "" : "; " + notes.joined(separator: "; "))
+        monitorInfo = "card outputs \(outs), \(hrirs.name), \(speakers.count) speaker(s)" + (notes.isEmpty ? "" : "; " + notes.joined(separator: "; "))
         log("monitor: binaural on \(monitorInfo)")
     }
 
@@ -282,16 +287,13 @@ final class Engine {
         return set
     }
 
-    /// Writes `monitor` into engine.json and plays it at once.
+    /// Writes `monitor` into engine.json and plays it at once (a change of card outputs reopens
+    /// the audio, a short gap, as any patch change does).
     private func setMonitor(_ m: MonitorSettings?, origin: String) throws {
-        if let m {
-            try m.check(outputs: config.outputs)
-            let clashes = m.clashes(with: scene.system.speakers)
-            guard clashes.isEmpty else {
-                throw ConfigError("monitor: output \(clashes[0]) is a speaker's output; pick outputs no speaker uses")
-            }
-            if m.hrtf != nil { _ = try hrirSet(m.hrtf) }
-        }
+        var trial = config
+        trial.monitor = m
+        try trial.validate()
+        if let m, m.hrtf != nil { _ = try hrirSet(m.hrtf) }
         var json = try readConfigJSON()
         if let m {
             json["monitor"] = try JSONSerialization.jsonObject(with: JSONEncoder().encode(m))
@@ -299,10 +301,16 @@ final class Engine {
             json.removeValue(forKey: "monitor")
         }
         try writeConfig(json)
-        config.monitor = m
         log("\(origin): monitor \(m?.isOn == true ? "set" : "off")")
-        rebuildMonitor()
-        broadcastStatus()
+        if trial.sameDeviceSettings(as: config) {
+            config.monitor = m
+            rebuildMonitor()
+            broadcastStatus()
+        } else {
+            reload()
+            server?.broadcast(.patch(patch: patchInfo))
+            queue.asyncAfter(deadline: .now() + 0.5) { [self] in broadcastStatus() }
+        }
     }
 
     /// Hands the core what the monitor hears, by input. Returns true when the solo or PFL lost a
@@ -516,8 +524,8 @@ final class Engine {
                 try setDevice(device, origin: origin)
             case .getPatch:
                 server?.send(.patch(patch: patchInfo), to: client)
-            case .setPatch(let inputs, let outputs):
-                try setPatch(inputs: inputs, outputs: outputs, origin: origin)
+            case .setPatch(let inputs, let outputs, let monitor):
+                try setPatch(inputs: inputs, outputs: outputs, monitor: monitor, origin: origin)
             case .setChannelCounts(let inputs, let outputs):
                 try setChannelCounts(inputs: inputs, outputs: outputs, origin: origin)
             case .analyse(let input):
@@ -590,7 +598,8 @@ final class Engine {
         let dev = io.openDevice
         return PatchInfo(inputs: config.inputChannels, outputs: config.outputChannels, device: dev?.name,
                          deviceInputs: dev?.inputChannels ?? 0, deviceOutputs: dev?.outputChannels ?? 0,
-                         customInputs: config.inputPatch != nil, customOutputs: config.outputPatch != nil)
+                         customInputs: config.inputPatch != nil, customOutputs: config.outputPatch != nil,
+                         monitor: config.hasMonitorOutputs ? config.monitor?.channels ?? [0, 0] : nil)
     }
 
     /// Writes Feral's input and output counts into engine.json and reopens the audio with them.
@@ -623,14 +632,22 @@ final class Engine {
     }
 
     /// Writes inputPatch and outputPatch into engine.json and reopens the audio on them.
-    private func setPatch(inputs: [Int]?, outputs: [Int]?, origin: String) throws {
+    private func setPatch(inputs: [Int]?, outputs: [Int]?, monitor: [Int]?, origin: String) throws {
         var trial = config
         if let inputs { trial.inputPatch = Array(inputs.prefix(config.inputs)) }
         if let outputs { trial.outputPatch = Array(outputs.prefix(config.outputs)) }
+        if let monitor {
+            var m = trial.monitor ?? MonitorSettings()
+            let c = monitor + [0, 0]
+            m.left = c[0] > 0 ? c[0] : nil
+            m.right = c[1] > 0 ? c[1] : nil
+            trial.monitor = m
+        }
         try trial.validate()
         var json = try readConfigJSON()
         if let p = trial.inputPatch, inputs != nil { json["inputPatch"] = p }
         if let p = trial.outputPatch, outputs != nil { json["outputPatch"] = p }
+        if monitor != nil, let m = trial.monitor { json["monitor"] = try JSONSerialization.jsonObject(with: JSONEncoder().encode(m)) }
         try writeConfig(json)
         func count(_ p: [Int]?) -> Int { p?.filter { $0 > 0 }.count ?? 0 }
         log("\(origin): patch set (\(count(trial.inputPatch)) inputs, \(count(trial.outputPatch)) outputs patched)")
