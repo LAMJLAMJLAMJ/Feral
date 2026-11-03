@@ -46,6 +46,16 @@ Every source feeds each group it sends to, and each group's renderer turns the s
 - **Snap to nearest speaker** (source inspector, or right-click one or more sources): moves each source onto the nearest speaker of the groups it sends to (several sources can land on one speaker); a stereo pair snaps each side.
 - **2D or 3D.** Every algorithm can be flat (`dimensions` 2): only the azimuth and the distance in plan count, and a source's height is ignored. Delay, DBAP, KNN and SPCAP are 3D unless set to 2D; VBAP picks 2D by itself when its speakers are at about one elevation.
 
+### The reverb (rooms)
+
+A show has up to four **rooms** (sidebar > Rooms; start from a preset: studio, club, theatre, hall, arena, cathedral). Each source picks one in its inspector's **Reverb** section, with a send level and its early reflections on or off. The direct sound is never delayed or changed by any of it.
+
+- **Early reflections** (per source): the room is a box (width, depth, height, centred on the listener unless moved). Each source gets its 16 earliest image sources (the six walls, then the ten earliest two-wall bounces), each delayed by its extra path length, quieter by 1/distance and by the walls' absorption, dulled by a wall filter, and panned with VBAP over the room's speakers from the listener. They move with the source (gliding like delays), and always arrive after the source's earliest speaker feed, so the direct sound stays first.
+- **Late tail** (per room): the sources' sends are summed, pre-delayed, diffused and fed to a 16-line feedback delay network (Hadamard matrix, slowly modulated, all-pass interpolated) with a decay time (RT60, 0.1 to 30 s) in three bands split at 177 Hz and 5.7 kHz. Every speaker of the room gets every line with its own signs, so the tail is decorrelated across speakers, and its total power stays the same however many speakers play it. The room's size sets the lines' lengths (its mean free path).
+- **Speakers:** every speaker but the LFE ones, or with **Use speaker subset** ticked, only the ticked speakers.
+- **Distance:** a source's send and reflections do not fall with its distance modelling, so a farther source has relatively more room, as in a real one.
+- Snapshots store a source's reverb (room, send, reflections) and fade it; changing room fades out of one and into the other. Rooms themselves change smoothly (decay, size and pre-delay glide), but are not in snapshots yet.
+
 In the app, output groups are at the top of the **Speakers** list: the Group button (or right-click on speakers) makes one from the selected speakers, and its inspector sets the name, level, algorithm and the algorithm's settings, and ticks its speakers with a trim each. A group with no speakers yet (or VBAP with fewer than two) plays nothing until it has them, so a group can be built up a speaker at a time. A speaker's inspector ticks the groups it is in.
 
 ## Getting started on your Mac
@@ -260,6 +270,10 @@ The engine reads OSC on UDP port 9200 (`oscPort`) and MIDI from every MIDI sourc
 | `/feral/source/{n}/gain`, `/mute`, `/width`, `/lfe` | dB, 0 or 1, degrees, dB or "off" | Its level, mute, VBAP width and LFE send |
 | `/feral/source/{n}/send/{group}` | dB | A send level; the group by number or name |
 | `/feral/source/{n}/release` | | Hand the source's position back to cues |
+| `/feral/source/{n}/room` | room number or name, or "off" | The room the source plays into (also `/feral/source/{n}/room/{room}`) |
+| `/feral/source/{n}/reverb`, `/early` | dB; dB or "off" | Its send to the room's tail, and its early reflections |
+| `/feral/room/{r}/decay`, `/level`, `/early`, `/predelay`, `/mute` | s, dB, dB, ms, 0 or 1 | A room (by number or name): mid decay, tail level, reflections level, pre-delay, mute |
+| `/feral/room/{r}/lowdecay`, `/highdecay`, `/absorption`, `/size`, `/preset` | multiple, multiple, 0 to 1, W D H metres, name | Low and high decay as multiples of the mid one, the walls, the box, a preset |
 | `/feral/subscribe` | [port] ["adm"] | Send me every change, to this port (else the port the message came from), in ADM-OSC if asked |
 | `/feral/unsubscribe` | [port] | |
 | `/feral/ping` | anything | Answers `/feral/pong` with the same arguments |
@@ -343,6 +357,7 @@ The app shows who owns each source's position in its inspector, and the cue insp
 
 ```sh
 swift run -c release feral-cli check                                    # the known-answer checks
+swift run -c release feral-cli bench                                    # the core's CPU at 128 x 128, with and without reverb
 swift run -c release feral-cli taps --config examples/stage-test.json   # every source's gain and delay per speaker
 swift run -c release feral-cli impulse --config examples/stage-test.json --source 1
 swift run -c release feral-cli render --config examples/stage-test.json --seconds 20 ~/Desktop/stage.wav

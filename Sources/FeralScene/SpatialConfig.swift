@@ -266,6 +266,8 @@ public struct SourceConfig: Codable, Equatable {
     public var link: Int?
     /// Air absorption: a high shelf's gain in dB (below 0), after the EQ.
     public var airDB: Double?
+    /// Its room and send in the reverb (set from the show; not in engine.json).
+    public var reverb: SourceReverbConfig? = nil
 
     public init(input: Int, name: String? = nil, position: Position, gainDB: Double = 0, mute: Bool = false,
                 width: Double = 0, groups: [String: Double]? = nil, lfeDB: Double? = nil,

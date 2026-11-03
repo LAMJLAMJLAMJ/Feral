@@ -220,7 +220,7 @@ struct SidebarView: View {
     @State private var multiple: Set<Selection> = []
 
     enum Tab: String, CaseIterable {
-        case cues = "Cues", snapshots = "Snapshots", sources = "Sources", speakers = "Speakers"
+        case cues = "Cues", snapshots = "Snapshots", sources = "Sources", speakers = "Speakers", rooms = "Rooms"
     }
 
     var body: some View {
@@ -322,6 +322,22 @@ struct SidebarView: View {
                             }
                         } header: {
                             Text("Speakers")
+                        }
+                    case .rooms:
+                        ForEach(state.show.rooms) { r in
+                            RoomRow(room: r, state: state)
+                                .tag(Selection.room(r.id))
+                                .contextMenu {
+                                    Button(r.mute ? "Unmute" : "Mute") { var c = r; c.mute.toggle(); model.apply(.setRoom(room: c)) }
+                                    Menu("Preset") {
+                                        ForEach(Room.Preset.allCases, id: \.self) { p in Button(p.title) { model.apply(.setRoom(room: r.with(p))) } }
+                                    }
+                                    Divider()
+                                    Button("Delete room", role: .destructive) {
+                                        model.apply(.removeRoom(id: r.id))
+                                        if selection == .room(r.id) { selection = nil }
+                                    }
+                                }
                         }
                     }
                 }
@@ -520,6 +536,16 @@ struct SidebarView: View {
                 }
                 .buttonStyle(.borderless)
                 .help("Make an output group with the selected speakers in it (⌘-click to select several), then pick its algorithm and tick more speakers in the inspector")
+            case .rooms:
+                Text("Room")
+                Spacer()
+                Text("Decay")
+                Button { if let id = model.addRoom() { selection = .room(id) } } label: {
+                    Label("Add", systemImage: "plus")
+                }
+                .buttonStyle(.borderless)
+                .disabled(state.show.rooms.count >= Room.maxRooms)
+                .help("Add a reverb room (up to \(Room.maxRooms)); then pick it in each source's Reverb section")
             }
         }
         .font(.caption.bold())

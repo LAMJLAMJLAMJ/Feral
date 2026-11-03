@@ -254,6 +254,15 @@ final class EngineModel: ObservableObject {
         for id in ids { apply(.removeSpeaker(id: id)) }
     }
 
+    /// Adds a room (a hall, centred on the listener). None when the show has all it can take.
+    func addRoom() -> UUID? {
+        guard let state, state.show.rooms.count < Room.maxRooms else { return nil }
+        let n = state.nextRoomNumber
+        let room = Room(number: n, name: n == 1 ? "Hall" : "Room \(n)").with(n == 1 ? .hall : .theatre)
+        apply(.setRoom(room: room))
+        return room.id
+    }
+
     func addSpeakerGroup(with speakers: [UUID] = []) -> UUID? {
         guard let state else { return nil }
         let n = state.nextGroupNumber
@@ -412,6 +421,7 @@ final class EngineModel: ObservableObject {
 /// What is selected, in the sidebar or on the plan.
 enum Selection: Hashable {
     case source(UUID), speaker(UUID), snapshot(UUID), cue(UUID), sourceGroup(UUID), speakerGroup(UUID), listener, binaural, lfe
+    case room(UUID)
 }
 
 extension Color {

@@ -963,6 +963,8 @@ final class Engine {
         case .removeCue: return "removed a cue"
         case .renameShow(let n): return "renamed the show \(n)"
         case .setControl(let c): return "set the trigger map (\(c.triggers.count) trigger(s)) and ADM-OSC box"
+        case .setRoom(let r): return "set room \(r.label)"
+        case .removeRoom: return "removed a room"
         }
     }
 

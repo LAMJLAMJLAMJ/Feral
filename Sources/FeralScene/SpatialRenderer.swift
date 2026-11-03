@@ -29,6 +29,68 @@ public final class SpatialRenderer {
     public private(set) var sources: [SourceConfig]
     public var positions: [Position] { sources.map(\.position) }
     private var taps: [[Tap]]
+    private let rooms: [RoomRender]
+    /// Per source, what it plays into its room (none when it has no reverb).
+    private var reverbs: [SourceReverbTaps?]
+
+    /// A source's send to its room and its early reflections, panned.
+    public struct SourceReverbTaps: Equatable {
+        /// The room's index in config.rooms.
+        public var room: Int
+        /// Linear.
+        public var send: Float
+        public var reflections: [ReflectionTaps]
+    }
+
+    public struct ReflectionTaps: Equatable {
+        /// Seconds after the source's earliest speaker feed.
+        public var delay: Double
+        /// Linear, before panning.
+        public var gain: Float
+        /// Engine outputs (from 0) and panning gains.
+        public var outputs: [(output: Int, gain: Float)]
+        public var image: Position
+
+        public static func == (a: ReflectionTaps, b: ReflectionTaps) -> Bool {
+            a.delay == b.delay && a.gain == b.gain && a.image == b.image && a.outputs.map(\.output) == b.outputs.map(\.output)
+                && a.outputs.map(\.gain) == b.outputs.map(\.gain)
+        }
+    }
+
+    /// A room's speakers and how reflections pan over them.
+    private final class RoomRender {
+        let config: RoomConfig
+        let outputs: [Int] // from 0
+        let points: [feral_point]
+        let vbap: OpaquePointer?
+        let filter: [Biquad]
+
+        init(_ config: RoomConfig, speakers: [SpeakerConfig], sampleRate: Double) {
+            self.config = config
+            let placed = config.speakers.compactMap { o in speakers.first { $0.output == o } }
+            outputs = placed.map { $0.output - 1 }
+            points = placed.map { $0.position.c }
+            vbap = points.count >= 2
+                ? points.withUnsafeBufferPointer { feral_vbap_create($0.baseAddress, Int32($0.count), config.listener.c, 0) }
+                : nil
+            filter = config.wallFilter(sampleRate: sampleRate)
+        }
+
+        deinit { if let vbap { feral_vbap_destroy(vbap) } }
+
+        /// Panning gains for a direction from the listener: VBAP over the room's speakers, or (when
+        /// they cannot be triangulated) DBAP.
+        func pan(_ p: Position) -> [Float] {
+            var gains = [Float](repeating: 0, count: points.count)
+            guard !points.isEmpty else { return gains }
+            if let vbap {
+                feral_vbap_render(vbap, p.c, 0, 0, 0, &gains)
+            } else {
+                feral_dbap_render(points, nil, Int32(points.count), p.c, 0.5, 6, 0, &gains)
+            }
+            return gains
+        }
+    }
 
     private final class Group {
         let config: GroupConfig
@@ -108,9 +170,17 @@ public final class SpatialRenderer {
         for s in config.speakers { params[s.output - 1] = SpatialRenderer.outputParams(s, sampleRate: config.sampleRate) }
         outputParams = params
         sources = config.sources
+        rooms = config.rooms.map { RoomRender($0, speakers: config.speakers, sampleRate: config.sampleRate) }
         taps = Array(repeating: [], count: config.sources.count)
-        for i in config.sources.indices { taps[i] = computeTaps(source: i) }
+        reverbs = Array(repeating: nil, count: config.sources.count)
+        for i in config.sources.indices {
+            taps[i] = computeTaps(source: i)
+            reverbs[i] = computeReverb(source: i)
+        }
     }
+
+    /// Every source's reverb, in source order.
+    public var allReverbs: [SourceReverbTaps?] { reverbs }
 
     /// One line per group, for the log.
     public var groupSummaries: [String] { groups.map(\.summary) }
@@ -122,6 +192,7 @@ public final class SpatialRenderer {
     public func move(source index: Int, to position: Position) {
         sources[index].position = position
         taps[index] = computeTaps(source: index)
+        reverbs[index] = computeReverb(source: index)
     }
 
     /// Replaces a source's settings (position, gain, mute, width, sends, LFE send) and recomputes its
@@ -132,6 +203,7 @@ public final class SpatialRenderer {
         s.input = sources[index].input
         sources[index] = s
         taps[index] = computeTaps(source: index)
+        reverbs[index] = computeReverb(source: index)
     }
 
     /// The index in config.sources of the source on an input (from 1).
@@ -169,7 +241,69 @@ public final class SpatialRenderer {
                                      airDB: source.airDB ?? 0)
             if !params.isPlain { state.setInput(source.input - 1, params) }
         }
+        addReverb(to: state)
         return state
+    }
+
+    /// The rooms (each tail spread decorrelated over its speakers), the sources' sends and their
+    /// early reflections.
+    private func addReverb(to state: RenderState) {
+        let c = feral_speed_of_sound(config.airTemperatureC)
+        for (k, room) in rooms.enumerated() {
+            let r = room.config
+            let on = r.on && !room.outputs.isEmpty
+            var p = RoomParams(sampleRate: sampleRate)
+            p.on = on
+            p.decay = (r.decayS * r.lowDecay, r.decayS, r.decayS * r.highDecay)
+            p.predelay = r.predelayMS / 1000 * sampleRate
+            p.lineLength = min(max(r.meanFreeTime(speedOfSound: c), Double(FERAL_ROOM_MIN_LINE)), Double(FERAL_ROOM_MAX_LINE)) * sampleRate
+            p.diffusion = r.diffusion
+            p.modulation = r.modulation
+            state.setRoom(k, p)
+            guard on else { continue }
+            // Every speaker gets every line, each with its own signs, at a level that keeps the
+            // tail's total power the same however many speakers play it.
+            let level = Float(pow(10, r.levelDB / 20) / Double(room.outputs.count).squareRoot())
+            for (i, o) in room.outputs.enumerated() {
+                for line in 0..<Int(FERAL_ROOM_LINES) {
+                    state.addRoomOutput(room: k, line: line, output: o, gain: ImageSources.tailSign(speaker: i, line: line) ? -level : level)
+                }
+            }
+        }
+        for (i, source) in sources.enumerated() {
+            guard let rv = reverbs[i], source.input >= 1, source.input <= config.inputs else { continue }
+            let input = source.input - 1
+            if rv.send != 0 { state.addRoomSend(input: input, room: rv.room, gain: rv.send) }
+            guard !rv.reflections.isEmpty else { continue }
+            state.setReflections(input: input, delays: rv.reflections.map { $0.delay * sampleRate },
+                                 gains: rv.reflections.map(\.gain), filter: rooms[rv.room].filter)
+            for (k, refl) in rv.reflections.enumerated() {
+                for o in refl.outputs { state.addReflectionOutput(input: input, reflection: k, output: o.output, gain: o.gain) }
+            }
+        }
+    }
+
+    private func computeReverb(source index: Int) -> SourceReverbTaps? {
+        let source = sources[index]
+        guard !source.mute, let rv = source.reverb, rooms.indices.contains(rv.room) else { return nil }
+        let room = rooms[rv.room]
+        guard room.config.on, !room.outputs.isEmpty else { return nil }
+        var result = SourceReverbTaps(room: rv.room, send: Float(pow(10, rv.sendDB / 20)), reflections: [])
+        guard let earlyDB = rv.earlyDB else { return result }
+        let r = room.config
+        let level = pow(10, (earlyDB + r.earlyDB) / 20)
+        // Reflections come after the source's earliest speaker feed (a Delay group's feeds are late).
+        let base = taps[index].filter(\.delayed).map(\.delay).min() ?? 0
+        let found = ImageSources.reflections(source: source.position, listener: r.listener, low: r.low, high: r.high,
+                                             absorption: r.absorption, speedOfSound: feral_speed_of_sound(config.airTemperatureC))
+        for f in found {
+            let gains = room.pan(f.image)
+            var outs: [(output: Int, gain: Float)] = []
+            for (k, g) in gains.enumerated() where abs(g) > 1e-6 { outs.append((room.outputs[k], g)) }
+            guard !outs.isEmpty else { continue }
+            result.reflections.append(ReflectionTaps(delay: base + f.delay, gain: Float(level * f.gain), outputs: outs, image: f.image))
+        }
+        return result
     }
 
     private func computeTaps(source index: Int) -> [Tap] {

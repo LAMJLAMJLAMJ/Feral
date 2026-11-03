@@ -17,6 +17,12 @@ import Foundation
 //   /feral/source/{n}/gain DB               also /mute 0|1, /width DEGREES, /lfe DB (or "off")
 //   /feral/source/{n}/send/{group} DB       a send level, group by number or name
 //   /feral/source/{n}/release               hand the source's position back to cues
+//   /feral/source/{n}/room {room}           play into a room (number or name; "off" for none)
+//   /feral/source/{n}/reverb DB             the send to its room's tail; /early DB (or "off")
+//   /feral/room/{r}/decay SECONDS           a room's mid decay; also /level DB, /early DB,
+//                                           /predelay MS, /mute 0|1, /absorption 0-1,
+//                                           /lowdecay X, /highdecay X (multiples of the mid decay),
+//                                           /size W D H (metres), /preset NAME
 //   /feral/subscribe [PORT] ["adm"]         send me every change (to PORT, else to where this came from)
 //   /feral/unsubscribe [PORT]
 //   /feral/ping                             answers /feral/pong
@@ -98,9 +104,43 @@ public struct ControlMapper {
             return [.unsubscribe(port: try args.first.map { try port($0) })]
         case ("source", 3...):
             return try source(p, m)
+        case ("room", 3):
+            return try room(p, m)
         default:
             throw OSCError("no Feral command \(m.address)")
         }
+    }
+
+    /// A room by number or name.
+    private func findRoom(_ key: String) -> Room? {
+        state.show.rooms.first { Int(key) == $0.number || $0.name.lowercased() == key.lowercased() }
+    }
+
+    private func room(_ p: [String], _ m: OSCMessage) throws -> [ControlAction] {
+        guard var r = findRoom(p[1]) else { throw OSCError("\(m.address): no room \(p[1])") }
+        let a = m.arguments
+        switch p[2] {
+        case "decay": try count(a, 1, m); r.decayS = try num(a[0], m)
+        case "level": try count(a, 1, m); r.levelDB = try num(a[0], m)
+        case "early": try count(a, 1, m); r.earlyDB = try num(a[0], m)
+        case "predelay": try count(a, 1, m); r.predelayMS = try num(a[0], m)
+        case "mute": try count(a, 1, m); r.mute = try num(a[0], m) != 0
+        case "absorption": try count(a, 1, m); r.absorption = try num(a[0], m)
+        case "lowdecay": try count(a, 1, m); r.lowDecay = try num(a[0], m)
+        case "highdecay": try count(a, 1, m); r.highDecay = try num(a[0], m)
+        case "size":
+            try count(a, 3, m)
+            r.width = try num(a[0], m); r.depth = try num(a[1], m); r.height = try num(a[2], m)
+        case "preset":
+            try count(a, 1, m)
+            guard let name = a[0].text?.lowercased(), let preset = Room.Preset(rawValue: name) else {
+                throw OSCError("\(m.address): presets are " + Room.Preset.allCases.map(\.rawValue).joined(separator: ", "))
+            }
+            r = r.with(preset)
+        default:
+            throw OSCError("no Feral command \(m.address)")
+        }
+        return [.apply(.setRoom(room: r))]
     }
 
     private func source(_ p: [String], _ m: OSCMessage) throws -> [ControlAction] {
@@ -154,6 +194,31 @@ public struct ControlMapper {
             v.sends = sends
         case ("release", 3):
             return [.release([s.id])]
+        case ("room", 4), ("room", 3):
+            // /feral/source/n/room/{room} or /feral/source/n/room {room}
+            let key = p.count == 4 ? p[3] : (a.first?.text ?? "off")
+            var rv = s.reverb ?? SourceReverb(room: nil)
+            if key.lowercased() == "off" {
+                rv.room = nil
+            } else {
+                guard let r = findRoom(key) else { throw OSCError("\(m.address): no room \(key)") }
+                rv.room = r.id
+            }
+            v.reverb = rv
+        case ("reverb", 3):
+            try count(a, 1, m)
+            guard var rv = s.reverb, rv.room != nil else { throw OSCError("\(m.address): source \(s.label) plays into no room") }
+            rv.sendDB = try num(a[0], m)
+            v.reverb = rv
+        case ("early", 3):
+            guard var rv = s.reverb, rv.room != nil else { throw OSCError("\(m.address): source \(s.label) plays into no room") }
+            if a.isEmpty || a[0] == .none || a[0].text?.lowercased() == "off" {
+                rv.early = false
+            } else {
+                rv.early = true
+                rv.earlyDB = try num(a[0], m)
+            }
+            v.reverb = rv
         default:
             throw OSCError("no Feral command \(m.address)")
         }

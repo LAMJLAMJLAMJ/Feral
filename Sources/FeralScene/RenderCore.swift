@@ -231,6 +231,82 @@ public final class RenderState {
     }
 
     public var tapCount: Int { Int(feral_state_tap_count(live)) }
+
+    /// A room's late tail (room from 0, below FERAL_MAX_ROOMS).
+    public func setRoom(_ room: Int, _ params: RoomParams) {
+        var p = params.cValue
+        precondition(feral_state_set_room(live, Int32(room), &p) == 0, "room out of range")
+    }
+
+    /// An input's send to a room, linear.
+    public func addRoomSend(input: Int, room: Int, gain: Float) {
+        precondition(feral_state_add_room_send(live, Int32(input), Int32(room), gain) == 0, "input or room out of range")
+    }
+
+    /// One of a room's tail lines to an output, linear.
+    public func addRoomOutput(room: Int, line: Int, output: Int, gain: Float) {
+        precondition(feral_state_add_room_output(live, Int32(room), Int32(line), Int32(output), gain) == 0, "room output out of range")
+    }
+
+    /// An input's early reflections: delays in samples, linear gains, and the wall filter they share.
+    public func setReflections(input: Int, delays: [Double], gains: [Float], filter: [Biquad]) {
+        let n = min(delays.count, gains.count, Int(FERAL_MAX_REFLECTIONS))
+        let d = delays.prefix(n).map { Float($0) }
+        let f = (0..<Int(FERAL_REFLECTION_FILTER)).map { k -> feral_biquad in
+            guard k < filter.count else { return feral_biquad(b0: 1, b1: 0, b2: 0, a1: 0, a2: 0) }
+            let b = filter[k]
+            return feral_biquad(b0: b.b0, b1: b.b1, b2: b.b2, a1: b.a1, a2: b.a2)
+        }
+        let g = Array(gains.prefix(n))
+        let status = d.withUnsafeBufferPointer { dp in
+            g.withUnsafeBufferPointer { gp in
+                f.withUnsafeBufferPointer { fp in
+                    feral_state_set_reflections(live, Int32(input), Int32(n), dp.baseAddress, gp.baseAddress, fp.baseAddress)
+                }
+            }
+        }
+        precondition(status == 0, "input out of range")
+    }
+
+    /// Pans one of an input's reflections to an output, linear.
+    public func addReflectionOutput(input: Int, reflection: Int, output: Int, gain: Float) {
+        precondition(feral_state_add_reflection_output(live, Int32(input), Int32(reflection), Int32(output), gain) == 0,
+                     "reflection output out of range")
+    }
+}
+
+/// A room's late tail as the core runs it (see feral_room_params).
+public struct RoomParams: Equatable {
+    public var on = false
+    /// RT60 in seconds below the low crossover, between, and above the high one.
+    public var decay: (low: Double, mid: Double, high: Double) = (2, 2, 2)
+    public var crossoverLowHz = 177.0
+    public var crossoverHighHz = 5657.0
+    /// Samples.
+    public var predelay = 0.0
+    /// The lines' mean length in samples.
+    public var lineLength: Double
+    public var diffusion = 0.7
+    public var modulation = 0.5
+
+    public init(sampleRate: Double) { lineLength = 0.02 * sampleRate }
+
+    public static func == (a: RoomParams, b: RoomParams) -> Bool {
+        a.on == b.on && a.decay == b.decay && a.crossoverLowHz == b.crossoverLowHz && a.crossoverHighHz == b.crossoverHighHz
+            && a.predelay == b.predelay && a.lineLength == b.lineLength && a.diffusion == b.diffusion && a.modulation == b.modulation
+    }
+
+    var cValue: feral_room_params {
+        var p = feral_room_defaults(48_000)
+        p.on = on ? 1 : 0
+        p.decay = (Float(decay.low), Float(decay.mid), Float(decay.high))
+        p.crossover = (Float(crossoverLowHz), Float(crossoverHighHz))
+        p.predelay = Float(predelay)
+        p.line_length = Float(lineLength)
+        p.diffusion = Float(diffusion)
+        p.modulation = Float(modulation)
+        return p
+    }
 }
 
 /// How delays move when they change, in samples (see feral_motion_params).

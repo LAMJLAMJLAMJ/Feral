@@ -35,6 +35,10 @@ public enum Command: Codable, Equatable {
     case renameShow(name: String)
     /// Replaces the show's control settings: the ADM-OSC box, the trigger map, the MSC device id.
     case setControl(control: ControlSettings)
+    /// Adds a reverb room, or replaces the one with the same id.
+    case setRoom(room: Room)
+    /// Removes a room; the sources that played into it play into none.
+    case removeRoom(id: UUID)
 
     /// The sources whose values the command sets directly, so a fade running on them stops.
     public var touchedSources: [UUID] {
@@ -80,6 +84,8 @@ public struct ShowState: Equatable {
     public var nextGroupNumber: Int { (show.groups.map(\.number).max() ?? 0) + 1 }
     public func snapshot(_ id: UUID) -> Snapshot? { show.snapshots.first { $0.id == id } }
     public func cue(_ id: UUID) -> Cue? { show.cues.first { $0.id == id } }
+    public func room(_ id: UUID) -> Room? { show.rooms.first { $0.id == id } }
+    public var nextRoomNumber: Int { (show.rooms.map(\.number).max() ?? 0) + 1 }
 
     /// A source by its number or id, as typed.
     public func source(matching text: String) -> Source? {
@@ -144,7 +150,8 @@ public struct ShowState: Equatable {
                 // A stereo pair's level, mute, EQ and compressor are always the same on both sides.
                 let shared = SourceValues(gainDB: u.values.gainDB, mute: u.values.mute, width: u.values.width, eq: u.values.eq,
                                           compressor: u.values.compressor, trimDB: u.values.trimDB,
-                                          invert: u.values.invert, delayMS: u.values.delayMS, distance: u.values.distance)
+                                          invert: u.values.invert, delayMS: u.values.delayMS, distance: u.values.distance,
+                                          reverb: u.values.reverb)
                 if !shared.isEmpty, let partner = stereoPartner(of: u.id), let j = sourceIndex(partner) {
                     show.sources[j] = try applying(shared, to: show.sources[j])
                     if !ids.contains(partner) { ids.append(partner) }
@@ -210,6 +217,7 @@ public struct ShowState: Equatable {
                 show.groups[g].weightsDB[id.uuidString] = nil
             }
             system.lfeSpeakers.removeAll { $0 == id }
+            for r in show.rooms.indices { show.rooms[r].speakers.removeAll { $0 == id } }
             return .layout(crossfade: true)
 
         case .setGroup(let group):
@@ -289,6 +297,29 @@ public struct ShowState: Equatable {
             try control.check()
             show.control = control
             return .none
+
+        case .setRoom(let room):
+            try room.check()
+            for s in room.speakers where speaker(s) == nil { throw ConfigError("room \(room.label) lists speaker \(s), which does not exist") }
+            if let i = show.rooms.firstIndex(where: { $0.id == room.id }) {
+                show.rooms[i] = room
+                // A room's settings change smoothly in the core: no crossfade.
+                return .layout(crossfade: false)
+            }
+            guard show.rooms.count < Room.maxRooms else { throw ConfigError("a show has at most \(Room.maxRooms) rooms") }
+            show.rooms.append(room)
+            return .layout(crossfade: true)
+
+        case .removeRoom(let id):
+            guard let i = show.rooms.firstIndex(where: { $0.id == id }) else { throw ConfigError("no room has id \(id)") }
+            show.rooms.remove(at: i)
+            for k in show.sources.indices where show.sources[k].reverb?.room == id { show.sources[k].reverb = nil }
+            for n in show.snapshots.indices {
+                for k in show.snapshots[n].sources.indices where show.snapshots[n].sources[k].values.reverb?.room == id {
+                    show.snapshots[n].sources[k].values.reverb = .off
+                }
+            }
+            return .layout(crossfade: true)
         }
     }
 
@@ -307,6 +338,7 @@ public struct ShowState: Equatable {
         if let i = v.invert { s.invert = i }
         if let d = v.delayMS { s.delayMS = d }
         if let d = v.distance { s.distance = d }
+        if let r = v.reverb { s.reverb = r.room == nil ? nil : r }
         try checkValues(s)
         return s
     }
@@ -328,6 +360,10 @@ public struct ShowState: Equatable {
         try s.eq?.check("source \(s.label)")
         try s.compressor?.check("source \(s.label)")
         try s.distance?.check("source \(s.label)")
+        if let r = s.reverb {
+            try r.check("source \(s.label)")
+            if let id = r.room, room(id) == nil { throw ConfigError("source \(s.label) plays into room \(id), which does not exist") }
+        }
     }
 
     /// Checks ids and references. Rendering checks (inputs and outputs in range, VBAP layouts) are
@@ -343,6 +379,12 @@ public struct ShowState: Equatable {
         try unique(system.speakers.map(\.id), "speakers have the id")
         try unique(show.snapshots.map(\.id), "snapshots have the id")
         try unique(show.cues.map(\.id), "cues have the id")
+        try unique(show.rooms.map(\.id), "rooms have the id")
+        guard show.rooms.count <= Room.maxRooms else { throw ConfigError("a show has at most \(Room.maxRooms) rooms") }
+        for r in show.rooms {
+            try r.check()
+            for s in r.speakers where speaker(s) == nil { throw ConfigError("room \(r.label) lists speaker \(s), which does not exist") }
+        }
         try unique(show.groups.map(\.name), "groups are called")
         if show.groups.contains(where: { $0.name == Self.lfeGroupName }) { throw ConfigError("a group is called \(Self.lfeGroupName), the LFE group's name") }
         try unique(system.speakers.map(\.output), "speakers play on output")
@@ -361,7 +403,8 @@ public struct ShowState: Equatable {
     public func values(of s: Source) -> SourceValues {
         SourceValues(position: s.position, gainDB: s.gainDB, mute: s.mute, width: s.width, sends: s.sends,
                      lfeDB: s.lfeDB, lfeOff: s.lfeDB == nil ? true : nil, eq: s.eq ?? .flat, compressor: s.compressor ?? .off,
-                     trimDB: s.trimDB, invert: s.invert, delayMS: s.delayMS, distance: s.distance ?? .off)
+                     trimDB: s.trimDB, invert: s.invert, delayMS: s.delayMS, distance: s.distance ?? .off,
+                     reverb: s.reverb ?? .off)
     }
 
     /// The fields a snapshot stores (for any of its sources).
@@ -438,7 +481,29 @@ public struct ShowState: Equatable {
                             eq: s.eq, compressor: s.compressor, trimDB: s.trimDB, invert: s.invert, delayMS: s.delayMS,
                             link: stereoPartner(of: s.id).flatMap { source($0)?.input })
         if let air = s.distance?.airDB(at: d), air < 0 { c.airDB = air }
+        // The reverb send has the source's and its groups' levels but no distance modelling.
+        if let r = s.reverb, let id = r.room, let k = show.rooms.firstIndex(where: { $0.id == id }) {
+            let base = groups.reduce(s.gainDB) { $0 + $1.gainDB }
+            c.reverb = SourceReverbConfig(room: k, sendDB: base + r.sendDB, earlyDB: r.early ? base + r.earlyDB : nil)
+        }
         return c
+    }
+
+    /// The rooms as the renderer takes them: in the show's order (a source's room is its index), each
+    /// on its speakers (all but the LFE ones, unless it uses a subset).
+    public func roomConfigs() -> [RoomConfig] {
+        let listener = system.listener.position
+        let all = system.speakers.filter { !system.lfeSpeakers.contains($0.id) }.map(\.output)
+        return show.rooms.map { r in
+            let centre = r.centre ?? Position(listener.x, listener.y, 0)
+            let outputs = r.useSpeakerSubset ? r.speakers.compactMap { speaker($0)?.output } : all
+            return RoomConfig(name: r.name, on: !r.mute,
+                              low: Position(centre.x - r.width / 2, centre.y - r.depth / 2, centre.z),
+                              high: Position(centre.x + r.width / 2, centre.y + r.depth / 2, centre.z + r.height),
+                              decayS: r.decayS, lowDecay: r.lowDecay, highDecay: r.highDecay, predelayMS: r.predelayMS,
+                              levelDB: r.levelDB, earlyDB: r.earlyDB, absorption: r.absorption, diffusion: r.diffusion,
+                              modulation: r.modulation, speakers: outputs.sorted(), listener: listener)
+        }
     }
 
     /// The engine's settings with this show's speakers, groups and sources in place of engine.json's.
@@ -486,6 +551,7 @@ public struct ShowState: Equatable {
         // With no group to play through (none yet, the last deleted, or none with enough speakers),
         // the sources play nothing rather than fail the layout.
         c.sources = c.groups.isEmpty ? [] : show.sources.map(sourceConfig)
+        c.rooms = roomConfigs()
         return c
     }
 

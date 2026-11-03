@@ -165,6 +165,34 @@ final class ControlMapperTests: XCTestCase {
         XCTAssertEqual(c.name, "New")
     }
 
+    func testRooms() throws {
+        let hall = Room(number: 1, name: "Hall")
+        var s = state()
+        try s.apply(.setRoom(room: hall))
+        guard case .apply(.setRoom(let r))? = try actions("/feral/room/1/decay", [.float(4.5)], s).first else {
+            return XCTFail("decay sets the room")
+        }
+        XCTAssertEqual(r.decayS, 4.5)
+        XCTAssertEqual(r.id, hall.id)
+        guard case .apply(.setRoom(let c))? = try actions("/feral/room/hall/preset", [.string("cathedral")], s).first else {
+            return XCTFail("a preset sets the room")
+        }
+        XCTAssertEqual(c, hall.with(.cathedral))
+        XCTAssertThrowsError(try actions("/feral/room/2/decay", [.float(1)], s), "no room 2")
+        XCTAssertThrowsError(try actions("/feral/room/1/preset", [.string("bathroom")], s))
+        XCTAssertEqual(try actions("/feral/source/1/room", [.string("Hall")], s),
+                       update(vox, SourceValues(reverb: SourceReverb(room: hall.id))))
+        XCTAssertEqual(try actions("/feral/source/1/room/1", [], s), update(vox, SourceValues(reverb: SourceReverb(room: hall.id))))
+        XCTAssertThrowsError(try actions("/feral/source/1/reverb", [.float(-3)], s), "no room yet")
+        try s.apply(.updateSources(updates: [SourceUpdate(id: vox.id, values: SourceValues(reverb: SourceReverb(room: hall.id)))]))
+        XCTAssertEqual(try actions("/feral/source/1/reverb", [.float(-3)], s),
+                       update(vox, SourceValues(reverb: SourceReverb(room: hall.id, sendDB: -3))))
+        XCTAssertEqual(try actions("/feral/source/1/early", [.string("off")], s),
+                       update(vox, SourceValues(reverb: SourceReverb(room: hall.id, early: false))))
+        XCTAssertEqual(try actions("/feral/source/1/room", [.string("off")], s),
+                       update(vox, SourceValues(reverb: SourceReverb(room: nil))))
+    }
+
     func testBadMessagesAreRefused() {
         for (address, args) in [("/feral/source/9/xyz", [OSCValue.float(1), .float(2), .float(3)]),   // no source 9
                                 ("/feral/source/1/xyz", [.float(1), .float(2)]),                       // too few

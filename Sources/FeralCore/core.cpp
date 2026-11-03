@@ -1,6 +1,7 @@
 #include "feral_core.h"
 #include "render_state.hpp"
 #include "binaural.hpp"
+#include "reverb.hpp"
 
 #include <algorithm>
 #include <array>
@@ -25,7 +26,10 @@ using feral::Tap;
 
 feral_state::feral_state(int inputs, int outputs)
     : inputs(inputs), outputs(outputs), taps(outputs), outputParams(outputs, feral_output_defaults()),
-      inputParams(inputs, feral_input_defaults()), limiterRelease(outputs, 1.0f), motion(feral_motion_defaults(48000)) {}
+      inputParams(inputs, feral_input_defaults()), limiterRelease(outputs, 1.0f), motion(feral_motion_defaults(48000)),
+      roomSend(static_cast<size_t>(FERAL_MAX_ROOMS) * inputs, 0.0f) {
+    rooms.fill(feral_room_defaults(48000));
+}
 
 bool feral_state::finish(double maxDelay) {
     for (int out = 0; out < outputs; ++out) {
@@ -68,6 +72,24 @@ bool feral_state::finish(double maxDelay) {
             if (!std::isfinite(b.gain) || b.gain < 0) b.gain = 1;
         }
     }
+    reverb = false;
+    for (auto &r : rooms) {
+        if (!r.on) continue;
+        reverb = true;
+        for (float &d : r.decay) d = std::isfinite(d) ? std::clamp(d, 0.1f, 30.0f) : 2.0f;
+        if (!std::isfinite(r.predelay) || r.predelay < 0) r.predelay = 0;
+        if (!std::isfinite(r.modulation)) r.modulation = 0;
+        if (!std::isfinite(r.diffusion)) r.diffusion = 0.7f;
+    }
+    for (float &g : roomSend) if (!std::isfinite(g)) g = 0;
+    for (auto &r : reflections) {
+        r.count = std::clamp(r.count, 0, FERAL_MAX_REFLECTIONS);
+        if (r.count > 0) reverb = true;
+        for (int k = 0; k < r.count; ++k) {
+            r.delay[k] = std::isfinite(r.delay[k]) ? static_cast<float>(std::clamp<double>(r.delay[k], 0, maxDelay)) : 0.0f;
+            if (!std::isfinite(r.gain[k])) r.gain[k] = 0;
+        }
+    }
     return true;
 }
 
@@ -79,7 +101,7 @@ static_assert(std::atomic<uint64_t>::is_always_lock_free);
 static_assert(std::atomic<float>::is_always_lock_free);
 
 /// Distinct (input, kind) keys one output can have, so the most taps it can ever play at once.
-constexpr int kVoicesPerOutput = 2 * FERAL_MAX_CHANNELS;
+constexpr int kVoicesPerOutput = 2 * FERAL_MAX_CHANNELS + kBuses;
 
 /// A delay that moves: it glides towards its target, or crossfades from an old value to the target.
 struct DelayMotion {
@@ -285,6 +307,21 @@ struct InputRuntime {
 
 constexpr feral_biquad kFlat = {1, 0, 0, 0, 0};
 
+/// One early reflection as the audio thread plays it: its gain (ramping) and its delay (moving).
+struct ReflectionVoice {
+    float gain;
+    float target;
+    int32_t fadeLeft;
+    DelayMotion delay;
+};
+
+/// An input's wall filter, now (it moves to the state's over a buffer) and its sections' state.
+struct ReflectionFilter {
+    feral_biquad now[FERAL_REFLECTION_FILTER];
+    float z1[FERAL_REFLECTION_FILTER], z2[FERAL_REFLECTION_FILTER];
+    bool started;
+};
+
 inline bool isFlat(const feral_biquad &b) {
     return b.b0 == 1 && b.b1 == 0 && b.b2 == 0 && b.a1 == 0 && b.a2 == 0;
 }
@@ -302,6 +339,8 @@ using namespace feral;
 
 /// The per-output work of one block, as the audio thread hands it to the workers.
 struct RenderJob {
+    /// kPhaseReverb: rooms and reflections (chunks are rooms, then inputs); kPhaseOutputs: outputs.
+    int phase = 1;
     float *const *outputs = nullptr;
     int frames = 0;
     uint32_t block = 0;
@@ -316,8 +355,12 @@ struct RenderJob {
 /// thread too, takes chunk numbers from the ticket until none are left, and the audio thread waits
 /// for the chunks already taken. A ticket taken from an earlier block holds a number past its own
 /// chunk count, so a late worker does nothing.
+constexpr int kPhaseReverb = 0, kPhaseOutputs = 1;
+
 struct WorkerPool {
     static constexpr int kChunkOutputs = 4;
+    /// Inputs per chunk of the reverb phase.
+    static constexpr int kChunkInputs = 8;
     std::vector<std::thread> threads;
     std::atomic<uint32_t> generation{0};
     std::atomic<bool> quit{false};
@@ -347,7 +390,8 @@ struct feral_core {
 
     // Audio thread only (and the control thread while the audio thread is detached).
     RenderState *current = nullptr;
-    std::vector<Voice> voices = std::vector<Voice>(static_cast<size_t>(FERAL_MAX_CHANNELS) * kVoicesPerOutput);
+    // calloc'd: untouched pages cost nothing, and most outputs use only a few of their voices.
+    Voice *voices = static_cast<Voice *>(std::calloc(static_cast<size_t>(FERAL_MAX_CHANNELS) * kVoicesPerOutput, sizeof(Voice)));
     std::vector<int> voiceCount = std::vector<int>(FERAL_MAX_CHANNELS, 0);
     std::vector<Voice> mergeScratch = std::vector<Voice>(kVoicesPerOutput);
     int voiceOutputs = 0; // outputs below this may have voices
@@ -431,7 +475,27 @@ struct feral_core {
     DelayLine outputLine(int out) {
         return {lineMemory + static_cast<size_t>(FERAL_MAX_CHANNELS + out) * (lineMask + 1), lineMask};
     }
-    Voice *outputVoices(int out) { return voices.data() + static_cast<size_t>(out) * kVoicesPerOutput; }
+    Voice *outputVoices(int out) { return voices + static_cast<size_t>(out) * kVoicesPerOutput; }
+
+    // The reverb (rooms and early reflections). Audio thread only, like the voices.
+    feral::RoomRuntime *rooms[FERAL_MAX_ROOMS] = {};
+    float roomSendNow[FERAL_MAX_ROOMS][FERAL_MAX_CHANNELS] = {};
+    float *roomInput = nullptr;     // FERAL_MAX_ROOMS blocks
+    ReflectionVoice *reflectionVoices = nullptr; // FERAL_MAX_CHANNELS * FERAL_MAX_REFLECTIONS
+    ReflectionFilter reflectionFilter[FERAL_MAX_CHANNELS];
+    float *reflectionLines = nullptr; // each input's wall-filtered delay line
+    float *reflectionScratch = nullptr; // one block per input
+    int reflectionLinesUsed = 0;
+    float *busScratch = nullptr;    // kBuses blocks, `frames` apart
+    const float *busSignals[kBuses] = {};
+    int busesSet = 0;               // busSignals below this may be non-null
+    bool reverbRunning = false;     // anything still sounding from the reverb
+    // Per input, how many more samples of silence its reflection line needs before it holds none
+    // of an earlier signal (so a reflection that starts later never plays stale samples).
+    int reflectionDirty[FERAL_MAX_CHANNELS] = {};
+    std::atomic<int> reverbAlive{0}; // chunks of this block's reverb phase that left something sounding
+
+    DelayLine reflectionLine(int in) { return {reflectionLines + static_cast<size_t>(in) * (lineMask + 1), lineMask}; }
 };
 
 namespace {
@@ -483,6 +547,14 @@ feral_core *feral_core_create(double sample_rate) {
     // Input delay lines (taps read them), output alignment lines, and the lines for inputs' own delay.
     core->lineMemory = static_cast<float *>(std::calloc(static_cast<size_t>(3 * FERAL_MAX_CHANNELS) * length, sizeof(float)));
     core->inputScratch = static_cast<float *>(std::calloc(static_cast<size_t>(FERAL_MAX_CHANNELS) * FERAL_MAX_FRAMES, sizeof(float)));
+    for (auto &room : core->rooms) room = new feral::RoomRuntime(core->sampleRate);
+    core->roomInput = static_cast<float *>(std::calloc(static_cast<size_t>(FERAL_MAX_ROOMS) * FERAL_MAX_FRAMES, sizeof(float)));
+    core->reflectionVoices = static_cast<ReflectionVoice *>(
+        std::calloc(static_cast<size_t>(FERAL_MAX_CHANNELS) * FERAL_MAX_REFLECTIONS, sizeof(ReflectionVoice)));
+    core->reflectionLines = static_cast<float *>(std::calloc(static_cast<size_t>(FERAL_MAX_CHANNELS) * length, sizeof(float)));
+    core->reflectionScratch = static_cast<float *>(std::calloc(static_cast<size_t>(FERAL_MAX_CHANNELS) * FERAL_MAX_FRAMES, sizeof(float)));
+    core->busScratch = static_cast<float *>(std::calloc(static_cast<size_t>(kBuses) * FERAL_MAX_FRAMES, sizeof(float)));
+    for (auto &f : core->reflectionFilter) f = ReflectionFilter{{kFlat, kFlat}, {}, {}, false};
     return core;
 }
 
@@ -534,6 +606,13 @@ void feral_core_destroy(feral_core *core) {
     delete core->binaural;
     std::free(core->lineMemory);
     std::free(core->inputScratch);
+    for (auto *room : core->rooms) delete room;
+    std::free(core->roomInput);
+    std::free(core->reflectionVoices);
+    std::free(core->reflectionLines);
+    std::free(core->reflectionScratch);
+    std::free(core->busScratch);
+    std::free(core->voices);
     delete core;
 }
 
@@ -569,6 +648,62 @@ void feral_state_set_motion(feral_state *state, const feral_motion_params *motio
 int feral_state_set_input(feral_state *state, int input, const feral_input_params *params) {
     if (input < 0 || input >= state->inputs) return -1;
     state->inputParams[input] = *params;
+    return 0;
+}
+
+feral_room_params feral_room_defaults(double sample_rate) {
+    feral_room_params p{};
+    p.on = 0;
+    p.decay[0] = p.decay[1] = p.decay[2] = 2;
+    p.crossover[0] = 177;
+    p.crossover[1] = 5657;
+    p.predelay = 0;
+    p.line_length = static_cast<float>(0.02 * (sample_rate > 0 ? sample_rate : 48000));
+    p.diffusion = 0.7f;
+    p.modulation = 0.5f;
+    return p;
+}
+
+int feral_state_set_room(feral_state *state, int room, const feral_room_params *params) {
+    if (room < 0 || room >= FERAL_MAX_ROOMS || !params) return -1;
+    state->rooms[static_cast<size_t>(room)] = *params;
+    return 0;
+}
+
+int feral_state_add_room_send(feral_state *state, int input, int room, float gain) {
+    if (input < 0 || input >= state->inputs || room < 0 || room >= FERAL_MAX_ROOMS) return -1;
+    state->roomSend[static_cast<size_t>(room) * state->inputs + input] += gain;
+    return 0;
+}
+
+int feral_state_add_room_output(feral_state *state, int room, int line, int output, float gain) {
+    if (room < 0 || room >= FERAL_MAX_ROOMS || line < 0 || line >= FERAL_ROOM_LINES || output < 0 || output >= state->outputs)
+        return -1;
+    state->taps[output].push_back({roomBus(room, line), kTapBus, gain, 0});
+    return 0;
+}
+
+int feral_state_set_reflections(feral_state *state, int input, int count, const float *delays, const float *gains,
+                                const feral_biquad *filter) {
+    if (input < 0 || input >= state->inputs || count < 0 || count > FERAL_MAX_REFLECTIONS) return -1;
+    if (count > 0 && (!delays || !gains)) return -1;
+    if (state->reflections.empty()) state->reflections.resize(static_cast<size_t>(state->inputs));
+    Reflections &r = state->reflections[static_cast<size_t>(input)];
+    r = Reflections{};
+    r.count = count;
+    for (int k = 0; k < count; ++k) {
+        r.delay[k] = delays[k];
+        r.gain[k] = gains[k];
+    }
+    for (int b = 0; b < FERAL_REFLECTION_FILTER; ++b) r.filter[b] = filter ? filter[b] : kFlat;
+    return 0;
+}
+
+int feral_state_add_reflection_output(feral_state *state, int input, int reflection, int output, float gain) {
+    if (input < 0 || input >= state->inputs || reflection < 0 || reflection >= FERAL_MAX_REFLECTIONS || output < 0 ||
+        output >= state->outputs)
+        return -1;
+    state->taps[output].push_back({reflectionBus(input, reflection), kTapBus, gain, 0});
     return 0;
 }
 
@@ -641,6 +776,17 @@ void feral_core_audio_detached(feral_core *core) {
     core->preLinesUsed = 0;
     for (int out = 0; out < core->outputLinesUsed; ++out) std::memset(core->outputLine(out).data, 0, length * sizeof(float));
     core->inputLinesUsed = core->outputLinesUsed = 0;
+    // The reverb starts again empty.
+    for (auto *room : core->rooms) room->stop();
+    for (auto &row : core->roomSendNow) std::fill(row, row + FERAL_MAX_CHANNELS, 0.0f);
+    std::memset(static_cast<void *>(core->reflectionVoices), 0,
+                static_cast<size_t>(FERAL_MAX_CHANNELS) * FERAL_MAX_REFLECTIONS * sizeof(ReflectionVoice));
+    for (auto &f : core->reflectionFilter) f = ReflectionFilter{{kFlat, kFlat}, {}, {}, false};
+    for (int in = 0; in < core->reflectionLinesUsed; ++in) std::memset(core->reflectionLine(in).data, 0, length * sizeof(float));
+    core->reflectionLinesUsed = 0;
+    std::fill(core->busSignals, core->busSignals + kBuses, nullptr);
+    core->busesSet = 0;
+    core->reverbRunning = false;
     // The meters fall to silence; nothing is playing.
     core->inputPowerState.fill(0);
     core->outputPowerState.fill(0);
@@ -1208,6 +1354,11 @@ uint32_t renderOutputs(feral_core *core, const RenderJob &job, int first, int la
                     if (g0 == g1) accumulate(y, x, g1, frames);
                     else accumulateRamp(y, x, g0, g1, frames);
                 }
+            } else if (v.kind == kTapBus) {
+                if (const float *x = v.input < core->busesSet ? core->busSignals[v.input] : nullptr) {
+                    if (g0 == g1) accumulate(y, x, g1, frames);
+                    else accumulateRamp(y, x, g0, g1, frames);
+                }
             } else {
                 const DelayPlan plan = advance(v.delay, motion, frames);
                 if (v.input < lines) core->inputLine(v.input).accumulate(block, frames, plan, g0, g1, y);
@@ -1225,6 +1376,160 @@ uint32_t renderOutputs(feral_core *core, const RenderJob &job, int first, int la
     return active;
 }
 
+/// Moves the reflections to a new state's: matched by (input, reflection), each takes its new gain
+/// over the state's fade (or one buffer) and glides or crossfades to its new delay; one that was
+/// silent starts at its delay. Audio thread.
+void mergeReflections(feral_core *core, const RenderState *next) {
+    const int fade = next->fadeFrames;
+    const bool any = !next->reflections.empty();
+    for (int in = 0; in < FERAL_MAX_CHANNELS; ++in) {
+        const Reflections *r = any && in < next->inputs ? &next->reflections[static_cast<size_t>(in)] : nullptr;
+        for (int k = 0; k < FERAL_MAX_REFLECTIONS; ++k) {
+            ReflectionVoice &v = core->reflectionVoices[static_cast<size_t>(in) * FERAL_MAX_REFLECTIONS + k];
+            const bool on = r && k < r->count;
+            const float target = on ? r->gain[k] : 0.0f;
+            if (v.gain == 0 && v.target == 0) {
+                if (target == 0) continue;
+                v.delay.reset(r->delay[k]);
+            } else if (on) {
+                v.delay.target = r->delay[k];
+            }
+            v.target = target;
+            v.fadeLeft = std::max(v.fadeLeft, fade);
+        }
+    }
+}
+
+/// y[m] += g(m) * x[m - d(m)] with linear interpolation, the gain and delay moving linearly over the
+/// block: cheaper than the cubic reads of the direct sound, and enough for reflections, which the
+/// wall filter dulls anyway.
+void readLinear(const DelayLine &line, uint32_t block, int frames, double d0, double d1, float g0, float g1, float *y) {
+    const float inv = 1.0f / static_cast<float>(frames);
+    const float gstep = (g1 - g0) * inv;
+    if (d0 == d1) {
+        const double whole = std::floor(d0);
+        const auto k = static_cast<uint32_t>(whole);
+        const float f = static_cast<float>(d0 - whole);
+        const uint32_t oldest = (block - k - 1) & line.mask;
+        if (oldest + static_cast<uint32_t>(frames) + 1 <= line.mask + 1) {
+            const float *x = line.data + oldest + 1; // x[m] is the input k samples before block sample m
+            for (int m = 0; m < frames; ++m) y[m] += (g0 + gstep * static_cast<float>(m + 1)) * ((1 - f) * x[m] + f * x[m - 1]);
+            return;
+        }
+    }
+    const double dstep = (d1 - d0) / frames;
+    for (int m = 0; m < frames; ++m) {
+        const double d = d0 + dstep * (m + 1);
+        const double whole = std::floor(d);
+        const auto k = static_cast<uint32_t>(whole);
+        const float f = static_cast<float>(d - whole);
+        const uint32_t i = block + static_cast<uint32_t>(m) - k;
+        y[m] += (g0 + gstep * static_cast<float>(m + 1)) * ((1 - f) * line.at(i) + f * line.at(i - 1));
+    }
+}
+
+/// One chunk of the reverb phase: a room (chunks below FERAL_MAX_ROOMS) or a run of inputs'
+/// reflections. Each writes only its own buses, runtime and lines. Audio thread or a worker.
+void reverbChunk(feral_core *core, const RenderJob &job, int chunk) {
+    const RenderState *next = job.next;
+    const int frames = job.frames, lines = job.lines;
+    bool alive = false;
+    if (chunk < FERAL_MAX_ROOMS) {
+        const int r = chunk;
+        feral::RoomRuntime &room = *core->rooms[r];
+        const bool on = next && next->rooms[static_cast<size_t>(r)].on;
+        if (!on) {
+            room.stop();
+            for (int j = 0; j < FERAL_ROOM_LINES; ++j) core->busSignals[roomBus(r, j)] = nullptr;
+            std::fill(core->roomSendNow[r], core->roomSendNow[r] + FERAL_MAX_CHANNELS, 0.0f);
+            return;
+        }
+        // The sends, summed.
+        float *x = core->roomInput + static_cast<size_t>(r) * FERAL_MAX_FRAMES;
+        std::fill(x, x + frames, 0.0f);
+        float *now = core->roomSendNow[r];
+        for (int in = 0; in < lines; ++in) {
+            const float target = in < next->inputs ? next->roomSend[static_cast<size_t>(r) * next->inputs + in] : 0.0f;
+            const float g0 = now[in];
+            now[in] = target;
+            if (g0 == 0 && target == 0) continue;
+            if (const float *src = core->inputSources[in]) {
+                if (g0 == target) accumulate(x, src, target, frames);
+                else accumulateRamp(x, src, g0, target, frames);
+            }
+        }
+        for (int in = lines; in < FERAL_MAX_CHANNELS; ++in) now[in] = 0;
+        float *out[FERAL_ROOM_LINES];
+        for (int j = 0; j < FERAL_ROOM_LINES; ++j) {
+            const int bus = roomBus(r, j);
+            out[j] = core->busScratch + static_cast<size_t>(bus) * frames;
+            core->busSignals[bus] = out[j];
+        }
+        room.process(next->rooms[static_cast<size_t>(r)], x, out, frames);
+        alive = true;
+    } else {
+        const int first = (chunk - FERAL_MAX_ROOMS) * WorkerPool::kChunkInputs;
+        const int last = std::min(lines, first + WorkerPool::kChunkInputs);
+        const bool any = next && !next->reflections.empty();
+        const int length = static_cast<int>(core->lineMask + 1);
+        for (int in = first; in < last; ++in) {
+            const Reflections *set = any && in < next->inputs ? &next->reflections[static_cast<size_t>(in)] : nullptr;
+            ReflectionVoice *vs = core->reflectionVoices + static_cast<size_t>(in) * FERAL_MAX_REFLECTIONS;
+            bool sounding = set && set->count > 0;
+            for (int k = 0; k < FERAL_MAX_REFLECTIONS && !sounding; ++k) sounding = vs[k].gain != 0 || vs[k].target != 0;
+            DelayLine line = core->reflectionLine(in);
+            if (!sounding) {
+                for (int k = 0; k < FERAL_MAX_REFLECTIONS; ++k) core->busSignals[reflectionBus(in, k)] = nullptr;
+                // Silence into the line until nothing of the old signal is left in it.
+                if (core->reflectionDirty[in] > 0) {
+                    line.write(job.block, nullptr, frames);
+                    core->reflectionDirty[in] = std::max(0, core->reflectionDirty[in] - frames);
+                    alive = true;
+                }
+                continue;
+            }
+            alive = true;
+            // The input through the wall filter, into its reflection line.
+            float *y = core->reflectionScratch + static_cast<size_t>(in) * FERAL_MAX_FRAMES;
+            if (const float *src = core->inputSources[in]) std::copy(src, src + frames, y);
+            else std::fill(y, y + frames, 0.0f);
+            ReflectionFilter &f = core->reflectionFilter[in];
+            static constexpr feral_biquad flat[FERAL_REFLECTION_FILTER] = {{1, 0, 0, 0, 0}, {1, 0, 0, 0, 0}};
+            runEQ(f.now, f.z1, f.z2, set ? set->filter : flat, FERAL_REFLECTION_FILTER, y, frames);
+            line.write(job.block, y, frames);
+            core->reflectionDirty[in] = length;
+            // Each reflection: one read of the line at its delay and gain.
+            for (int k = 0; k < FERAL_MAX_REFLECTIONS; ++k) {
+                ReflectionVoice &v = vs[k];
+                const int bus = reflectionBus(in, k);
+                if (v.gain == 0 && v.target == 0) {
+                    core->busSignals[bus] = nullptr;
+                    continue;
+                }
+                const float g0 = v.gain;
+                if (v.fadeLeft > frames) {
+                    v.gain += (v.target - v.gain) * static_cast<float>(frames) / static_cast<float>(v.fadeLeft);
+                    v.fadeLeft -= frames;
+                } else {
+                    v.gain = v.target;
+                    v.fadeLeft = 0;
+                }
+                const DelayPlan plan = advance(v.delay, *job.motion, frames);
+                float *b = core->busScratch + static_cast<size_t>(bus) * frames;
+                std::fill(b, b + frames, 0.0f);
+                if (plan.crossfading) {
+                    readLinear(line, job.block, frames, plan.from, plan.from, g0 * (1 - plan.w0), v.gain * (1 - plan.w1), b);
+                    readLinear(line, job.block, frames, plan.d0, plan.d1, g0 * plan.w0, v.gain * plan.w1, b);
+                } else {
+                    readLinear(line, job.block, frames, plan.d0, plan.d1, g0, v.gain, b);
+                }
+                core->busSignals[bus] = b;
+            }
+        }
+    }
+    if (alive) core->reverbAlive.fetch_add(1, std::memory_order_relaxed);
+}
+
 /// Takes chunks from the current ticket and plays them, until none are left.
 void runChunks(feral_core *core) {
     WorkerPool &p = *core->pool;
@@ -1233,10 +1538,14 @@ void runChunks(feral_core *core) {
         const auto chunk = static_cast<uint32_t>(t), chunks = static_cast<uint32_t>(t >> 32);
         if (chunk >= chunks) return;
         const RenderJob &job = p.job;
-        const int first = static_cast<int>(chunk) * WorkerPool::kChunkOutputs;
-        const int last = std::min(job.rendered, first + WorkerPool::kChunkOutputs);
-        const uint32_t active = renderOutputs(core, job, first, last);
-        p.active.fetch_add(active, std::memory_order_relaxed);
+        if (job.phase == kPhaseReverb) {
+            reverbChunk(core, job, static_cast<int>(chunk));
+        } else {
+            const int first = static_cast<int>(chunk) * WorkerPool::kChunkOutputs;
+            const int last = std::min(job.rendered, first + WorkerPool::kChunkOutputs);
+            const uint32_t active = renderOutputs(core, job, first, last);
+            p.active.fetch_add(active, std::memory_order_relaxed);
+        }
         p.chunksDone.fetch_add(1, std::memory_order_release);
     }
 }
@@ -1345,7 +1654,8 @@ void renderMonitor(feral_core *core, float *const *outputs, int rendered, int fr
             const int count = out < core->voiceOutputs ? core->voiceCount[out] : 0;
             for (int i = 0; i < count; ++i) {
                 const Voice &v = vs[i];
-                if (v.input >= lines || !core->solo[v.input].load(std::memory_order_relaxed) || v.gain == 0.0f) continue;
+                if (v.kind == kTapBus || v.input >= lines || !core->solo[v.input].load(std::memory_order_relaxed) || v.gain == 0.0f)
+                    continue;
                 if (v.kind == FERAL_TAP_GAIN) {
                     if (const float *x = core->inputSources[v.input]) accumulate(y, x, v.gain, frames);
                 } else {
@@ -1365,7 +1675,10 @@ void renderBlock(feral_core *core, const float *const *inputs, int num_inputs, f
     RenderState *previous = core->current;
     RenderState *next = core->latest.load(std::memory_order_acquire);
     if (next != previous) {
-        if (next) mergeState(core, next);
+        if (next) {
+            mergeState(core, next);
+            mergeReflections(core, next);
+        }
         core->current = next;
         if (next) core->acknowledged.store(next->sequence, std::memory_order_release);
         core->stateSwaps.fetch_add(1, std::memory_order_relaxed);
@@ -1408,9 +1721,35 @@ void renderBlock(feral_core *core, const float *const *inputs, int num_inputs, f
     core->inputLinesUsed = std::max(core->inputLinesUsed, lines);
 
     const int rendered = std::min(num_outputs, FERAL_MAX_CHANNELS);
-    const RenderJob job{outputs, frames, block, lines, next, &motion, rendered};
-    uint32_t active = 0;
     WorkerPool *pool = core->pool;
+
+    // The reverb: rooms and reflections into their buses, before the outputs that play them. Shared
+    // with the workers like the outputs are (rooms first, then runs of inputs).
+    if ((next && next->reverb) || core->reverbRunning) {
+        const RenderJob reverb{kPhaseReverb, outputs, frames, block, lines, next, &motion, rendered};
+        core->busesSet = kRoomBuses + lines * FERAL_MAX_REFLECTIONS;
+        core->reverbAlive.store(0, std::memory_order_relaxed);
+        const int chunks = FERAL_MAX_ROOMS + (lines + WorkerPool::kChunkInputs - 1) / WorkerPool::kChunkInputs;
+        if (pool) {
+            pool->job = reverb;
+            pool->chunksDone.store(0, std::memory_order_relaxed);
+            pool->ticket.store(static_cast<uint64_t>(chunks) << 32, std::memory_order_release);
+            pool->generation.fetch_add(1, std::memory_order_release);
+            pool->generation.notify_all();
+            runChunks(core);
+            while (pool->chunksDone.load(std::memory_order_acquire) < chunks) cpuRelax();
+        } else {
+            for (int c = 0; c < chunks; ++c) reverbChunk(core, reverb, c);
+        }
+        core->reverbRunning = core->reverbAlive.load(std::memory_order_relaxed) > 0;
+        for (int in = lines; in < FERAL_MAX_CHANNELS && in < core->reflectionLinesUsed; ++in) core->reflectionDirty[in] = 0;
+        core->reflectionLinesUsed = std::max(core->reflectionLinesUsed, lines);
+    } else {
+        core->busesSet = 0;
+    }
+
+    const RenderJob job{kPhaseOutputs, outputs, frames, block, lines, next, &motion, rendered};
+    uint32_t active = 0;
     const int chunks = (rendered + WorkerPool::kChunkOutputs - 1) / WorkerPool::kChunkOutputs;
     if (pool && chunks > 1) {
         // Hand the outputs out in chunks; the audio thread takes chunks too and then waits only for
